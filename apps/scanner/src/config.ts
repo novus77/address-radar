@@ -20,6 +20,11 @@ export interface ScannerConfig extends ScannerPolicyConfig {
   readonly onchainRpcMethod: string;
   readonly fileStartAtEnd: boolean;
   readonly marketBaseUrl: string | null;
+  readonly gatewayEndpoint?: string | null;
+  readonly gatewayKeyId?: string | null;
+  readonly gatewaySharedSecret?: string | null;
+  readonly gatewayDeliveryIntervalMs?: number;
+  readonly gatewayTimeoutMs?: number;
 }
 
 const required = (env: Readonly<Record<string, string | undefined>>, key: string): string => {
@@ -63,6 +68,11 @@ export function parseScannerConfig(env: Readonly<Record<string, string | undefin
     onchainRpcMethod: env.ADDRESS_RADAR_ONCHAIN_RPC_METHOD?.trim() || "address_radar_walletEvents",
     fileStartAtEnd: env.ADDRESS_RADAR_FILE_START_AT_END !== "false",
     marketBaseUrl: env.ADDRESS_RADAR_MARKET_BASE_URL?.trim() || null,
+    gatewayEndpoint: env.ADDRESS_RADAR_GATEWAY_ENDPOINT?.trim() || null,
+    gatewayKeyId: env.ADDRESS_RADAR_GATEWAY_KEY_ID?.trim() || null,
+    gatewaySharedSecret: env.ADDRESS_RADAR_GATEWAY_SHARED_SECRET?.trim() || null,
+    gatewayDeliveryIntervalMs: finiteNumber(env.ADDRESS_RADAR_GATEWAY_DELIVERY_INTERVAL_MS, 1_000, "ADDRESS_RADAR_GATEWAY_DELIVERY_INTERVAL_MS"),
+    gatewayTimeoutMs: finiteNumber(env.ADDRESS_RADAR_GATEWAY_TIMEOUT_MS, 5_000, "ADDRESS_RADAR_GATEWAY_TIMEOUT_MS"),
   });
 }
 
@@ -73,7 +83,7 @@ export interface ScannerPreflightFilesystem {
 
 export interface ScannerPreflightReport {
   readonly ready: boolean;
-  readonly delivery: "disabled_outbox_only";
+  readonly delivery: "enabled" | "disabled_outbox_only";
   readonly failures: readonly { readonly code: string; readonly message: string }[];
 }
 
@@ -103,5 +113,8 @@ export async function runScannerPreflight(input: {
   const files = [...input.config.fomoFilePaths, ...(input.config.onchainFilePath ? [input.config.onchainFilePath] : [])];
   const usableFiles = (await Promise.all(files.map(path => filesystem.exists(path)))).filter(Boolean).length;
   if (usableFiles === 0 && !input.config.onchainRpcEndpoint) failures.push({ code: "collector_unavailable", message: "At least one usable collector is required" });
-  return Object.freeze({ ready: failures.length === 0, delivery: "disabled_outbox_only" as const, failures: Object.freeze(failures) });
+  const deliveryValues = [input.config.gatewayEndpoint, input.config.gatewayKeyId, input.config.gatewaySharedSecret];
+  const configuredDeliveryValues = deliveryValues.filter(Boolean).length;
+  if (configuredDeliveryValues > 0 && configuredDeliveryValues < deliveryValues.length) failures.push({ code: "gateway_configuration_incomplete", message: "Gateway endpoint, key ID, and shared secret must be configured together" });
+  return Object.freeze({ ready: failures.length === 0, delivery: configuredDeliveryValues === deliveryValues.length ? "enabled" as const : "disabled_outbox_only" as const, failures: Object.freeze(failures) });
 }

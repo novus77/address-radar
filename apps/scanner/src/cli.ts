@@ -2,6 +2,7 @@ import { openAddressRadarRepository } from "@address-radar/database";
 import { createDexScreenerClient } from "@address-radar/collectors";
 import { createTokenLifecycleResolver } from "@address-radar/aggregation";
 import { openMonitoringRegistry } from "@address-radar/identity";
+import { createGatewayClient, createGatewayDeliveryWorker } from "@address-radar/delivery";
 import { pathToFileURL } from "node:url";
 import { parseScannerConfig, runScannerPreflight } from "./config.js";
 import { createPollingRuntimeJob, createScannerRuntime } from "./runtime.js";
@@ -30,10 +31,24 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
     intervalMs: config.pollIntervalMs,
     onError: error => console.error("Scanner iteration failed", error),
   });
+  const delivery = config.gatewayEndpoint && config.gatewayKeyId && config.gatewaySharedSecret
+    ? createGatewayDeliveryWorker({
+        repository,
+        client: createGatewayClient({ endpoint: config.gatewayEndpoint, keyId: config.gatewayKeyId, secret: config.gatewaySharedSecret, timeoutMs: config.gatewayTimeoutMs ?? 5_000 }),
+        workerId: `scanner:${process.pid}`,
+      })
+    : null;
+  const deliveryPolling = delivery ? createPollingRuntimeJob({
+    runOnce: () => delivery.runOnce(),
+    intervalMs: config.gatewayDeliveryIntervalMs ?? 1_000,
+    onError: error => console.error("Gateway delivery iteration failed", error),
+  }) : null;
 
   await runtime.start();
   polling.start();
+  deliveryPolling?.start();
   const shutdown = async (): Promise<void> => {
+    await deliveryPolling?.stop();
     await polling.stop();
     await runtime.close();
     repository.close();

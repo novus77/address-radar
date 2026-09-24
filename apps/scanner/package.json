@@ -13,6 +13,7 @@
     "@address-radar/aggregation": "workspace:*",
     "@address-radar/collectors": "workspace:*",
     "@address-radar/database": "workspace:*",
+    "@address-radar/delivery": "workspace:*",
     "@address-radar/domain": "workspace:*",
     "@address-radar/identity": "workspace:*",
     "@address-radar/observability": "workspace:*",

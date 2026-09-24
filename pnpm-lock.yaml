@@ -51,6 +51,9 @@ importers:
       '@address-radar/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@address-radar/delivery':
+        specifier: workspace:*
+        version: link:../../packages/delivery
       '@address-radar/domain':
         specifier: workspace:*
         version: link:../../packages/domain

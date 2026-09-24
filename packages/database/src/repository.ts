@@ -156,6 +156,7 @@ export interface AddressRadarRepository extends TokenAggregationRepository, Runt
   claimSignalOutbox(input: { readonly workerId: string; readonly now: number; readonly leaseMs: number }): SignalOutboxRecord | null;
   markSignalOutboxDelivered(input: { readonly outboxId: string; readonly claimToken: string; readonly deliveredAt: number }): boolean;
   failSignalOutbox(input: { readonly outboxId: string; readonly claimToken: string; readonly nextRetryAt: number; readonly error: string }): boolean;
+  deadLetterSignalOutbox(input: { readonly outboxId: string; readonly claimToken: string; readonly error: string }): boolean;
   legacySignalOutboxReviews(): readonly LegacySignalOutboxReview[];
   approveLegacySignalOutbox(input: { readonly reviewId: string; readonly operator: string; readonly reason: string; readonly decidedAt: number }): boolean;
   skipLegacySignalOutbox(input: { readonly reviewId: string; readonly operator: string; readonly reason: string; readonly decidedAt: number }): boolean;
@@ -1221,6 +1222,10 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
 
     failSignalOutbox(input) {
       return database.prepare("UPDATE signal_outbox SET status = 'pending', next_retry_at = ?, last_error = ?, claimed_by = NULL, claimed_at = NULL, claim_token = NULL, lease_expires_at = NULL WHERE outbox_id = ? AND status = 'processing' AND claim_token = ?").run(input.nextRetryAt, input.error.slice(0, 2_048), input.outboxId, input.claimToken).changes === 1;
+    },
+
+    deadLetterSignalOutbox(input) {
+      return database.prepare("UPDATE signal_outbox SET status = 'pending', next_retry_at = ?, last_error = ?, claimed_by = NULL, claimed_at = NULL, claim_token = NULL, lease_expires_at = NULL WHERE outbox_id = ? AND status = 'processing' AND claim_token = ?").run(Number.MAX_SAFE_INTEGER, `dead_letter:${input.error}`.slice(0, 2_048), input.outboxId, input.claimToken).changes === 1;
     },
 
     legacySignalOutboxReviews() {
