@@ -52,6 +52,33 @@ importers:
         specifier: workspace:*
         version: link:../../packages/signal-engine
 
+  apps/wallet-analysis:
+    dependencies:
+      '@address-radar/database':
+        specifier: workspace:*
+        version: link:../../packages/database
+      '@address-radar/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@address-radar/identity':
+        specifier: workspace:*
+        version: link:../../packages/identity
+      '@address-radar/scoring':
+        specifier: workspace:*
+        version: link:../../packages/scoring
+
+  apps/wallet-monitor:
+    dependencies:
+      '@address-radar/database':
+        specifier: workspace:*
+        version: link:../../packages/database
+      '@address-radar/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@address-radar/identity':
+        specifier: workspace:*
+        version: link:../../packages/identity
+
   packages/aggregation:
     dependencies:
       '@address-radar/domain':
