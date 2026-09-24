@@ -73,20 +73,21 @@ describe("token signal service", () => {
 
   it("enforces mapped monitored lifecycle eligibility and degraded discount", () => {
     repository = openAddressRadarRepository(":memory:");
-    const setup = (entityId: string, lifecycle: "candidate" | "probation" | "active" | "elite" | "degraded" | "suspended", mapped: boolean) => {
+    const setup = (entityId: string, lifecycle: "candidate" | "probation" | "active" | "elite" | "degraded" | "suspended", mapped: boolean, confidence: "high" | "confirmed" = "confirmed") => {
       const accountId = `account-${entityId}`;
       repository!.upsertFomoAccount({ accountId, handle: accountId, firstSeenAt: 1, lastSeenAt: 1 });
       repository!.upsertTraderEntity({ entityId, lifecycle, manual: false, locked: false, createdAt: 1, updatedAt: 1 });
-      if (mapped) repository!.linkAccountToEntity({ accountId, entityId, confidence: "confirmed", source: "test", observedAt: 1 });
+      if (mapped) repository!.linkAccountToEntity({ accountId, entityId, confidence, source: "test", observedAt: 1 });
       repository!.upsertTraderSignalProfile({ entityId, monitoringEnabled: true, fomoMonitoringEnabled: true, onchainMonitoringEnabled: true, updatedAt: 1 });
       repository!.insertTraderEvent({ eventId: entityId, accountId, entityId, chain: "solana", tokenAddress: "TokenA", side: "buy", amountUsd: 1_000, priceUsd: 0.01, marketCapUsd: 100_000, tokenAgeMs: 60_000, occurredAt: 1_000, collectedAt: 1_000, source: "fomo_stream" });
     };
     setup("active", "active", true); setup("degraded", "degraded", true); setup("candidate", "candidate", true);
     setup("probation", "probation", true); setup("suspended", "suspended", true); setup("unmapped", "elite", false);
+    setup("high-confidence", "elite", true, "high");
     const service = createTokenSignalService({ repository, threshold: 0.7, strategyVersion: "address-v1", now: () => 3_000 });
     const result = service.evaluate("solana", "TokenA", [
       evidence("active", "active"), evidence("degraded", "degraded"), evidence("candidate", "candidate"),
-      evidence("probation", "probation"), evidence("suspended", "suspended"), evidence("unmapped", "unmapped"),
+      evidence("probation", "probation"), evidence("suspended", "suspended"), evidence("unmapped", "unmapped"), evidence("high-confidence", "high-confidence"),
     ]);
     expect(result.decision.participantCount).toBe(2);
     expect(result.decision.score).toBeCloseTo(0.912);

@@ -24,6 +24,14 @@ describe("token lifecycle resolver", () => {
     await expect(resolver.resolve({ chain: "solana", tokenAddress: "TokenA", observedAt: 10_000 })).resolves.toBe("created");
   });
 
+  it.each(["unavailable", "rate_limited"] as const)("defers created evidence while launch provider is %s", async (status) => {
+    const resolver = createTokenLifecycleResolver({
+      creationProvider: { creationFacts: vi.fn(async () => ({ status: "ready" as const, createdAt: 5_000 })) },
+      launchProvider: { launchFacts: vi.fn(async () => ({ status, markets: [] })) },
+    });
+    await expect(resolver.resolve({ chain: "solana", tokenAddress: "TokenA", observedAt: 10_000 })).resolves.toBe("unknown");
+  });
+
   it("uses source creation evidence independently from provider launch evidence", async () => {
     const resolver = createTokenLifecycleResolver({
       launchProvider: { launchFacts: vi.fn(async () => ({ status: "ready" as const, markets: [] })) },

@@ -54,6 +54,7 @@ export function createTokenLifecycleResolver(input: {
       const providerRequest = { chain, tokenAddress: request.tokenAddress, signal: new AbortController().signal };
       const creation = request.createdAt !== undefined ? null : await input.creationProvider?.creationFacts(providerRequest);
       const launch = request.launchedAt !== undefined ? null : await input.launchProvider?.launchFacts(providerRequest);
+      if (request.launchedAt === undefined && launch?.status !== "ready") return "unknown";
       const createdAt = request.createdAt ?? (creation?.status === "ready" ? creation.createdAt ?? null : null);
       const launchTimes = launch?.status === "ready" ? launch.markets.flatMap(market => market.launchedAt === undefined ? [] : [market.launchedAt]) : [];
       const launchedAt = request.launchedAt ?? (launchTimes.length > 0 ? Math.min(...launchTimes) : null);

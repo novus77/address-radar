@@ -69,7 +69,7 @@ describe("trader identity workflow", () => {
     repository.close();
   });
 
-  it.each(["low", "medium"] as const)("does not map %s-confidence identities for signals", (confidence) => {
+  it.each(["low", "medium", "high"] as const)("does not map %s-confidence identities for signals", (confidence) => {
     const repository = openAddressRadarRepository(":memory:");
     repository.upsertFomoAccount({ accountId: confidence, handle: confidence, firstSeenAt: 1, lastSeenAt: 1 });
     repository.upsertTraderEntity({ entityId: confidence, lifecycle: "elite", manual: false, locked: false, createdAt: 1, updatedAt: 1 });

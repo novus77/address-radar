@@ -197,10 +197,10 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     const facts = database.prepare(`
       SELECT e.lifecycle,
         EXISTS(SELECT 1 FROM trader_ability_snapshots a WHERE a.entity_id = e.entity_id) AS hasAbility,
-        EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id AND ea.confidence IN ('high', 'confirmed')) AS mapped,
+        EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id AND ea.confidence = 'confirmed') AS mapped,
         EXISTS(
           SELECT 1 FROM entity_accounts ea JOIN wallet_identities w ON w.account_id = ea.account_id
-          WHERE ea.entity_id = e.entity_id AND ea.confidence IN ('high', 'confirmed') AND w.confidence IN ('high', 'confirmed')
+          WHERE ea.entity_id = e.entity_id AND ea.confidence = 'confirmed' AND w.confidence = 'confirmed'
         ) AS hasWallet
       FROM trader_entities e WHERE e.entity_id = ?
     `).get(entityId) as { lifecycle: TraderLifecycle; hasAbility: number; mapped: number; hasWallet: number } | undefined;
@@ -577,7 +577,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     traderSignalProfile(entityId) {
       const row = database.prepare(`
         SELECT e.entity_id AS entityId, e.lifecycle,
-          EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id AND ea.confidence IN ('high', 'confirmed')) AS mapped,
+          EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id AND ea.confidence = 'confirmed') AS mapped,
           COALESCE(p.monitoring_enabled, 0) AS monitoringEnabled,
           COALESCE(p.fomo_monitoring_enabled, 0) AS fomoMonitoringEnabled,
           COALESCE(p.onchain_monitoring_enabled, 0) AS onchainMonitoringEnabled
