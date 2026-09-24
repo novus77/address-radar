@@ -14,3 +14,4 @@ export type { AggregationDecision } from "./service.js";
 export type { SignalTraderProfile, TokenAggregationRepository, TokenAggregationState, TokenEvaluationInput } from "./repository.js";
 export { matchCanonicalTraderEvent } from "./canonical.js";
 export type { CanonicalEventCandidate } from "./canonical.js";
+export { explainTokenMissingCondition } from "./status.js";
