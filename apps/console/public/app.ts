@@ -3,6 +3,7 @@ const state = {
   module: "traders",
   traders: [],
   candidates: [],
+  candidateFunnel: {},
   aggregations: [],
   signals: [],
   identityQueue: [],
@@ -39,6 +40,8 @@ const splitValues = value => String(value || "").split(/[|,]/).map(item => item.
 const lifecycleLabel = value => ({ candidate: "候选", probation: "观察", active: "活跃", elite: "精英", degraded: "降级", suspended: "淘汰" })[value] || value;
 const reasonLabel = value => ({ leaderboard_24h: "24h Top100", leaderboard_30d: "30d Top100", market_cap_100k_3x: "10万市值 / 3倍", market_cap_100k_5x: "10万市值 / 5倍", market_cap_200k_3x: "20万市值 / 3倍", market_cap_200k_5x: "20万市值 / 5倍", market_cap_300k_5x: "30万市值 / 5倍", market_cap_500k_5x: "50万市值 / 5倍", market_cap_500k_10x: "50万市值 / 10倍", market_cap_1m_10x: "100万市值 / 10倍", market_cap_1m_20x: "100万市值 / 20倍", million_token_10x: "旧版百万市值 / 10倍", shared_holding: "共同持仓发现" })[value] || value;
 const tagLabel = value => ({ "source.manual": "手动添加", "source.30d_top100": "30d Top100", "source.milestone_discovery": "高倍发现", "source.reverse_coholding": "共同持仓", "source.fomo_activity": "Fomo 动态", "ability.100k_3x": "10万 / 3倍", "ability.100k_5x": "10万 / 5倍", "ability.200k_3x": "20万 / 3倍", "ability.200k_5x": "20万 / 5倍", "ability.300k_5x": "30万 / 5倍", "ability.500k_5x": "50万 / 5倍", "ability.500k_10x": "50万 / 10倍", "ability.1m_10x": "100万 / 10倍", "ability.1m_20x": "100万 / 20倍", "style.early_launch": "新币早期", "style.old_token_momentum": "老币异动", "style.low_cap_high_multiple": "低市值高倍", "style.high_cap_large_position": "高市值重仓" })[value] || value;
+const candidateStatusLabel = value => ({ current_admitted: "当前已准入", awaiting_second_early_token: "等待第二个早期代币", awaiting_recent_confirmation: "等待近期复现", no_evidence: "尚无高倍证据" })[value] || value;
+const candidateReasonLabel = value => ({ strong_evidence_in_30d: "30天内命中一条强证据", two_early_tokens_in_30d: "30天内命中两个不同早期代币", only_one_early_token: "30天内仅有一个早期代币", evidence_outside_30d_window: "证据已超出30天窗口", candidate_evidence_missing: "尚未形成候选证据" })[value] || value;
 
 const traderLabels = trader => {
   const typed = [...splitValues(trader.sourceTags), ...splitValues(trader.abilityTags), ...splitValues(trader.styleTags)];
@@ -83,21 +86,32 @@ const renderCandidates = () => {
   const chain = $("#candidate-chain").value;
   const identity = $("#candidate-identity").value;
   const candidates = state.candidates.filter(candidate => {
-    const sources = splitValues(candidate.discoveryTypes);
+    const sources = [candidate.strongestEvidenceType].filter(Boolean);
     const chains = splitValues(candidate.chains).map(value => value.toLowerCase());
     const hasSolana = splitValues(candidate.solanaAddresses).length > 0;
     const hasEvm = splitValues(candidate.evmAddresses).length > 0;
-    const identityMatch = !identity || (identity === "resolved" && (hasSolana || hasEvm)) || (identity === "unresolved" && !hasSolana && !hasEvm) || (identity === "solana" && hasSolana) || (identity === "evm" && hasEvm);
-    const haystack = [candidate.handle, candidate.solanaAddresses, candidate.evmAddresses].join(" ").toLowerCase();
+    const identityMatch = !identity || candidate.identityState === identity || (identity === "solana" && hasSolana) || (identity === "evm" && hasEvm);
+    const haystack = [candidate.displayName, candidate.handles, candidate.traderId, candidate.solanaAddresses, candidate.evmAddresses].join(" ").toLowerCase();
     return (!query || haystack.includes(query)) && (!source || sources.includes(source)) && (!chain || chains.includes(chain)) && identityMatch;
   });
 
-  if (!candidates.length) {
-    $("#candidates-grid").innerHTML = empty("没有符合当前筛选条件的高倍候选交易员。");
-    return;
-  }
+  const funnel = state.candidateFunnel;
+  $("#candidate-funnel").innerHTML = [
+    ["历史1M代币", funnel.historicalTokenCount],
+    ["已重建里程碑", funnel.milestoneReconstructedTokenCount],
+    ["回补完成", funnel.backfillCompletedCount],
+    ["回补等待", funnel.backfillPendingCount],
+    ["高倍证据", funnel.evidenceCount],
+    ["证据交易员", funnel.evidenceTraderCount],
+    ["身份待解析", funnel.identityUnresolvedCount],
+    ["历史能力", funnel.historicalOnlyCount],
+    ["当前准入", funnel.currentAdmittedCount],
+  ].map(([label, value]) => `<article><span>${escapeHtml(label)}</span><strong>${text(value, 0)}</strong></article>`).join("");
 
-  $("#candidates-grid").innerHTML = `<table class="operator-table"><thead><tr><th>Fomo 用户</th><th>Solana 地址</th><th>EVM 地址</th><th>最强证据</th><th>独立代币</th><th>进度记录</th><th>最高倍数</th><th>发现时间</th></tr></thead><tbody>${candidates.map(candidate => `<tr data-entity="${escapeHtml(candidate.entityId)}"><td><strong>@${escapeHtml(candidate.handle)}</strong><small>${escapeHtml(candidate.accountId)}</small></td><td>${addressCell(candidate.solanaAddresses, "Solana")}</td><td>${addressCell(candidate.evmAddresses, "EVM")}</td><td><div class="tag-stack"><span class="tag candidate">${escapeHtml(reasonLabel(candidate.strongestEvidenceType))}</span>${splitValues(candidate.chains).map(value => `<span class="tag chain">${escapeHtml(value)}</span>`).join("")}</div></td><td><strong>${text(candidate.distinctTokenCount, 0)}</strong></td><td><strong>${text(candidate.progressionRecordCount, 0)}</strong></td><td><strong>${Number(candidate.strongestOpportunityMultiple ?? 0).toFixed(1)}x</strong></td><td>${time(candidate.discoveredAt)}</td></tr>`).join("")}</tbody></table>`;
+  const rows = candidates.length
+    ? candidates.map(candidate => `<tr ${candidate.identityState === "resolved" ? `data-entity="${escapeHtml(candidate.traderId)}"` : ""}><td><strong>${escapeHtml(text(candidate.displayName, candidate.handles ? `@${candidate.handles}` : candidate.traderId))}</strong><small>${escapeHtml(candidate.traderId)}</small></td><td><span class="tag ${candidate.identityState === "resolved" ? "active" : "candidate"}">${candidate.identityState === "resolved" ? "已解析" : "待解析"}</span></td><td><div class="tag-stack"><span class="tag candidate">${escapeHtml(reasonLabel(candidate.strongestEvidenceType))}</span>${splitValues(candidate.chains).map(value => `<span class="tag chain">${escapeHtml(value)}</span>`).join("")}</div></td><td><strong>${text(candidate.earlyDistinctTokenCount, 0)}</strong></td><td><strong>${text(candidate.strongDistinctTokenCount, 0)}</strong></td><td><strong>${text(candidate.historicalDistinctTokenCount, 0)}</strong></td><td><span class="tag ${candidate.currentAdmission ? "active" : "candidate"}">${escapeHtml(candidateStatusLabel(candidate.status))}</span><small>${parseJsonList(JSON.stringify(candidate.reasonCodes || [])).map(candidateReasonLabel).map(escapeHtml).join("；")}</small></td><td><strong>${Number(candidate.strongestOpportunityMultiple ?? 0).toFixed(1)}x</strong><small>${time(candidate.latestEvidenceAt)}</small></td></tr>`).join("")
+    : '<tr><td colspan="8">没有符合当前筛选条件的高倍候选交易员。</td></tr>';
+  $("#candidates-grid").innerHTML = `<table class="operator-table"><thead><tr><th>Fomo 用户</th><th>Solana 地址 / EVM 地址</th><th>最强证据</th><th>独立代币</th><th>进度记录</th><th>历史代币</th><th>当前状态</th><th>最高倍数 / 发现时间</th></tr></thead><tbody>${rows}</tbody></table>`;
 };
 
 const cards = {
@@ -222,15 +236,16 @@ const renderMilestones = () => {
 };
 
 const load = async () => {
-  const [overview, chainPage, aggregationPage] = await Promise.all([apiV2("workbench/summary"), apiV2("chains"), apiV2("token-aggregates")]);
-  const metrics = { traders: overview.addressLibraryCount, candidates: overview.candidateCount, aggregations: overview.aggregatedTokenCount, broadcasts: overview.deliveredSignalCount };
+  const [overview, chainPage, aggregationPage, candidateFunnel, candidatePage] = await Promise.all([apiV2("workbench/summary"), apiV2("chains"), apiV2("token-aggregates"), apiV2("candidate-funnel"), apiV2("candidates")]);
+  const metrics = { traders: overview.addressLibraryCount, candidates: candidateFunnel.currentAdmittedCount, aggregations: overview.aggregatedTokenCount, broadcasts: overview.deliveredSignalCount };
   for (const [key, value] of Object.entries(metrics)) { const node = $(`#metric-${key}`); if (node) node.textContent = text(value, "0"); }
   for (const selector of ["#aggregation-chain", "#signal-chain"]) $(selector).insertAdjacentHTML("beforeend", chainPage.items.map(chain => `<option value="${escapeHtml(chain.id)}">${escapeHtml(chain.labelZh)}</option>`).join(""));
   const modules = ["traders", "candidates", "backtests", "aggregations", "outcomes", "milestone-backfills", "milestone-backfills/summary", "wallet-analyses"];
   const data = await Promise.all(modules.map(module => api(module)));
   state.traders = data[0];
   renderTraders();
-  state.candidates = data[1];
+  state.candidateFunnel = candidateFunnel;
+  state.candidates = candidatePage.items;
   renderCandidates();
   $("#backtests-grid").innerHTML = cards.backtests(data[2]);
   state.aggregations = aggregationPage.items;

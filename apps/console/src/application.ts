@@ -62,6 +62,77 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
 
   const read = (pathname: string): ConsoleResult | null => {
     if (pathname === "/api/v2/chains") return { status: 200, body: { items: chainRegistry } };
+    if (pathname === "/api/v2/candidate-funnel") {
+      const scalar = (sql: string): number => Number((database.prepare(sql).get() as { count: number | null }).count ?? 0);
+      return { status: 200, body: {
+        historicalTokenCount: scalar("SELECT COUNT(*) AS count FROM historical_tokens"),
+        milestoneReconstructedTokenCount: scalar("SELECT COUNT(DISTINCT token_id) AS count FROM token_milestone_crossings WHERE precision != 'unavailable'"),
+        backfillCompletedCount: scalar("SELECT COUNT(*) AS count FROM milestone_backfill_jobs WHERE status = 'completed'"),
+        backfillPendingCount: scalar("SELECT COUNT(*) AS count FROM milestone_backfill_jobs WHERE status IN ('pending', 'running', 'failed')"),
+        evidenceCount: scalar("SELECT COUNT(*) AS count FROM candidate_evidence_v3"),
+        evidenceTraderCount: scalar("SELECT COUNT(DISTINCT trader_id) AS count FROM candidate_evidence_v3"),
+        identityUnresolvedCount: scalar("SELECT COUNT(DISTINCT e.trader_id) AS count FROM candidate_evidence_v3 e WHERE NOT EXISTS (SELECT 1 FROM trader_entities t WHERE t.entity_id = e.trader_id)"),
+        historicalOnlyCount: scalar(`
+          SELECT COUNT(*) AS count FROM candidate_admission_snapshots s
+          WHERE s.historical_capability = 1 AND s.current_admission = 0
+            AND NOT EXISTS (
+              SELECT 1 FROM candidate_admission_snapshots newer
+              WHERE newer.trader_id = s.trader_id
+                AND (newer.evaluated_at > s.evaluated_at OR (newer.evaluated_at = s.evaluated_at AND newer.snapshot_id > s.snapshot_id))
+            )
+        `),
+        currentAdmittedCount: scalar(`
+          SELECT COUNT(*) AS count FROM candidate_admission_snapshots s
+          WHERE s.current_admission = 1
+            AND NOT EXISTS (
+              SELECT 1 FROM candidate_admission_snapshots newer
+              WHERE newer.trader_id = s.trader_id
+                AND (newer.evaluated_at > s.evaluated_at OR (newer.evaluated_at = s.evaluated_at AND newer.snapshot_id > s.snapshot_id))
+            )
+        `),
+        lastEvidenceAt: (database.prepare("SELECT MAX(evidence_at) AS value FROM candidate_evidence_v3").get() as { value: number | null }).value,
+      } };
+    }
+    if (pathname === "/api/v2/candidates") {
+      const items = rows(`
+        SELECT s.trader_id AS traderId, s.current_admission AS currentAdmission,
+          s.historical_capability AS historicalCapability, s.status,
+          s.early_distinct_token_count AS earlyDistinctTokenCount,
+          s.strong_distinct_token_count AS strongDistinctTokenCount,
+          s.historical_distinct_token_count AS historicalDistinctTokenCount,
+          s.reason_codes AS reasonCodes, s.window_start AS windowStart,
+          s.window_end AS windowEnd, s.evaluated_at AS evaluatedAt,
+          CASE WHEN EXISTS (SELECT 1 FROM trader_entities t WHERE t.entity_id = s.trader_id)
+            THEN 'resolved' ELSE 'unresolved' END AS identityState,
+          (SELECT p.display_name FROM trader_profiles p WHERE p.entity_id = s.trader_id) AS displayName,
+          (SELECT GROUP_CONCAT(DISTINCT a.handle) FROM entity_accounts ea JOIN fomo_accounts a ON a.account_id = ea.account_id WHERE ea.entity_id = s.trader_id) AS handles,
+          (SELECT GROUP_CONCAT(w.address, '|') FROM entity_accounts ea JOIN wallet_identities w ON w.account_id = ea.account_id WHERE ea.entity_id = s.trader_id AND w.chain_family = 'solana') AS solanaAddresses,
+          (SELECT GROUP_CONCAT(w.address, '|') FROM entity_accounts ea JOIN wallet_identities w ON w.account_id = ea.account_id WHERE ea.entity_id = s.trader_id AND w.chain_family = 'evm') AS evmAddresses,
+          (SELECT GROUP_CONCAT(DISTINCT h.chain) FROM candidate_evidence_v3 e JOIN historical_tokens h ON h.token_id = e.token_id WHERE e.trader_id = s.trader_id) AS chains,
+          (SELECT evidence_type FROM candidate_evidence_v3 e
+            WHERE e.trader_id = s.trader_id
+            ORDER BY CASE e.admission_class WHEN 'strong' THEN 1 ELSE 0 END DESC,
+              e.theoretical_opportunity DESC, e.evidence_at DESC LIMIT 1) AS strongestEvidenceType,
+          (SELECT MAX(theoretical_opportunity) FROM candidate_evidence_v3 e
+            WHERE e.trader_id = s.trader_id) AS strongestOpportunityMultiple,
+          (SELECT MAX(evidence_at) FROM candidate_evidence_v3 e
+            WHERE e.trader_id = s.trader_id) AS latestEvidenceAt
+        FROM candidate_admission_snapshots s
+        WHERE NOT EXISTS (
+          SELECT 1 FROM candidate_admission_snapshots newer
+          WHERE newer.trader_id = s.trader_id
+            AND (newer.evaluated_at > s.evaluated_at OR (newer.evaluated_at = s.evaluated_at AND newer.snapshot_id > s.snapshot_id))
+        )
+        ORDER BY s.current_admission DESC, latestEvidenceAt DESC, s.trader_id
+      `).map(item => {
+        const row = item as Record<string, unknown>;
+        return Object.freeze({
+          ...row,
+          reasonCodes: typeof row.reasonCodes === "string" ? Object.freeze(stringList(JSON.parse(row.reasonCodes) as unknown)) : Object.freeze([]),
+        });
+      });
+      return { status: 200, body: { total: items.length, updatedAt: Date.now(), items } };
+    }
     if (pathname === "/api/v2/workbench/summary") {
       const scalar = (sql: string): number => Number((database.prepare(sql).get() as { count: number | null }).count ?? 0);
       return { status: 200, body: {
