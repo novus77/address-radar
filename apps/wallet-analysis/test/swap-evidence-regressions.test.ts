@@ -46,6 +46,35 @@ test("Solana history accepts a two-leg swap and skips a transfer-only delta", as
   assert.match(result.provenance, /skipped_insufficient_swap_evidence=1/);
 });
 
+test("Solana history skips an incoming claim whose only SOL decrease is the transaction fee", async () => {
+  const eventStore = memoryEvents();
+  const provider = createSolanaRpcWalletHistoryProvider({
+    rpc: solanaRpc("claim", claimTransaction()),
+    market: market(),
+    events: eventStore,
+    pageSize: 10,
+  });
+  const result = await provider.collect(historyRequest("claim-analysis"));
+
+  assert.equal(eventStore.events("claim-analysis").length, 0);
+  assert.equal(result.positions.length, 0);
+  assert.match(result.provenance, /skipped_insufficient_swap_evidence=1/);
+});
+
+test("Solana history preserves a known-program native SOL swap after removing the fee", async () => {
+  const eventStore = memoryEvents();
+  const provider = createSolanaRpcWalletHistoryProvider({
+    rpc: solanaRpc("native-swap", nativeSwapTransaction()),
+    market: market(),
+    events: eventStore,
+    pageSize: 10,
+  });
+  const result = await provider.collect(historyRequest("native-analysis"));
+
+  assert.equal(eventStore.events("native-analysis").length, 1);
+  assert.equal(result.positions.length, 1);
+});
+
 test("EVM history excludes an arbitrary ERC20 transfer without swap and quote evidence", async () => {
   const eventStore = memoryEvents();
   const rpc: AnalysisRpcClient = {
@@ -97,6 +126,55 @@ function solanaTransaction(includeQuote: boolean) {
       preTokenBalances: includeQuote ? [candidate("0"), quote("10")] : [candidate("0")],
       postTokenBalances: includeQuote ? [candidate("1"), quote("0")] : [candidate("1")],
     },
+  };
+}
+
+function claimTransaction() {
+  return {
+    transaction: { message: { accountKeys: [WALLET], instructions: [] } },
+    meta: {
+      fee: 5_000,
+      preBalances: [1_000_000_000],
+      postBalances: [999_995_000],
+      preTokenBalances: [{ accountIndex: 1, mint: TOKEN, owner: WALLET, uiTokenAmount: { amount: "0", decimals: 0 } }],
+      postTokenBalances: [{ accountIndex: 1, mint: TOKEN, owner: WALLET, uiTokenAmount: { amount: "1", decimals: 0 } }],
+    },
+  };
+}
+
+function nativeSwapTransaction() {
+  const program = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
+  return {
+    transaction: { message: { accountKeys: [WALLET, program], instructions: [{ programId: program }] } },
+    meta: {
+      fee: 5_000,
+      preBalances: [1_000_000_000, 0],
+      postBalances: [899_995_000, 0],
+      preTokenBalances: [{ accountIndex: 1, mint: TOKEN, owner: WALLET, uiTokenAmount: { amount: "0", decimals: 0 } }],
+      postTokenBalances: [{ accountIndex: 1, mint: TOKEN, owner: WALLET, uiTokenAmount: { amount: "1", decimals: 0 } }],
+    },
+  };
+}
+
+function solanaRpc(signature: string, transaction: unknown): AnalysisRpcClient {
+  return {
+    async request(_chain, method) {
+      if (method === "getSignaturesForAddress") return [{ signature, blockTime: 100 }];
+      if (method === "getTransaction") return transaction;
+      throw new Error(`unexpected ${method}`);
+    },
+  };
+}
+
+function historyRequest(analysisId: string) {
+  return {
+    analysisId,
+    address: WALLET,
+    from: 90_000,
+    to: 110_000,
+    limit: 300,
+    cursor: null,
+    signal: new AbortController().signal,
   };
 }
 

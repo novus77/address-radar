@@ -1,4 +1,9 @@
-import type { DiscoveryChain, TokenMarketProvider } from "@address-radar/collectors";
+import {
+  extractSolanaSwapEvidence,
+  type DiscoveryChain,
+  type SolanaSwapTransaction,
+  type TokenMarketProvider,
+} from "@address-radar/collectors";
 import type { MonitoredWallet } from "@address-radar/identity";
 
 import type {
@@ -13,14 +18,6 @@ type EvmChain = Exclude<DiscoveryChain, "solana">;
 
 const TRANSFER_TOPIC = "0xddf252ad";
 const SWAP_TOPIC_PREFIXES = ["0xd78ad95f", "0xc42079f9"];
-const SOLANA_USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-const SOLANA_USDT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
-const SOLANA_QUOTES = new Set([SOLANA_USDC, SOLANA_USDT]);
-const KNOWN_SOLANA_SWAP_PROGRAMS = new Set([
-  "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
-  "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzG3bC4iY6n",
-  "675kPX9MHTjS2zt1qfr1NYHuzeTHKq9gXQDA8T3o1ut",
-]);
 
 const EVM_QUOTES: Readonly<Partial<Record<EvmChain, ReadonlySet<string>>>> = {
   eth: new Set([
@@ -204,7 +201,7 @@ async function collectSolanaWallet(input: {
     const transaction = await input.rpc.request("solana", "getTransaction", [
       signature.signature,
       { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 },
-    ], input.signal) as SolanaTransaction | null;
+    ], input.signal) as (SolanaSwapTransaction & { readonly blockTime?: number | null }) | null;
     const extracted = await solanaSwapEvents({
       wallet: input.wallet,
       signature: signature.signature,
@@ -244,27 +241,17 @@ async function collectSolanaWallet(input: {
 async function solanaSwapEvents(input: {
   readonly wallet: MonitoredWallet;
   readonly signature: string;
-  readonly transaction: SolanaTransaction | null;
+  readonly transaction: SolanaSwapTransaction | null;
   readonly market: TokenMarketProvider | undefined;
   readonly occurredAt: number;
 }) {
-  const deltas = solanaTokenDeltas(input.transaction, input.wallet.address);
-  const nativeDelta = solanaNativeDelta(input.transaction, input.wallet.address);
-  const candidateDeltas = deltas.filter((delta) => !SOLANA_QUOTES.has(delta.mint));
-  const quoteDeltas = deltas.filter((delta) => SOLANA_QUOTES.has(delta.mint));
-  const programEvidence = solanaProgramIds(input.transaction).some((program) => KNOWN_SOLANA_SWAP_PROGRAMS.has(program));
-  const hasOpposingQuote = (candidate: SolanaDelta) =>
-    quoteDeltas.some((quote) => Math.sign(quote.amount) === -Math.sign(candidate.amount))
-    || (nativeDelta !== 0 && Math.sign(nativeDelta) === -Math.sign(candidate.amount));
-  const hasTwoLegProgramSwap = programEvidence
-    && [...deltas.map((delta) => delta.amount), nativeDelta].some((amount) => amount > 0)
-    && [...deltas.map((delta) => delta.amount), nativeDelta].some((amount) => amount < 0);
+  const evidence = extractSolanaSwapEvidence(input.transaction, input.wallet.address);
   const events: WalletCollectorEvent[] = [];
 
-  for (const delta of candidateDeltas) {
-    if (!hasOpposingQuote(delta) && !hasTwoLegProgramSwap) continue;
+  for (const delta of evidence.candidateDeltas) {
+    if (!evidence.supportsSwap(delta)) continue;
     const snapshot = input.market ? await input.market.lookup("solana", delta.mint) : null;
-    const stableQuote = quoteDeltas.find((quote) => Math.sign(quote.amount) === -Math.sign(delta.amount));
+    const stableQuote = evidence.stableQuoteDeltas.find((quote) => Math.sign(quote.amount) === -Math.sign(delta.amount));
     const amountUsd = stableQuote ? Math.abs(stableQuote.amount)
       : snapshot?.priceUsd === null || snapshot?.priceUsd === undefined
         ? null
@@ -282,7 +269,7 @@ async function solanaSwapEvents(input: {
       sourceReference: `solana:${input.signature}`,
     });
   }
-  return { events, hadCandidateDelta: candidateDeltas.length > 0 };
+  return { events, hadCandidateDelta: evidence.candidateDeltas.length > 0 };
 }
 
 async function evmSwapEvents(input: {
@@ -382,46 +369,6 @@ function parseBlockCheckpoint(value: string | null): number | null {
   }
 }
 
-function solanaTokenDeltas(transaction: SolanaTransaction | null, wallet: string): SolanaDelta[] {
-  const previous = new Map<number, { mint: string; amount: number }>();
-  for (const balance of transaction?.meta?.preTokenBalances ?? []) {
-    if (balance.owner === wallet) previous.set(balance.accountIndex, {
-      mint: balance.mint,
-      amount: tokenAmount(balance),
-    });
-  }
-  const result: SolanaDelta[] = [];
-  for (const balance of transaction?.meta?.postTokenBalances ?? []) {
-    if (balance.owner !== wallet) continue;
-    const before = previous.get(balance.accountIndex);
-    const amount = tokenAmount(balance) - (before?.amount ?? 0);
-    if (amount !== 0) result.push({ accountIndex: balance.accountIndex, mint: balance.mint, amount });
-    previous.delete(balance.accountIndex);
-  }
-  for (const [accountIndex, before] of previous) {
-    if (before.amount !== 0) result.push({ accountIndex, mint: before.mint, amount: -before.amount });
-  }
-  return result;
-}
-
-function solanaNativeDelta(transaction: SolanaTransaction | null, wallet: string): number {
-  const keys = transaction?.transaction?.message?.accountKeys ?? [];
-  const index = keys.findIndex((key) => (typeof key === "string" ? key : key.pubkey) === wallet);
-  if (index < 0) return 0;
-  return ((transaction?.meta?.postBalances?.[index] ?? 0) - (transaction?.meta?.preBalances?.[index] ?? 0)) / 1_000_000_000;
-}
-
-function solanaProgramIds(transaction: SolanaTransaction | null): string[] {
-  const keys = transaction?.transaction?.message?.accountKeys ?? [];
-  const direct = keys.flatMap((key) => typeof key === "string" ? [] : key.signer ? [] : [key.pubkey]);
-  const instructions = transaction?.transaction?.message?.instructions ?? [];
-  return [...direct, ...instructions.flatMap((instruction) => instruction.programId ? [instruction.programId] : [])];
-}
-
-function tokenAmount(balance: SolanaTokenBalance): number {
-  return balance.uiTokenAmount.uiAmount
-    ?? Number(balance.uiTokenAmount.amount ?? 0) / 10 ** (balance.uiTokenAmount.decimals ?? 0);
-}
 
 function topicAddress(topic: string): string {
   return `0x${topic.slice(-40)}`.toLowerCase();
@@ -441,32 +388,6 @@ function hexBigInt(value: unknown): bigint {
 interface SolanaSignature {
   readonly signature: string;
   readonly blockTime?: number | null;
-}
-interface SolanaTokenBalance {
-  readonly accountIndex: number;
-  readonly mint: string;
-  readonly owner?: string;
-  readonly uiTokenAmount: { readonly uiAmount?: number | null; readonly amount?: string; readonly decimals?: number };
-}
-interface SolanaTransaction {
-  readonly blockTime?: number | null;
-  readonly transaction?: {
-    readonly message?: {
-      readonly accountKeys?: readonly (string | { readonly pubkey: string; readonly signer?: boolean })[];
-      readonly instructions?: readonly { readonly programId?: string }[];
-    };
-  };
-  readonly meta?: {
-    readonly preBalances?: readonly number[];
-    readonly postBalances?: readonly number[];
-    readonly preTokenBalances?: readonly SolanaTokenBalance[];
-    readonly postTokenBalances?: readonly SolanaTokenBalance[];
-  } | null;
-}
-interface SolanaDelta {
-  readonly accountIndex: number;
-  readonly mint: string;
-  readonly amount: number;
 }
 interface EvmBlock {
   readonly timestamp?: string;

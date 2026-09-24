@@ -117,6 +117,41 @@ test("Solana transfer-only balance changes are skipped with a diagnostic", async
   assert.equal(result.diagnostics?.[0]?.reason, "insufficient_swap_evidence");
 });
 
+test("Solana claim plus fee-only native decrease is not treated as a buy", async () => {
+  const rpc: WalletRpcClient = {
+    async request(_chain, method) {
+      if (method === "getSignaturesForAddress") return [{ signature: "claim", blockTime: 100 }];
+      if (method === "getTransaction") return claimTransaction();
+      throw new Error(`unexpected ${method}`);
+    },
+  };
+  const result = await createSolanaWalletCollector({ rpc, batchSize: 1 }).collect({
+    wallets: wallets(1),
+    checkpoint: () => null,
+    signal: new AbortController().signal,
+  });
+
+  assert.equal(result.partitions.flatMap((partition) => partition.events).length, 0);
+  assert.equal(result.diagnostics?.[0]?.reason, "insufficient_swap_evidence");
+});
+
+test("Solana native swap recognizes a fee-adjusted SOL leg only with a known swap program", async () => {
+  const rpc: WalletRpcClient = {
+    async request(_chain, method) {
+      if (method === "getSignaturesForAddress") return [{ signature: "native-swap", blockTime: 100 }];
+      if (method === "getTransaction") return nativeSwapTransaction();
+      throw new Error(`unexpected ${method}`);
+    },
+  };
+  const result = await createSolanaWalletCollector({ rpc, batchSize: 1 }).collect({
+    wallets: wallets(1),
+    checkpoint: () => null,
+    signal: new AbortController().signal,
+  });
+
+  assert.deepEqual(result.partitions.flatMap((partition) => partition.events).map((event) => event.side), ["buy"]);
+});
+
 function swapTransaction(signature: string, blockTime: number) {
   return {
     blockTime,
@@ -144,6 +179,39 @@ function transferTransaction() {
     meta: {
       preBalances: [1_000_000_000],
       postBalances: [1_000_000_000],
+      preTokenBalances: [tokenBalance(1, TOKEN, "wallet-0", 0)],
+      postTokenBalances: [tokenBalance(1, TOKEN, "wallet-0", 1)],
+    },
+  };
+}
+
+function claimTransaction() {
+  return {
+    blockTime: 100,
+    transaction: { message: { accountKeys: ["wallet-0"], instructions: [] } },
+    meta: {
+      fee: 5_000,
+      preBalances: [1_000_000_000],
+      postBalances: [999_995_000],
+      preTokenBalances: [tokenBalance(1, TOKEN, "wallet-0", 0)],
+      postTokenBalances: [tokenBalance(1, TOKEN, "wallet-0", 1)],
+    },
+  };
+}
+
+function nativeSwapTransaction() {
+  return {
+    blockTime: 100,
+    transaction: {
+      message: {
+        accountKeys: ["wallet-0", "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"],
+        instructions: [{ programId: "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4" }],
+      },
+    },
+    meta: {
+      fee: 5_000,
+      preBalances: [1_000_000_000, 0],
+      postBalances: [899_995_000, 0],
       preTokenBalances: [tokenBalance(1, TOKEN, "wallet-0", 0)],
       postTokenBalances: [tokenBalance(1, TOKEN, "wallet-0", 1)],
     },
