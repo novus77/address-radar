@@ -1,4 +1,6 @@
 import {
+  CANDIDATE_ADMISSION_WINDOW_MS,
+  evaluateCandidateAdmission,
   evidenceAdmissionClass,
   type CandidateEvidenceType,
 } from "@address-radar/scoring"
@@ -53,15 +55,19 @@ export const createCandidateAdmissionService = (input: { readonly repository: Ad
     const evidence = strongestCandidateEvidenceByToken(
       input.repository.candidateDiscoveries(request.accountId),
     )
-    const strongTokenCount = evidence.filter(
-      (item) => evidenceAdmissionClass(item.discoveryType) === "strong",
-    ).length
-    const earlyTokenCount = evidence.length - strongTokenCount
-    const admitted = strongTokenCount >= 1 || earlyTokenCount >= 2
+    const snapshot = evaluateCandidateAdmission(evidence.map(item => ({
+      tokenKey: item.tokenKey,
+      evidenceType: item.discoveryType,
+      evidenceAt: item.discovery.discoveredAt,
+    })), request.observedAt)
+    const admitted = snapshot.currentAdmission
 
     if (admitted) {
       input.repository.activateDiscoveredCandidate(request.accountId, request.observedAt)
-      const strongest = evidence[0]
+      const strongest = evidence.find(item => (
+        item.discovery.discoveredAt >= request.observedAt - CANDIDATE_ADMISSION_WINDOW_MS
+        && item.discovery.discoveredAt <= request.observedAt
+      ))
       const account = input.repository.account(request.accountId)
       if (strongest && account) {
         input.repository.enqueueIdentityResolution({
@@ -77,9 +83,13 @@ export const createCandidateAdmissionService = (input: { readonly repository: Ad
     return Object.freeze({
       admitted,
       distinctTokenCount: evidence.length,
-      earlyTokenCount,
-      strongTokenCount,
+      earlyTokenCount: snapshot.earlyDistinctTokenCount,
+      strongTokenCount: snapshot.strongDistinctTokenCount,
       strongestEvidenceType: evidence[0]?.discoveryType ?? null,
+      historicalCapability: snapshot.historicalCapability,
+      status: snapshot.status,
+      windowStart: snapshot.windowStart,
+      windowEnd: snapshot.windowEnd,
     })
   },
 })

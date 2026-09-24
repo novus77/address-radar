@@ -8,6 +8,10 @@ export type {
   CandidateEvidenceAdmissionClass, CandidateEvidenceTier, CandidateEvidenceType,
   CandidateMilestoneDefinition,
 } from "./candidate-tier-policy.js";
+export { CANDIDATE_ADMISSION_WINDOW_MS, evaluateCandidateAdmission } from "./candidate-admission-policy.js";
+export type {
+  CandidateAdmissionSnapshot, CandidateAdmissionStatus, CandidateEvidenceFact,
+} from "./candidate-admission-policy.js";
 export { ADDRESS_SCORE_V1_WEIGHTS, ADDRESS_SCORE_V2_WEIGHTS, scoreTrader, scoreTraderAbility } from "./scoring.js";
 export type { TraderAbilityScore, TraderAbilityScoreInput, TraderPerformanceMetrics, TraderScore } from "./scoring.js";
 export { classifyTraderStyles } from "./style-classifier.js";

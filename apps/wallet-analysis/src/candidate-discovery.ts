@@ -3,6 +3,8 @@ import type { AddressRadarRepository } from "@address-radar/database";
 import { createCandidateAdmissionService } from "@address-radar/identity";
 import { CANDIDATE_MILESTONES, strongestSatisfiedTier, type CandidateEvidenceType } from "@address-radar/scoring";
 
+const MINIMUM_CANDIDATE_BUY_USD = 50;
+
 export interface CandidateDiscoveryResult {
   readonly accountId: string;
   readonly discoveryType: CandidateEvidenceType;
@@ -25,7 +27,7 @@ export function createCandidateDiscoveryService(input: { readonly repository: Ad
         for (const buy of buys) byAccount.set(buy.accountId, [...(byAccount.get(buy.accountId) ?? []), buy]);
         for (const [accountId, accountBuys] of byAccount) {
           const amount = accountBuys.reduce((sum, buy) => sum + buy.amountUsd!, 0);
-          if (amount < 100) continue;
+          if (amount < MINIMUM_CANDIDATE_BUY_USD) continue;
           const weightedEntryMarketCapUsd = accountBuys.reduce((sum, buy) => sum + buy.marketCapUsd! * buy.amountUsd!, 0) / amount;
           const maximumOpportunity = milestone.marketCapUsd / weightedEntryMarketCapUsd;
           const tier = strongestSatisfiedTier(milestone.marketCapUsd, maximumOpportunity);
