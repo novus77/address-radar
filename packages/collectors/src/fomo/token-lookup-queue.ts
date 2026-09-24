@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readFile, stat } from "node:fs/promises";
 
 import { atomicWrite, durableAppend, durableRemove, readText, withExclusiveFileLock, type FileLockOptions } from "./durable-file.js";
 
@@ -35,10 +36,32 @@ export interface FomoTokenLookupResult {
   readonly cursor?: string;
 }
 
-interface LookupCursor { version: 1; lineNumber: number; attempts: number }
-interface LookupClaim { readonly version: 1; readonly ownerId: string; readonly expiresAt: number; readonly lease: FomoTokenLookupLease }
+interface LookupCursor {
+  readonly version: 1;
+  lineNumber: number;
+  attempts: number;
+  byteOffset?: number;
+  generation?: string;
+  prefixHash?: string;
+}
+
+interface LookupClaim {
+  readonly version: 1;
+  readonly ownerId: string;
+  readonly expiresAt: number;
+  readonly generation: string;
+  readonly byteOffset: number;
+  readonly nextByteOffset: number;
+  readonly leaseId: string;
+  readonly lease: FomoTokenLookupLease;
+}
+
+interface QueueSnapshot { readonly buffer: Buffer; readonly generation: string }
 
 const validInteger = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+const hash = (value: Uint8Array): string => createHash("sha256").update(value).digest("base64url");
+const generationOf = (value: { readonly dev: number | bigint; readonly ino: number | bigint }): string => `${value.dev}:${value.ino}`;
+const leaseHash = (generation: string, byteOffset: number, nextByteOffset: number, bytes: Uint8Array): string => createHash("sha256").update(`${generation}:${byteOffset}:${nextByteOffset}:`).update(bytes).digest("base64url");
 
 function normalizedToken(chainId: string, tokenAddress: string) {
   const chain = chainId.trim().toLowerCase();
@@ -69,22 +92,32 @@ function parseRequest(line: string): FomoTokenLookupRequest | null {
   } catch { return null; }
 }
 
-const parseCursor = (text: string): LookupCursor => {
+const parseCursor = (text: string): LookupCursor | null => {
   try {
     const value = JSON.parse(text) as Partial<LookupCursor>;
-    if (value.version === 1 && validInteger(value.lineNumber) && validInteger(value.attempts)) return value as LookupCursor;
+    if (value.version === 1 && validInteger(value.lineNumber) && validInteger(value.attempts) && (value.byteOffset === undefined || validInteger(value.byteOffset))) return value as LookupCursor;
   } catch { /* Replay from the beginning. */ }
-  return { version: 1, lineNumber: 0, attempts: 0 };
+  return null;
 };
 
 const parseClaim = (text: string): LookupClaim | null => {
   try {
     const value = JSON.parse(text) as Partial<LookupClaim>;
-    return value.version === 1 && typeof value.ownerId === "string" && validInteger(value.expiresAt) && value.lease !== undefined ? value as LookupClaim : null;
+    return value.version === 1 && typeof value.ownerId === "string" && validInteger(value.expiresAt) && typeof value.generation === "string" && validInteger(value.byteOffset) && validInteger(value.nextByteOffset) && typeof value.leaseId === "string" && value.lease !== undefined ? value as LookupClaim : null;
   } catch { return null; }
 };
 
 const cursorValue = (cursor: LookupCursor): string => `${JSON.stringify(cursor)}\n`;
+
+function legacyByteOffset(buffer: Buffer, lineNumber: number): number | null {
+  let byteOffset = 0;
+  for (let line = 0; line < lineNumber; line += 1) {
+    const newlineIndex = buffer.indexOf(0x0a, byteOffset);
+    if (newlineIndex < 0) return null;
+    byteOffset = newlineIndex + 1;
+  }
+  return byteOffset;
+}
 
 export class FomoTokenLookupProducer {
   readonly #filePath: string;
@@ -154,24 +187,40 @@ export class FomoTokenLookupConsumer {
 
   next(): Promise<FomoTokenLookupLease | null> {
     return this.#locked(async () => {
-      const existingClaim = parseClaim(await readText(this.#claimPath));
+      const claimText = await readText(this.#claimPath);
+      const existingClaim = parseClaim(claimText);
       if (existingClaim && existingClaim.expiresAt > this.#now()) return existingClaim.ownerId === this.#ownerId ? existingClaim.lease : null;
-      if (existingClaim) await durableRemove(this.#claimPath);
-      const cursor = parseCursor(await readText(this.#cursorPath));
-      const lines = (await readText(this.#filePath)).split("\n");
-      while (cursor.lineNumber < lines.length) {
-        const line = lines[cursor.lineNumber];
-        if (!line?.trim()) return null;
-        const request = parseRequest(line);
+      if (claimText) await durableRemove(this.#claimPath);
+      let snapshot: QueueSnapshot;
+      try { snapshot = await this.#snapshot(); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      }
+      let cursor = await this.#resolvedCursor(snapshot);
+      while (cursor.byteOffset! < snapshot.buffer.length) {
+        const newlineIndex = snapshot.buffer.indexOf(0x0a, cursor.byteOffset!);
+        if (newlineIndex < 0) return null;
+        const nextByteOffset = newlineIndex + 1;
+        const bytes = snapshot.buffer.subarray(cursor.byteOffset!, nextByteOffset);
+        const request = parseRequest(bytes.subarray(0, bytes.length - 1).toString("utf8"));
         if (request) {
           const lease = Object.freeze({ lineNumber: cursor.lineNumber, request });
-          const claim: LookupClaim = { version: 1, ownerId: this.#ownerId, expiresAt: this.#now() + this.#claimTtlMs, lease };
+          const claim: LookupClaim = {
+            version: 1,
+            ownerId: this.#ownerId,
+            expiresAt: this.#now() + this.#claimTtlMs,
+            generation: snapshot.generation,
+            byteOffset: cursor.byteOffset!,
+            nextByteOffset,
+            leaseId: leaseHash(snapshot.generation, cursor.byteOffset!, nextByteOffset, bytes),
+            lease,
+          };
           await atomicWrite(this.#claimPath, `${JSON.stringify(claim)}\n`);
           return lease;
         }
-        cursor.lineNumber += 1;
-        cursor.attempts = 0;
-        await atomicWrite(this.#cursorPath, cursorValue(cursor));
+        cursor = { version: 1, lineNumber: cursor.lineNumber + 1, attempts: 0, byteOffset: nextByteOffset, generation: snapshot.generation, prefixHash: hash(snapshot.buffer.subarray(0, nextByteOffset)) };
+        await this.#persistCursor(cursor);
       }
       return null;
     });
@@ -180,11 +229,13 @@ export class FomoTokenLookupConsumer {
   complete(lease: FomoTokenLookupLease): Promise<void> {
     return this.#locked(async () => {
       const claim = parseClaim(await readText(this.#claimPath));
-      const cursor = parseCursor(await readText(this.#cursorPath));
-      if (!this.#owns(claim, lease) || cursor.lineNumber !== lease.lineNumber) return;
-      cursor.lineNumber += 1;
-      cursor.attempts = 0;
-      await atomicWrite(this.#cursorPath, cursorValue(cursor));
+      if (!this.#owns(claim, lease)) return;
+      const state = await this.#verifiedClaimState(claim!);
+      if (!state) {
+        await durableRemove(this.#claimPath);
+        return;
+      }
+      await this.#persistCursor({ version: 1, lineNumber: lease.lineNumber + 1, attempts: 0, byteOffset: claim!.nextByteOffset, generation: state.snapshot.generation, prefixHash: hash(state.snapshot.buffer.subarray(0, claim!.nextByteOffset)) });
       await durableRemove(this.#claimPath);
     });
   }
@@ -192,19 +243,71 @@ export class FomoTokenLookupConsumer {
   fail(lease: FomoTokenLookupLease): Promise<{ readonly discarded: boolean; readonly attempts: number }> {
     return this.#locked(async () => {
       const claim = parseClaim(await readText(this.#claimPath));
-      const cursor = parseCursor(await readText(this.#cursorPath));
-      if (!this.#owns(claim, lease) || cursor.lineNumber !== lease.lineNumber) return Object.freeze({ discarded: false, attempts: cursor.attempts });
-      cursor.attempts += 1;
-      const result = { discarded: cursor.attempts >= this.#maxAttempts, attempts: cursor.attempts };
-      if (result.discarded) { cursor.lineNumber += 1; cursor.attempts = 0; }
-      await atomicWrite(this.#cursorPath, cursorValue(cursor));
+      if (!this.#owns(claim, lease)) {
+        const cursor = parseCursor(await readText(this.#cursorPath));
+        return Object.freeze({ discarded: false, attempts: cursor?.attempts ?? 0 });
+      }
+      const state = await this.#verifiedClaimState(claim!);
+      if (!state) {
+        await durableRemove(this.#claimPath);
+        return Object.freeze({ discarded: false, attempts: 0 });
+      }
+      const attempts = state.cursor.attempts + 1;
+      const discarded = attempts >= this.#maxAttempts;
+      const byteOffset = discarded ? claim!.nextByteOffset : claim!.byteOffset;
+      await this.#persistCursor({
+        version: 1,
+        lineNumber: discarded ? lease.lineNumber + 1 : lease.lineNumber,
+        attempts: discarded ? 0 : attempts,
+        byteOffset,
+        generation: state.snapshot.generation,
+        prefixHash: hash(state.snapshot.buffer.subarray(0, byteOffset)),
+      });
       await durableRemove(this.#claimPath);
-      return Object.freeze(result);
+      return Object.freeze({ discarded, attempts });
     });
   }
 
   #owns(claim: LookupClaim | null, lease: FomoTokenLookupLease): boolean {
     return claim?.ownerId === this.#ownerId && claim.lease.lineNumber === lease.lineNumber && claim.lease.request.lookupId === lease.request.lookupId;
+  }
+
+  async #snapshot(): Promise<QueueSnapshot> {
+    const [metadata, buffer] = await Promise.all([stat(this.#filePath), readFile(this.#filePath)]);
+    return { buffer, generation: generationOf(metadata) };
+  }
+
+  async #resolvedCursor(snapshot: QueueSnapshot): Promise<LookupCursor> {
+    const persisted = parseCursor(await readText(this.#cursorPath));
+    if (!persisted) return { version: 1, lineNumber: 0, attempts: 0, byteOffset: 0, generation: snapshot.generation, prefixHash: hash(new Uint8Array()) };
+    const byteOffset = persisted.byteOffset ?? legacyByteOffset(snapshot.buffer, persisted.lineNumber);
+    const validBoundary = byteOffset !== null && (byteOffset === 0 || byteOffset <= snapshot.buffer.length && snapshot.buffer[byteOffset - 1] === 0x0a);
+    const validPrefix = byteOffset !== null && (persisted.prefixHash === undefined || persisted.prefixHash === hash(snapshot.buffer.subarray(0, byteOffset)));
+    if (persisted.generation !== undefined && persisted.generation !== snapshot.generation || !validBoundary || !validPrefix) {
+      const reset: LookupCursor = { version: 1, lineNumber: 0, attempts: 0, byteOffset: 0, generation: snapshot.generation, prefixHash: hash(new Uint8Array()) };
+      await this.#persistCursor(reset);
+      return reset;
+    }
+    const resolved: LookupCursor = { ...persisted, byteOffset: byteOffset!, generation: snapshot.generation, prefixHash: hash(snapshot.buffer.subarray(0, byteOffset!)) };
+    if (persisted.byteOffset === undefined || persisted.generation === undefined || persisted.prefixHash === undefined) await this.#persistCursor(resolved);
+    return resolved;
+  }
+
+  async #verifiedClaimState(claim: LookupClaim): Promise<{ readonly snapshot: QueueSnapshot; readonly cursor: LookupCursor } | null> {
+    let snapshot: QueueSnapshot;
+    try { snapshot = await this.#snapshot(); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+    const cursor = await this.#resolvedCursor(snapshot);
+    const bytes = snapshot.buffer.subarray(claim.byteOffset, claim.nextByteOffset);
+    if (snapshot.generation !== claim.generation || cursor.lineNumber !== claim.lease.lineNumber || cursor.byteOffset !== claim.byteOffset || claim.nextByteOffset > snapshot.buffer.length || snapshot.buffer[claim.nextByteOffset - 1] !== 0x0a || leaseHash(claim.generation, claim.byteOffset, claim.nextByteOffset, bytes) !== claim.leaseId) return null;
+    return { snapshot, cursor };
+  }
+
+  #persistCursor(cursor: LookupCursor): Promise<void> {
+    return atomicWrite(this.#cursorPath, cursorValue(cursor));
   }
 
   #locked<T>(operation: () => Promise<T>): Promise<T> {

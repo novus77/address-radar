@@ -1,5 +1,5 @@
-import { mkdtemp, readFile, rename, utimes, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, utimes, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -9,6 +9,70 @@ import {
   FomoTokenLookupResultConsumer,
   FomoTokenLookupResultProducer,
 } from "@address-radar/collectors";
+import { atomicWrite, withExclusiveFileLock } from "../src/fomo/durable-file.js";
+
+const delay = (milliseconds: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+describe("durable file coordination", () => {
+  it("keeps a live long-running owner beyond staleMs and serializes reacquisition", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "durable-lock-"));
+    const lockPath = join(directory, "resource.lock");
+    let active = 0;
+    let maximumActive = 0;
+    let entered!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { entered = resolve; });
+    const operation = async (holdMs: number) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      if (holdMs > 0) entered();
+      await delay(holdMs);
+      active -= 1;
+    };
+
+    const first = withExclusiveFileLock(lockPath, () => operation(80), { staleMs: 15, timeoutMs: 300, retryDelayMs: 2 });
+    await firstEntered;
+    const metadata = JSON.parse(await readFile(lockPath, "utf8"));
+    expect(metadata).toMatchObject({ version: 1, pid: process.pid, hostname: hostname() });
+    const second = withExclusiveFileLock(lockPath, () => operation(0), { staleMs: 15, timeoutMs: 300, retryDelayMs: 2 });
+
+    await Promise.all([first, second]);
+    expect(maximumActive).toBe(1);
+  });
+
+  it("does not remove a replacement lock during release", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "durable-lock-"));
+    const lockPath = join(directory, "resource.lock");
+    const displacedPath = join(directory, "displaced.lock");
+
+    await expect(withExclusiveFileLock(lockPath, async () => {
+      await rename(lockPath, displacedPath);
+      await writeFile(lockPath, `${JSON.stringify({ version: 1, token: "replacement", pid: process.pid, hostname: hostname(), createdAt: Date.now() })}\n`);
+      return 42;
+    })).resolves.toBe(42);
+
+    expect(JSON.parse(await readFile(lockPath, "utf8"))).toMatchObject({ token: "replacement" });
+  });
+
+  it("surfaces release failure when the owned lock metadata is corrupted", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "durable-lock-"));
+    const lockPath = join(directory, "resource.lock");
+
+    await expect(withExclusiveFileLock(lockPath, async () => {
+      await writeFile(lockPath, "corrupted");
+      return 42;
+    })).rejects.toThrow("Owned lock metadata changed");
+    await rm(lockPath, { force: true });
+  });
+
+  it("removes its unique temporary file when atomic rename fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "atomic-write-"));
+    const target = join(directory, "cursor.json");
+    await mkdir(target);
+
+    await expect(atomicWrite(target, "value")).rejects.toThrow();
+    expect((await readdir(directory)).filter((name) => name.startsWith("cursor.json.") && name.endsWith(".tmp"))).toEqual([]);
+  });
+});
 
 describe("Fomo lookup queue", () => {
   it("deduplicates normalized requests across producer restarts", async () => {
@@ -81,6 +145,23 @@ describe("Fomo lookup queue", () => {
     await second.complete(recoveredLease);
     await first.complete(firstLease);
     expect(await new FomoTokenLookupConsumer({ filePath, cursorPath }).next()).toBeNull();
+  });
+
+  it("resets safely when the request queue is replaced by a shorter generation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "lookup-queue-"));
+    const filePath = join(directory, "lookups.jsonl");
+    const cursorPath = join(directory, "cursor.json");
+    await new FomoTokenLookupProducer({ filePath }).enqueue({ chainId: "base", tokenAddress: "0x111111111111111111", requestedAt: 1 });
+    const first = new FomoTokenLookupConsumer({ filePath, cursorPath });
+    const oldLease = (await first.next())!;
+    await first.complete(oldLease);
+
+    const replacement = join(directory, "replacement.jsonl");
+    await new FomoTokenLookupProducer({ filePath: replacement }).enqueue({ chainId: "base", tokenAddress: "0x2", requestedAt: 2 });
+    await rename(replacement, filePath);
+
+    const restarted = new FomoTokenLookupConsumer({ filePath, cursorPath });
+    expect((await restarted.next())?.request.tokenAddress).toBe("0x2");
   });
 
   it("preserves milestone pagination fields and rejects contradictory requests", async () => {
