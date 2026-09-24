@@ -28,6 +28,34 @@ importers:
         specifier: 4.1.11
         version: 4.1.11(@types/node@24.13.6)(vite@8.3.0(@types/node@24.13.6)(esbuild@0.28.2)(tsx@4.23.15))
 
+  apps/scanner:
+    dependencies:
+      '@address-radar/aggregation':
+        specifier: workspace:*
+        version: link:../../packages/aggregation
+      '@address-radar/database':
+        specifier: workspace:*
+        version: link:../../packages/database
+      '@address-radar/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@address-radar/observability':
+        specifier: workspace:*
+        version: link:../../packages/observability
+      '@address-radar/signal-engine':
+        specifier: workspace:*
+        version: link:../../packages/signal-engine
+
+  packages/aggregation:
+    dependencies:
+      '@address-radar/domain':
+        specifier: workspace:*
+        version: link:../domain
+    devDependencies:
+      '@address-radar/database':
+        specifier: workspace:*
+        version: link:../database
+
   packages/collectors:
     dependencies:
       '@address-radar/domain':
@@ -54,8 +82,22 @@ importers:
         specifier: workspace:*
         version: link:../scoring
 
+  packages/observability: {}
+
   packages/scoring:
     dependencies:
+      '@address-radar/domain':
+        specifier: workspace:*
+        version: link:../domain
+
+  packages/signal-engine:
+    dependencies:
+      '@address-radar/aggregation':
+        specifier: workspace:*
+        version: link:../aggregation
+      '@address-radar/database':
+        specifier: workspace:*
+        version: link:../database
       '@address-radar/domain':
         specifier: workspace:*
         version: link:../domain

@@ -9,6 +9,10 @@
     { "path": "./packages/database" },
     { "path": "./packages/identity" },
     { "path": "./packages/collectors" }
+    ,{ "path": "./packages/aggregation" }
+    ,{ "path": "./packages/signal-engine" }
+    ,{ "path": "./packages/observability" }
+    ,{ "path": "./apps/scanner" }
   ],
   "include": [
     "vitest.config.ts"

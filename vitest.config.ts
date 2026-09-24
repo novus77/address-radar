@@ -10,6 +10,9 @@ export default defineConfig({
       "@address-radar/identity": fileURLToPath(new URL("./packages/identity/src/index.ts", import.meta.url)),
       "@address-radar/scoring": fileURLToPath(new URL("./packages/scoring/src/index.ts", import.meta.url)),
       "@address-radar/collectors": fileURLToPath(new URL("./packages/collectors/src/index.ts", import.meta.url)),
+      "@address-radar/aggregation": fileURLToPath(new URL("./packages/aggregation/src/index.ts", import.meta.url)),
+      "@address-radar/signal-engine": fileURLToPath(new URL("./packages/signal-engine/src/index.ts", import.meta.url)),
+      "@address-radar/observability": fileURLToPath(new URL("./packages/observability/src/index.ts", import.meta.url)),
     },
   },
   test: {

@@ -1,0 +1,19 @@
+{
+  "name": "@address-radar/scanner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -p tsconfig.test.json --pretty false",
+    "test": "vitest run",
+    "start": "node dist/src/cli.js"
+  },
+  "dependencies": {
+    "@address-radar/aggregation": "workspace:*",
+    "@address-radar/database": "workspace:*",
+    "@address-radar/domain": "workspace:*",
+    "@address-radar/observability": "workspace:*",
+    "@address-radar/signal-engine": "workspace:*"
+  }
+}

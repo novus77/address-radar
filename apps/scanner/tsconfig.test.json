@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "rootDir": "../..",
+    "paths": {
+      "@address-radar/domain": ["../../packages/domain/src/index.ts"],
+      "@address-radar/database": ["../../packages/database/src/index.ts"],
+      "@address-radar/aggregation": ["../../packages/aggregation/src/index.ts"],
+      "@address-radar/signal-engine": ["../../packages/signal-engine/src/index.ts"],
+      "@address-radar/observability": ["../../packages/observability/src/index.ts"]
+    }
+  },
+  "references": [],
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}
