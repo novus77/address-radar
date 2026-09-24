@@ -18,7 +18,7 @@ export function createConfiguredWalletRpcClient(input: {
       if (signal.aborted) throw signal.reason ?? new Error("Aborted");
       const client = clients.get(chain);
       if (!client) throw new Error(`RPC chain is not configured: ${chain}`);
-      return client.request(method, params);
+      return client.request(method, params, signal);
     },
   };
   return Object.freeze(rpc);

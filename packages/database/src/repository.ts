@@ -83,6 +83,13 @@ export interface AutomaticIdentityConflict { readonly conflictId: string; readon
 export type AutomaticIdentityResolutionCompletion =
   | { readonly kind: "completed"; readonly entityId: string | null }
   | { readonly kind: "conflict"; readonly conflicts: readonly AutomaticIdentityConflict[] };
+export type WalletAnalysisReviewDecision =
+  | { readonly decision: "accept"; readonly analysisId: string; readonly entityId: string; readonly reviewedAt: number; readonly account?: { readonly accountId: string; readonly handle: string } }
+  | { readonly decision: "reject"; readonly analysisId: string; readonly reviewedAt: number };
+export type WalletAnalysisReviewResult =
+  | { readonly status: "accepted"; readonly entityId: string }
+  | { readonly status: "rejected" }
+  | { readonly status: "conflict"; readonly conflictingEntityId: string; readonly conflictingAccountId?: string };
 
 export interface AddressRadarRepository extends TokenAggregationRepository, RuntimeQualityRepository {
   upsertFomoAccount(input: FomoAccountInput): void;
@@ -174,6 +181,7 @@ export interface AddressRadarRepository extends TokenAggregationRepository, Runt
   createIdentityConflict(input: IdentityConflictRecord): void;
   identityConflicts(status?: IdentityConflictRecord["status"]): readonly IdentityConflictRecord[];
   resolveIdentityConflict(input: { readonly conflictId: string; readonly decision: "accepted" | "rejected"; readonly resolution: string; readonly occurredAt: number }): IdentityConflictRecord | null;
+  reviewWalletAnalysisDecision(input: WalletAnalysisReviewDecision): WalletAnalysisReviewResult;
   recordOperatorAudit(input: { readonly auditId: string; readonly action: string; readonly actor: string; readonly payload: unknown; readonly occurredAt: number }): void;
   runInTransaction<T>(operation: () => T): T;
   close(): void;
@@ -237,10 +245,14 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     const facts = database.prepare(`
       SELECT e.lifecycle,
         EXISTS(SELECT 1 FROM trader_ability_snapshots a WHERE a.entity_id = e.entity_id) AS hasAbility,
-        EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id AND ea.confidence = 'confirmed') AS mapped,
+        (EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id AND ea.confidence = 'confirmed')
+          OR EXISTS(SELECT 1 FROM entity_wallet_identities ew WHERE ew.entity_id = e.entity_id AND ew.confidence = 'confirmed')) AS mapped,
         EXISTS(
           SELECT 1 FROM entity_accounts ea JOIN wallet_identities w ON w.account_id = ea.account_id
           WHERE ea.entity_id = e.entity_id AND ea.confidence = 'confirmed' AND w.confidence = 'confirmed'
+        ) OR EXISTS(
+          SELECT 1 FROM entity_wallet_identities ew
+          WHERE ew.entity_id = e.entity_id AND ew.confidence = 'confirmed'
         ) AS hasWallet
       FROM trader_entities e WHERE e.entity_id = ?
     `).get(entityId) as { lifecycle: TraderLifecycle; hasAbility: number; mapped: number; hasWallet: number } | undefined;
@@ -288,6 +300,34 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     database.prepare("UPDATE monitoring_registry_state SET version = version + 1, updated_at = ? WHERE singleton = 1").run(occurredAt);
     synchronizeTraderSignalProfile(entity.entityId, occurredAt);
     return entity.entityId;
+  };
+
+  const admitDirectEntityWalletInTransaction = (entityId: string, chainFamily: "solana" | "evm", rawAddress: string, occurredAt: number): void => {
+    const address = normalizeWalletAddress(chainFamily, rawAddress);
+    const entity = database.prepare("SELECT lifecycle FROM trader_entities WHERE entity_id = ?").get(entityId) as { lifecycle: TraderEntityInput["lifecycle"] } | undefined;
+    if (!entity) throw new Error(`Trader entity not found: ${entityId}`);
+    database.prepare(`
+      INSERT INTO entity_wallet_identities(entity_id, chain_family, address, confidence, source, first_observed_at, last_observed_at)
+      VALUES (?, ?, ?, 'confirmed', 'wallet_analysis_review', ?, ?)
+      ON CONFLICT(entity_id, chain_family, address) DO UPDATE SET
+        confidence = 'confirmed', source = excluded.source,
+        last_observed_at = MAX(entity_wallet_identities.last_observed_at, excluded.last_observed_at)
+    `).run(entityId, chainFamily, address, occurredAt, occurredAt);
+    const nextLifecycle = entity.lifecycle === "candidate" || entity.lifecycle === "suspended" ? "probation" : entity.lifecycle;
+    if (nextLifecycle !== entity.lifecycle) {
+      database.prepare("UPDATE trader_entities SET lifecycle = ?, updated_at = ? WHERE entity_id = ?").run(nextLifecycle, occurredAt, entityId);
+      database.prepare(`
+        INSERT OR IGNORE INTO trader_lifecycle_events(
+          lifecycle_event_id, entity_id, previous_state, next_state, reasons, strategy_version, occurred_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(`wallet-admission:${entityId}:${occurredAt}`, entityId, entity.lifecycle, nextLifecycle, JSON.stringify(["wallet_identity_confirmed"]), "wallet-analysis-review-v1", occurredAt);
+    }
+    synchronizeTraderSignalProfile(entityId, occurredAt);
+    database.prepare(`
+      INSERT OR IGNORE INTO monitoring_registry_outbox(event_id, entity_id, event_type, payload, status, created_at, published_at)
+      VALUES (?, ?, 'identity.updated', ?, 'published', ?, ?)
+    `).run(`wallet-registry:${entityId}:${occurredAt}`, entityId, JSON.stringify({ entityId, chainFamily, address, lifecycle: nextLifecycle }), occurredAt, occurredAt);
+    database.prepare("UPDATE monitoring_registry_state SET version = version + 1, updated_at = ? WHERE singleton = 1").run(occurredAt);
   };
 
   const completeIdentityResolutionInTransaction = (handle: string, accountId: string, occurredAt: number): string | null => {
@@ -1542,6 +1582,71 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
           .run(input.decision, input.occurredAt, input.resolution, input.conflictId);
       });
       return repository.identityConflicts().find(item => item.conflictId === input.conflictId) ?? null;
+    },
+
+    reviewWalletAnalysisDecision(input) {
+      assertId(input.analysisId, "analysisId");
+      assertTimestamp(input.reviewedAt, "reviewedAt");
+      return transaction(() => {
+        const job = database.prepare(`
+          SELECT analysis_id AS analysisId, chain_family AS chainFamily, address, status
+          FROM wallet_analysis_jobs WHERE analysis_id = ?
+        `).get(input.analysisId) as { analysisId: string; chainFamily: "solana" | "evm"; address: string; status: string } | undefined;
+        if (!job) throw new Error("Wallet analysis not found");
+        if (job.status !== "review_required") {
+          if (input.decision === "accept" && job.status === "accepted") return Object.freeze({ status: "accepted" as const, entityId: input.entityId });
+          if (input.decision === "reject" && job.status === "rejected") return Object.freeze({ status: "rejected" as const });
+          throw new Error(`Wallet analysis decision already finalized as ${job.status}`);
+        }
+        if (input.decision === "reject") {
+          const updated = database.prepare("UPDATE wallet_analysis_jobs SET status = 'rejected', reviewed_at = ?, updated_at = ? WHERE analysis_id = ? AND status = 'review_required'").run(input.reviewedAt, input.reviewedAt, input.analysisId);
+          if (updated.changes !== 1) throw new Error("Concurrent wallet analysis decision");
+          repository.recordOperatorAudit({ auditId: `wallet-analysis-reject:${input.analysisId}`, action: "wallet_analysis.reject", actor: "developer", payload: { analysisId: input.analysisId }, occurredAt: input.reviewedAt });
+          return Object.freeze({ status: "rejected" as const });
+        }
+
+        assertId(input.entityId, "entityId");
+        const address = normalizeWalletAddress(job.chainFamily, job.address);
+        const directOwner = database.prepare("SELECT entity_id AS entityId FROM entity_wallet_identities WHERE chain_family = ? AND address = ?").get(job.chainFamily, address) as { entityId: string } | undefined;
+        const rawAccountOwner = database.prepare("SELECT account_id AS accountId FROM wallet_identities WHERE chain_family = ? AND address = ? ORDER BY confidence DESC, first_observed_at LIMIT 1").get(job.chainFamily, address) as { accountId: string } | undefined;
+        const accountOwner = database.prepare(`
+          SELECT ea.entity_id AS entityId, w.account_id AS accountId
+          FROM wallet_identities w JOIN entity_accounts ea ON ea.account_id = w.account_id
+          WHERE w.chain_family = ? AND w.address = ? ORDER BY w.confidence DESC LIMIT 1
+        `).get(job.chainFamily, address) as { entityId: string; accountId: string } | undefined;
+        if (input.account && rawAccountOwner && rawAccountOwner.accountId !== input.account.accountId) {
+          repository.upsertFomoAccount({ accountId: input.account.accountId, handle: input.account.handle, firstSeenAt: input.reviewedAt, lastSeenAt: input.reviewedAt });
+          repository.createIdentityConflict({ conflictId: `wallet-analysis-conflict:${input.analysisId}:${rawAccountOwner.accountId}`, handle: input.account.handle, accountId: input.account.accountId, chainFamily: job.chainFamily, address, conflictingAccountId: rawAccountOwner.accountId, status: "pending", payload: { analysisId: input.analysisId, source: "wallet_analysis_review" }, createdAt: input.reviewedAt, resolvedAt: null, resolution: null });
+          return Object.freeze({ status: "conflict" as const, conflictingEntityId: accountOwner?.entityId ?? rawAccountOwner.accountId, conflictingAccountId: rawAccountOwner.accountId });
+        }
+        const conflictingEntityId = directOwner?.entityId !== input.entityId ? directOwner?.entityId
+          : accountOwner?.entityId !== input.entityId ? accountOwner?.entityId : undefined;
+        if (conflictingEntityId) {
+          database.prepare(`
+            INSERT OR IGNORE INTO wallet_identity_conflicts(
+              conflict_id, analysis_id, chain_family, address, requested_entity_id,
+              conflicting_entity_id, status, payload, created_at, resolved_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL)
+          `).run(`wallet-analysis-conflict:${input.analysisId}:${conflictingEntityId}`, input.analysisId, job.chainFamily, address, input.entityId, conflictingEntityId, JSON.stringify({ source: "wallet_analysis_review", account: input.account ?? null }), input.reviewedAt);
+          return Object.freeze({ status: "conflict" as const, conflictingEntityId, ...(accountOwner?.accountId ? { conflictingAccountId: accountOwner.accountId } : {}) });
+        }
+
+        repository.ensureTraderEntity({ entityId: input.entityId, lifecycle: "candidate", manual: true, locked: false, createdAt: input.reviewedAt, updatedAt: input.reviewedAt });
+        if (input.account) {
+          repository.upsertFomoAccount({ accountId: input.account.accountId, handle: input.account.handle, firstSeenAt: input.reviewedAt, lastSeenAt: input.reviewedAt });
+          repository.saveWalletMappingObservation({ observationId: `wallet-analysis:${input.analysisId}:${input.account.accountId}`, importId: `wallet-analysis:${input.analysisId}`, batchId: null, handle: input.account.handle, accountId: input.account.accountId, chainFamily: job.chainFamily, address, provider: "wallet_analysis_review", observedAt: input.reviewedAt, importedAt: input.reviewedAt });
+          repository.linkAccountToEntity({ accountId: input.account.accountId, entityId: input.entityId, confidence: "confirmed", source: "wallet_analysis_review", observedAt: input.reviewedAt });
+          repository.attachWallet({ accountId: input.account.accountId, chainFamily: job.chainFamily, address, confidence: "confirmed", source: "wallet_analysis_review", observedAt: input.reviewedAt });
+          const admitted = completeIdentityAdmissionInTransaction(input.account.accountId, input.reviewedAt);
+          if (admitted !== input.entityId) throw new Error("Unable to complete wallet analysis admission");
+        } else {
+          admitDirectEntityWalletInTransaction(input.entityId, job.chainFamily, address, input.reviewedAt);
+        }
+        const updated = database.prepare("UPDATE wallet_analysis_jobs SET status = 'accepted', reviewed_at = ?, updated_at = ? WHERE analysis_id = ? AND status = 'review_required'").run(input.reviewedAt, input.reviewedAt, input.analysisId);
+        if (updated.changes !== 1) throw new Error("Concurrent wallet analysis decision");
+        repository.recordOperatorAudit({ auditId: `wallet-analysis-accept:${input.analysisId}`, action: "wallet_analysis.accept", actor: "developer", payload: { analysisId: input.analysisId, accountId: input.account?.accountId ?? null, entityId: input.entityId }, occurredAt: input.reviewedAt });
+        return Object.freeze({ status: "accepted" as const, entityId: input.entityId });
+      });
     },
 
     recordOperatorAudit(input) {

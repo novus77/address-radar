@@ -30,6 +30,29 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS entity_wallet_identities (
+      entity_id TEXT NOT NULL REFERENCES trader_entities(entity_id),
+      chain_family TEXT NOT NULL CHECK(chain_family IN ('solana', 'evm')),
+      address TEXT NOT NULL,
+      confidence TEXT NOT NULL CHECK(confidence IN ('low', 'medium', 'high', 'confirmed')),
+      source TEXT NOT NULL,
+      first_observed_at INTEGER NOT NULL,
+      last_observed_at INTEGER NOT NULL,
+      PRIMARY KEY(entity_id, chain_family, address),
+      UNIQUE(chain_family, address)
+    );
+    CREATE TABLE IF NOT EXISTS wallet_identity_conflicts (
+      conflict_id TEXT PRIMARY KEY,
+      analysis_id TEXT NOT NULL REFERENCES wallet_analysis_jobs(analysis_id),
+      chain_family TEXT NOT NULL CHECK(chain_family IN ('solana', 'evm')),
+      address TEXT NOT NULL,
+      requested_entity_id TEXT NOT NULL,
+      conflicting_entity_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'accepted', 'rejected')),
+      payload TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      resolved_at INTEGER
+    );
     CREATE TABLE IF NOT EXISTS trader_profiles (
       entity_id TEXT PRIMARY KEY REFERENCES trader_entities(entity_id),
       display_name TEXT NOT NULL,

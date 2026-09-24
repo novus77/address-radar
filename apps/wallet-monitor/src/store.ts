@@ -1,125 +1,261 @@
 import { DatabaseSync } from "node:sqlite";
 
-import { migrateAddressRadarDatabase } from "@address-radar/database";
 import type { NormalizedWalletObservation } from "./contracts.js";
+
+export interface WalletMonitorProviderStatus {
+  readonly source: string;
+  readonly status: "healthy" | "degraded";
+  readonly successfulPartitions: number;
+  readonly failedPartitions: number;
+  readonly lastError: string | null;
+  readonly updatedAt: number;
+}
+
+export interface WalletMonitorDiagnostic {
+  readonly source: string;
+  readonly partitionKey: string;
+  readonly reason: string;
+  readonly sourceReference: string;
+  readonly recordedAt: number;
+}
 
 export interface WalletMonitorStore {
   checkpoint(source: string, partitionKey: string): string | null;
   persist(source: string, partitionKey: string, observations: readonly NormalizedWalletObservation[], nextCheckpoint: string, updatedAt: number): number;
   recordFailure(source: string, error: string, updatedAt: number): void;
+  recordProviderResult(source: string, successfulPartitionKeys: readonly string[], failures: readonly { readonly partitionKey: string; readonly error: string }[], updatedAt: number): void;
+  recordDiagnostics(source: string, diagnostics: readonly { readonly partitionKey: string; readonly reason: string; readonly sourceReference: string }[], updatedAt: number): void;
+  providerStatus(source: string): WalletMonitorProviderStatus | null;
+  diagnostics(): readonly WalletMonitorDiagnostic[];
   observations(): readonly NormalizedWalletObservation[];
   close(): void;
 }
 
 export function openWalletMonitorStore(databasePath: string): WalletMonitorStore {
   const database = new DatabaseSync(databasePath);
-  migrateAddressRadarDatabase(database);
   database.exec(`
+    PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS wallet_monitor_checkpoints (
       source TEXT NOT NULL,
       partition_key TEXT NOT NULL,
       checkpoint TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
-      ,PRIMARY KEY(source, partition_key)
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (source, partition_key)
     );
     CREATE TABLE IF NOT EXISTS wallet_monitor_observations (
-      event_id TEXT PRIMARY KEY,
       source TEXT NOT NULL,
-      source_reference TEXT NOT NULL,
-      chain_family TEXT NOT NULL CHECK(chain_family IN ('evm', 'solana')),
+      event_id TEXT NOT NULL,
+      chain_family TEXT NOT NULL,
       chain TEXT NOT NULL,
-      account_id TEXT NOT NULL,
-      entity_id TEXT NOT NULL,
       wallet_address TEXT NOT NULL,
       token_address TEXT NOT NULL,
-      side TEXT NOT NULL CHECK(side IN ('buy', 'sell')),
+      account_id TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      side TEXT NOT NULL,
       amount_usd REAL,
       price_usd REAL,
       market_cap_usd REAL,
       occurred_at INTEGER NOT NULL,
-      collected_at INTEGER NOT NULL
+      collected_at INTEGER NOT NULL,
+      source_reference TEXT NOT NULL,
+      PRIMARY KEY (source, event_id)
     );
-    CREATE INDEX IF NOT EXISTS wallet_monitor_observations_entity_time
-      ON wallet_monitor_observations(entity_id, occurred_at);
     CREATE TABLE IF NOT EXISTS wallet_monitor_provider_status (
       source TEXT PRIMARY KEY,
-      status TEXT NOT NULL CHECK(status IN ('healthy', 'degraded')),
+      status TEXT NOT NULL,
       last_error TEXT,
       updated_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS wallet_monitor_partition_status (
+      source TEXT NOT NULL,
+      partition_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      last_error TEXT,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (source, partition_key)
+    );
+    CREATE TABLE IF NOT EXISTS wallet_monitor_diagnostics (
+      source TEXT NOT NULL,
+      partition_key TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      source_reference TEXT NOT NULL,
+      recorded_at INTEGER NOT NULL,
+      PRIMARY KEY (source, partition_key, reason, source_reference)
+    );
   `);
 
-  const persist = (source: string, partitionKey: string, observations: readonly NormalizedWalletObservation[], nextCheckpoint: string, updatedAt: number): number => {
+  const transaction = <T>(operation: () => T): T => {
     database.exec("BEGIN IMMEDIATE");
     try {
-    const insert = database.prepare(`
-      INSERT OR IGNORE INTO wallet_monitor_observations(
-        event_id, source, source_reference, chain_family, chain, account_id, entity_id,
-        wallet_address, token_address, side, amount_usd, price_usd, market_cap_usd,
-        occurred_at, collected_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    let accepted = 0;
-    for (const event of observations) {
-      accepted += Number(insert.run(
-        event.eventId, event.source, event.sourceReference, event.chainFamily, event.chain,
-        event.accountId, event.entityId, event.walletAddress, event.tokenAddress, event.side,
-        event.amountUsd, event.priceUsd, event.marketCapUsd, event.occurredAt, event.collectedAt,
-      ).changes);
-    }
-    database.prepare(`
-      INSERT INTO wallet_monitor_checkpoints(source, partition_key, checkpoint, updated_at) VALUES (?, ?, ?, ?)
-      ON CONFLICT(source, partition_key) DO UPDATE SET checkpoint = excluded.checkpoint, updated_at = excluded.updated_at
-    `).run(source, partitionKey, nextCheckpoint, updatedAt);
-    database.prepare(`
-      INSERT INTO wallet_monitor_provider_status(source, status, last_error, updated_at)
-      VALUES (?, 'healthy', NULL, ?)
-      ON CONFLICT(source) DO UPDATE SET status = 'healthy', last_error = NULL, updated_at = excluded.updated_at
-    `).run(source, updatedAt);
+      const result = operation();
       database.exec("COMMIT");
-      return accepted;
+      return result;
     } catch (error) {
       database.exec("ROLLBACK");
       throw error;
     }
   };
 
-  const store: WalletMonitorStore = {
+  return {
     checkpoint(source, partitionKey) {
-      const row = database.prepare("SELECT checkpoint FROM wallet_monitor_checkpoints WHERE source = ? AND partition_key = ?").get(source, partitionKey) as { checkpoint: string } | undefined;
+      const row = database.prepare(`
+        SELECT checkpoint FROM wallet_monitor_checkpoints
+        WHERE source = ? AND partition_key = ?
+      `).get(source, partitionKey) as { checkpoint: string } | undefined;
       return row?.checkpoint ?? null;
     },
     persist(source, partitionKey, observations, nextCheckpoint, updatedAt) {
-      return persist(source, partitionKey, observations, nextCheckpoint, updatedAt);
+      return transaction(() => {
+        let inserted = 0;
+        const insert = database.prepare(`
+          INSERT OR IGNORE INTO wallet_monitor_observations (
+            source, event_id, chain_family, chain, wallet_address, token_address,
+            account_id, entity_id, side, amount_usd, price_usd, market_cap_usd,
+            occurred_at, collected_at, source_reference
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        for (const observation of observations) {
+          inserted += Number(insert.run(
+            source,
+            observation.eventId,
+            observation.chainFamily,
+            observation.chain,
+            observation.walletAddress,
+            observation.tokenAddress,
+            observation.accountId,
+            observation.entityId,
+            observation.side,
+            observation.amountUsd,
+            observation.priceUsd,
+            observation.marketCapUsd,
+            observation.occurredAt,
+            observation.collectedAt,
+            observation.sourceReference,
+          ).changes);
+        }
+        database.prepare(`
+          INSERT INTO wallet_monitor_checkpoints (source, partition_key, checkpoint, updated_at)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(source, partition_key) DO UPDATE SET
+            checkpoint = excluded.checkpoint,
+            updated_at = excluded.updated_at
+        `).run(source, partitionKey, nextCheckpoint, updatedAt);
+        return inserted;
+      });
     },
     recordFailure(source, error, updatedAt) {
-      database.prepare(`
-        INSERT INTO wallet_monitor_provider_status(source, status, last_error, updated_at)
-        VALUES (?, 'degraded', ?, ?)
-        ON CONFLICT(source) DO UPDATE SET status = 'degraded', last_error = excluded.last_error, updated_at = excluded.updated_at
-      `).run(source, error, updatedAt);
+      this.recordProviderResult(source, [], [{ partitionKey: "provider", error }], updatedAt);
+    },
+    recordProviderResult(source, successfulPartitionKeys, failures, updatedAt) {
+      transaction(() => {
+        const upsert = database.prepare(`
+          INSERT INTO wallet_monitor_partition_status (source, partition_key, status, last_error, updated_at)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(source, partition_key) DO UPDATE SET
+            status = excluded.status,
+            last_error = excluded.last_error,
+            updated_at = excluded.updated_at
+        `);
+        for (const partitionKey of successfulPartitionKeys) {
+          upsert.run(source, partitionKey, "healthy", null, updatedAt);
+        }
+        for (const failure of failures) {
+          upsert.run(source, failure.partitionKey, "degraded", failure.error, updatedAt);
+        }
+        const status = failures.length === 0 ? "healthy" : "degraded";
+        const summary = failures.length === 0
+          ? null
+          : failures.map((failure) => `${failure.partitionKey}: ${failure.error}`).join("; ");
+        database.prepare(`
+          INSERT INTO wallet_monitor_provider_status (source, status, last_error, updated_at)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(source) DO UPDATE SET
+            status = excluded.status,
+            last_error = excluded.last_error,
+            updated_at = excluded.updated_at
+        `).run(source, status, summary, updatedAt);
+      });
+    },
+    recordDiagnostics(source, diagnostics, updatedAt) {
+      const insert = database.prepare(`
+        INSERT OR IGNORE INTO wallet_monitor_diagnostics (
+          source, partition_key, reason, source_reference, recorded_at
+        ) VALUES (?, ?, ?, ?, ?)
+      `);
+      transaction(() => {
+        for (const diagnostic of diagnostics) {
+          insert.run(source, diagnostic.partitionKey, diagnostic.reason, diagnostic.sourceReference, updatedAt);
+        }
+      });
+    },
+    providerStatus(source) {
+      const provider = database.prepare(`
+        SELECT source, status, last_error, updated_at
+        FROM wallet_monitor_provider_status WHERE source = ?
+      `).get(source) as {
+        source: string;
+        status: "healthy" | "degraded";
+        last_error: string | null;
+        updated_at: number;
+      } | undefined;
+      if (!provider) return null;
+      const counts = database.prepare(`
+        SELECT
+          SUM(CASE WHEN status = 'healthy' THEN 1 ELSE 0 END) AS successful,
+          SUM(CASE WHEN status = 'degraded' THEN 1 ELSE 0 END) AS failed
+        FROM wallet_monitor_partition_status
+        WHERE source = ? AND updated_at = ?
+      `).get(source, provider.updated_at) as { successful: number | null; failed: number | null };
+      return {
+        source: provider.source,
+        status: provider.status,
+        successfulPartitions: counts.successful ?? 0,
+        failedPartitions: counts.failed ?? 0,
+        lastError: provider.last_error,
+        updatedAt: provider.updated_at,
+      };
+    },
+    diagnostics() {
+      return database.prepare(`
+        SELECT source, partition_key, reason, source_reference, recorded_at
+        FROM wallet_monitor_diagnostics ORDER BY recorded_at, source_reference
+      `).all().map((row) => {
+        const value = row as Record<string, unknown>;
+        return {
+          source: String(value.source),
+          partitionKey: String(value.partition_key),
+          reason: String(value.reason),
+          sourceReference: String(value.source_reference),
+          recordedAt: Number(value.recorded_at),
+        };
+      });
     },
     observations() {
-      const rows = database.prepare("SELECT * FROM wallet_monitor_observations ORDER BY occurred_at, event_id").all() as Record<string, unknown>[];
-      return Object.freeze(rows.map(row => Object.freeze({
-        eventId: row.event_id as string,
-        source: row.source as string,
-        sourceReference: row.source_reference as string,
-        chainFamily: row.chain_family as NormalizedWalletObservation["chainFamily"],
-        chain: row.chain as string,
-        accountId: row.account_id as string,
-        entityId: row.entity_id as string,
-        walletAddress: row.wallet_address as string,
-        tokenAddress: row.token_address as string,
-        side: row.side as NormalizedWalletObservation["side"],
-        amountUsd: row.amount_usd as number | null,
-        priceUsd: row.price_usd as number | null,
-        marketCapUsd: row.market_cap_usd as number | null,
-        occurredAt: row.occurred_at as number,
-        collectedAt: row.collected_at as number,
-      })));
+      return database.prepare(`
+        SELECT * FROM wallet_monitor_observations ORDER BY occurred_at, event_id
+      `).all().map((row) => {
+        const value = row as Record<string, unknown>;
+        return {
+          source: String(value.source),
+          eventId: String(value.event_id),
+          chainFamily: value.chain_family as "evm" | "solana",
+          chain: String(value.chain),
+          walletAddress: String(value.wallet_address),
+          tokenAddress: String(value.token_address),
+          accountId: String(value.account_id),
+          entityId: String(value.entity_id),
+          side: value.side as "buy" | "sell",
+          amountUsd: value.amount_usd === null ? null : Number(value.amount_usd),
+          priceUsd: value.price_usd === null ? null : Number(value.price_usd),
+          marketCapUsd: value.market_cap_usd === null ? null : Number(value.market_cap_usd),
+          occurredAt: Number(value.occurred_at),
+          collectedAt: Number(value.collected_at),
+          sourceReference: String(value.source_reference),
+        };
+      });
     },
-    close() { database.close(); },
+    close() {
+      database.close();
+    },
   };
-  return Object.freeze(store);
 }

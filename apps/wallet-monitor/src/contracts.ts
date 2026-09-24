@@ -23,6 +23,11 @@ export interface WalletCollectorPartition {
 export interface WalletCollectorResult {
   readonly partitions: readonly WalletCollectorPartition[];
   readonly failures?: readonly { readonly partitionKey: string; readonly error: string }[];
+  readonly diagnostics?: readonly {
+    readonly partitionKey: string;
+    readonly reason: string;
+    readonly sourceReference: string;
+  }[];
 }
 
 export interface WalletCollector {

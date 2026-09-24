@@ -36,5 +36,7 @@ export type {
   TraderLifecycleEventRecord,
   TraderPopulationAuditRecord,
   WalletMappingObservationInput,
+  WalletAnalysisReviewDecision,
+  WalletAnalysisReviewResult,
 } from "./repository.js";
 export { initializeAddressRadarSchema } from "./schema.js";

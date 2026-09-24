@@ -6,5 +6,5 @@ export { createConfiguredWalletRpcClient } from "./rpc.js";
 export type { WalletRpcClient } from "./rpc.js";
 export { runWalletMonitorService } from "./service.js";
 export { openWalletMonitorStore } from "./store.js";
-export type { WalletMonitorStore } from "./store.js";
+export type { WalletMonitorDiagnostic, WalletMonitorProviderStatus, WalletMonitorStore } from "./store.js";
 export type { NormalizedWalletObservation, WalletCollector, WalletCollectorEvent, WalletCollectorPartition, WalletCollectorResult } from "./contracts.js";

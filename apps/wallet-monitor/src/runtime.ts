@@ -1,6 +1,6 @@
-import type { ChainFamily } from "@address-radar/domain";
-import type { MonitoredWallet, MonitoringRegistry } from "@address-radar/identity";
-import type { NormalizedWalletObservation, WalletCollector, WalletCollectorEvent } from "./contracts.js";
+import type { MonitoringRegistry, MonitoredWallet } from "@address-radar/identity";
+
+import type { NormalizedWalletObservation, WalletCollector } from "./contracts.js";
 import type { WalletMonitorStore } from "./store.js";
 
 export function createWalletMonitorRuntime(input: {
@@ -11,59 +11,93 @@ export function createWalletMonitorRuntime(input: {
   readonly now?: () => number;
 }) {
   const now = input.now ?? Date.now;
-  let appliedVersion = -1;
-  let wallets: Readonly<Record<ChainFamily, readonly MonitoredWallet[]>> = Object.freeze({ evm: Object.freeze([]), solana: Object.freeze([]) });
-
-  const reloadRegistry = () => {
-    const version = input.registry.version();
-    if (version === appliedVersion) return;
-    wallets = Object.freeze({ evm: input.registry.wallets("evm"), solana: input.registry.wallets("solana") });
-    input.registry.acknowledge(input.consumer, version, now());
-    appliedVersion = version;
+  let registryVersion = -1;
+  let walletsByFamily: Readonly<Record<"evm" | "solana", readonly MonitoredWallet[]>> = {
+    evm: [],
+    solana: [],
   };
 
-  return Object.freeze({
-    async pollOnce(signal: AbortSignal = new AbortController().signal) {
-      reloadRegistry();
+  const reload = () => {
+    const version = input.registry.version();
+    if (version === registryVersion) return;
+    walletsByFamily = {
+      evm: input.registry.wallets("evm"),
+      solana: input.registry.wallets("solana"),
+    };
+    registryVersion = version;
+    input.registry.acknowledge(input.consumer, version, now());
+  };
+
+  return {
+    async pollOnce(signal = new AbortController().signal) {
+      reload();
       let accepted = 0;
       let providerFailures = 0;
-      const results = await Promise.allSettled(input.collectors.map(async collector => {
-        const monitored = wallets[collector.chainFamily];
-        const result = await collector.collect({ wallets: monitored, checkpoint: partitionKey => input.store.checkpoint(collector.name, partitionKey), signal });
-        providerFailures += result.failures?.length ?? 0;
+      const settled = await Promise.allSettled(input.collectors.map(async (collector) => {
+        const wallets = walletsByFamily[collector.chainFamily];
+        const result = await collector.collect({
+          wallets,
+          checkpoint: (partitionKey) => input.store.checkpoint(collector.name, partitionKey),
+          signal,
+        });
+        const collectedAt = now();
         for (const partition of result.partitions) {
-          if (!partition.partitionKey.trim() || !partition.nextCheckpoint.trim()) throw new Error(`Collector ${collector.name} returned an invalid checkpoint`);
-          const normalized = partition.events.flatMap(event => normalize(event, collector.name, collector.chainFamily, monitored, now()));
-          accepted += input.store.persist(collector.name, partition.partitionKey, normalized, partition.nextCheckpoint, now());
+          const observations = normalize(partition.events, wallets, collector.name, collector.chainFamily, collectedAt);
+          accepted += input.store.persist(
+            collector.name,
+            partition.partitionKey,
+            observations,
+            partition.nextCheckpoint,
+            collectedAt,
+          );
         }
+        const failures = result.failures ?? [];
+        providerFailures += failures.length;
+        input.store.recordDiagnostics(collector.name, result.diagnostics ?? [], collectedAt);
+        input.store.recordProviderResult(
+          collector.name,
+          result.partitions.map((partition) => partition.partitionKey).filter((key) => key !== "schedule"),
+          failures,
+          collectedAt,
+        );
       }));
-      for (const [index, result] of results.entries()) {
-        if (result.status === "fulfilled") continue;
+      settled.forEach((result, index) => {
+        if (result.status === "fulfilled") return;
+        if (signal.aborted) throw result.reason;
         providerFailures += 1;
-        input.store.recordFailure(input.collectors[index]!.name, result.reason instanceof Error ? result.reason.message : String(result.reason), now());
-      }
-      return Object.freeze({ accepted, providerFailures, registryVersion: appliedVersion });
+        const collector = input.collectors[index]!;
+        input.store.recordFailure(
+          collector.name,
+          result.reason instanceof Error ? result.reason.message : String(result.reason),
+          now(),
+        );
+      });
+      return { accepted, providerFailures, registryVersion };
     },
-  });
+  };
 }
 
-function normalize(event: WalletCollectorEvent, source: string, chainFamily: ChainFamily, wallets: readonly MonitoredWallet[], collectedAt: number): readonly NormalizedWalletObservation[] {
-  if (!event.eventId.trim() || !event.sourceReference.trim() || !Number.isSafeInteger(event.occurredAt) || event.occurredAt < 0) return [];
-  const normalizeAddress = (value: string) => chainFamily === "evm" ? value.trim().toLowerCase() : value.trim();
-  const walletAddress = normalizeAddress(event.walletAddress);
-  const wallet = wallets.find(candidate => normalizeAddress(candidate.address) === walletAddress);
-  if (!wallet) return [];
-  const tokenAddress = normalizeAddress(event.tokenAddress);
-  if (!tokenAddress) return [];
-  return [Object.freeze({
-    ...event,
-    source,
-    chainFamily,
-    chain: event.chain.trim().toLowerCase(),
-    walletAddress,
-    tokenAddress,
-    accountId: wallet.accountId,
-    entityId: wallet.entityId,
-    collectedAt,
-  })];
+function normalize(
+  events: readonly Omit<NormalizedWalletObservation, "source" | "chainFamily" | "accountId" | "entityId" | "collectedAt">[],
+  wallets: readonly MonitoredWallet[],
+  source: string,
+  chainFamily: "evm" | "solana",
+  collectedAt: number,
+): NormalizedWalletObservation[] {
+  const ownership = new Map(wallets.map((wallet) => [wallet.address.toLowerCase(), wallet]));
+  return events.flatMap((event) => {
+    const wallet = ownership.get(event.walletAddress.toLowerCase());
+    if (!wallet) return [];
+    return [{
+      ...event,
+      chain: event.chain.toLowerCase(),
+      walletAddress: chainFamily === "evm" ? event.walletAddress.toLowerCase() : event.walletAddress,
+      tokenAddress: chainFamily === "evm" ? event.tokenAddress.toLowerCase() : event.tokenAddress,
+      source,
+      chainFamily,
+      accountId: wallet.accountId,
+      entityId: wallet.entityId,
+      collectedAt,
+    }];
+  });
 }

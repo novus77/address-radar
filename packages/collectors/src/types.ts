@@ -3,7 +3,7 @@ import type { TraderEvent } from "@address-radar/domain";
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 export interface JsonRpcClient {
-  request<T>(method: string, params: readonly unknown[]): Promise<T>;
+  request<T>(method: string, params: readonly unknown[], signal?: AbortSignal): Promise<T>;
 }
 
 export interface TokenMarketSnapshot {

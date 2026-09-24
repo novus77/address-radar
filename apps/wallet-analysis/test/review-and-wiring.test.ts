@@ -75,12 +75,12 @@ describe("wallet analysis production wiring", () => {
       pageSize: 10,
       rpc: { request: async (_chain, method) => method === "getSignaturesForAddress"
         ? [{ signature: "sig-1", blockTime: 50 }]
-        : { meta: { preTokenBalances: [{ mint: "TokenA", owner: "Wallet", uiTokenAmount: { amount: "0", decimals: 0 } }], postTokenBalances: [{ mint: "TokenA", owner: "Wallet", uiTokenAmount: { amount: "10", decimals: 0 } }] } } },
+        : { meta: { preTokenBalances: [{ mint: "TokenA", owner: "Wallet", uiTokenAmount: { amount: "0", decimals: 0 } }, { mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", owner: "Wallet", uiTokenAmount: { amount: "20", decimals: 0 } }], postTokenBalances: [{ mint: "TokenA", owner: "Wallet", uiTokenAmount: { amount: "10", decimals: 0 } }, { mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", owner: "Wallet", uiTokenAmount: { amount: "0", decimals: 0 } }] } } },
       events: { append: (_analysisId, events) => saved.push(...events), events: () => saved.map((event, index) => ({ eventId: `event-${index}`, chain: "solana", tokenAddress: event.tokenAddress, side: "buy" as const, tokenAmount: 10, occurredAt: 50_000, source: "solana-rpc" })), close() {} },
       market: { priceAt: async () => 2, peakPrice: async () => 3, minimumPrice: async () => 1, firstObservedAt: async () => 49_000 },
     });
     const page = await provider.collect({ analysisId: "a", address: "Wallet", from: 40_000, to: 60_000, limit: 300, cursor: null, signal: new AbortController().signal });
-    expect(page).toMatchObject({ done: true, nextCursor: null, provenance: "solana-rpc", positions: [expect.objectContaining({ investedUsd: 20, peakValueUsd: 30 })] });
+    expect(page).toMatchObject({ done: true, nextCursor: null, provenance: expect.stringContaining("solana-rpc"), positions: [expect.objectContaining({ investedUsd: 20, peakValueUsd: 30 })] });
   });
 
   it("stops the analysis loop gracefully", async () => {

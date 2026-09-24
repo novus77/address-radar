@@ -2,7 +2,7 @@ import type { FetchLike, JsonRpcClient } from "./types.js";
 
 export class JsonRpcRateLimitError extends Error {
   constructor(readonly endpoint: string) {
-    super(`JSON-RPC provider rate limited: ${endpoint}`);
+    super(`JSON-RPC endpoint rate limited: ${endpoint}`);
     this.name = "JsonRpcRateLimitError";
   }
 }
@@ -14,11 +14,18 @@ export class JsonRpcResponseError extends Error {
   }
 }
 
-interface JsonRpcEnvelope {
-  readonly jsonrpc?: unknown;
-  readonly id?: unknown;
-  readonly result?: unknown;
-  readonly error?: { readonly code?: unknown; readonly message?: unknown };
+export class JsonRpcAbortError extends Error {
+  constructor() {
+    super("JSON-RPC request aborted by caller");
+    this.name = "JsonRpcAbortError";
+  }
+}
+
+export class JsonRpcTimeoutError extends Error {
+  constructor(readonly endpoint: string, readonly timeoutMs: number) {
+    super(`JSON-RPC request timed out after ${timeoutMs}ms: ${endpoint}`);
+    this.name = "JsonRpcTimeoutError";
+  }
 }
 
 export function createJsonRpcClient(input: {
@@ -27,73 +34,89 @@ export function createJsonRpcClient(input: {
   readonly fetch?: FetchLike;
   readonly timeoutMs?: number;
 }): JsonRpcClient {
-  const fetcher = input.fetch ?? globalThis.fetch;
-  const timeoutMs = input.timeoutMs ?? 5_000;
-  const endpoints = input.fallbackEndpoint
-    ? [input.endpoint, input.fallbackEndpoint]
-    : [input.endpoint];
+  const fetchImpl = input.fetch ?? globalThis.fetch;
+  const timeoutMs = input.timeoutMs ?? 10_000;
   let requestId = 0;
 
-  return Object.freeze({
-    async request<T>(method: string, params: readonly unknown[]): Promise<T> {
-      if (!method.trim()) throw new Error("JSON-RPC method is required");
+  return {
+    async request<T>(method: string, params: readonly unknown[], signal?: AbortSignal): Promise<T> {
+      if (signal?.aborted) throw new JsonRpcAbortError();
+      const endpoints = [input.endpoint, input.fallbackEndpoint].filter((value): value is string => Boolean(value));
       const id = ++requestId;
-      let lastError: Error | null = null;
+      let lastError: unknown;
       for (const endpoint of endpoints) {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        if (signal?.aborted) throw new JsonRpcAbortError();
         try {
-          const response = await fetcher(endpoint, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-            signal: controller.signal,
-          });
-          if (response.status === 429) {
-            lastError = new JsonRpcRateLimitError(endpoint);
-            continue;
-          }
-          if (response.status >= 500) {
-            lastError = new JsonRpcResponseError(`JSON-RPC provider returned HTTP ${response.status}`);
-            continue;
-          }
-          if (!response.ok) throw new JsonRpcResponseError(`JSON-RPC provider returned HTTP ${response.status}`);
-          let envelope: JsonRpcEnvelope;
-          try {
-            envelope = await response.json() as JsonRpcEnvelope;
-          } catch {
-            throw new JsonRpcResponseError("Malformed JSON-RPC response");
-          }
-          if (
-            typeof envelope !== "object" || envelope === null ||
-            envelope.jsonrpc !== "2.0" || envelope.id !== id ||
-            (!("result" in envelope) && !("error" in envelope))
-          ) throw new JsonRpcResponseError("Malformed JSON-RPC response");
-          if (envelope.error) {
-            const code = typeof envelope.error.code === "number" ? envelope.error.code : undefined;
-            const message = typeof envelope.error.message === "string" ? envelope.error.message : "JSON-RPC request failed";
-            throw new JsonRpcResponseError(message, code);
-          }
-          return envelope.result as T;
+          return await requestEndpoint<T>(endpoint, method, params, id, fetchImpl, timeoutMs, signal);
         } catch (error) {
-          if (error instanceof JsonRpcRateLimitError || error instanceof JsonRpcResponseError) {
-            lastError = error;
-            if (!retryableRpcFailure(error)) throw error;
-          } else {
-            lastError = error instanceof Error ? error : new Error(String(error));
-          }
-        } finally {
-          clearTimeout(timer);
+          if (error instanceof JsonRpcAbortError) throw error;
+          if (error instanceof JsonRpcResponseError) throw error;
+          lastError = error;
         }
       }
-      throw lastError ?? new Error("JSON-RPC request failed");
+      throw lastError instanceof Error ? lastError : new Error("JSON-RPC request failed");
     },
-  });
+  };
 }
 
-function retryableRpcFailure(error: Error): boolean {
-  if (error instanceof JsonRpcRateLimitError) return true;
-  if (!(error instanceof JsonRpcResponseError)) return true;
-  if (error.code !== undefined) return error.code === -32005 || /rate|limit|timeout|overload|unavailable/i.test(error.message);
-  return /HTTP (408|429|5\d\d)|Malformed JSON-RPC response/i.test(error.message);
+async function requestEndpoint<T>(
+  endpoint: string,
+  method: string,
+  params: readonly unknown[],
+  id: number,
+  fetchImpl: FetchLike,
+  timeoutMs: number,
+  externalSignal?: AbortSignal,
+): Promise<T> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const onExternalAbort = () => controller.abort(externalSignal?.reason);
+  externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    const response = await fetchImpl(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+      signal: controller.signal,
+    });
+    if (response.status === 429) throw new JsonRpcRateLimitError(endpoint);
+    if (!response.ok) {
+      const error = new Error(`JSON-RPC HTTP ${response.status}: ${endpoint}`);
+      if (response.status >= 400 && response.status < 500) throw new JsonRpcResponseError(error.message);
+      throw error;
+    }
+    let payload: {
+      readonly jsonrpc?: unknown;
+      readonly id?: unknown;
+      readonly result?: T;
+      readonly error?: { readonly code?: number; readonly message?: string };
+    };
+    try {
+      payload = await response.json() as typeof payload;
+    } catch {
+      throw new JsonRpcResponseError("Malformed JSON-RPC response");
+    }
+    if (payload.jsonrpc !== "2.0" || payload.id !== id) {
+      throw new JsonRpcResponseError("Malformed JSON-RPC response");
+    }
+    if (payload.error) {
+      if (payload.error.code === -32005 || /rate limit/i.test(payload.error.message ?? "")) {
+        throw new JsonRpcRateLimitError(endpoint);
+      }
+      throw new JsonRpcResponseError(payload.error.message ?? "JSON-RPC response error", payload.error.code);
+    }
+    if (!("result" in payload)) throw new JsonRpcResponseError("Malformed JSON-RPC response");
+    return payload.result as T;
+  } catch (error) {
+    if (externalSignal?.aborted) throw new JsonRpcAbortError();
+    if (timedOut) throw new JsonRpcTimeoutError(endpoint, timeoutMs);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    externalSignal?.removeEventListener("abort", onExternalAbort);
+  }
 }

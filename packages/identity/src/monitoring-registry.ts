@@ -36,8 +36,17 @@ export function openMonitoringRegistry(databasePath: string): MonitoringRegistry
         JOIN entity_accounts ea ON ea.account_id = w.account_id
         JOIN trader_entities e ON e.entity_id = ea.entity_id
         WHERE w.chain_family = ? AND e.lifecycle != 'suspended'
-        ORDER BY e.entity_id, w.address
-      `).all(chainFamily) as Array<{
+        UNION ALL
+        SELECT ew.address, e.entity_id AS accountId, e.entity_id AS entityId, e.lifecycle
+        FROM entity_wallet_identities ew
+        JOIN trader_entities e ON e.entity_id = ew.entity_id
+        WHERE ew.chain_family = ? AND e.lifecycle != 'suspended'
+          AND NOT EXISTS (
+            SELECT 1 FROM wallet_identities w
+            WHERE w.chain_family = ew.chain_family AND w.address = ew.address
+          )
+        ORDER BY entityId, address
+      `).all(chainFamily, chainFamily) as Array<{
         address: string;
         accountId: string;
         entityId: string;
