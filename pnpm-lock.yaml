@@ -30,6 +30,9 @@ importers:
 
   apps/console:
     dependencies:
+      '@address-radar/aggregation':
+        specifier: workspace:*
+        version: link:../../packages/aggregation
       '@address-radar/database':
         specifier: workspace:*
         version: link:../../packages/database

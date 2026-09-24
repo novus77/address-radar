@@ -22,6 +22,12 @@ const api = async (path, options = {}) => {
   if (!response.ok) throw new Error(response.status === 401 ? "开发者 Token 无效" : payload.message || payload.error || `请求失败：${response.status}`);
   return payload;
 };
+const apiV2 = async (path, options = {}) => {
+  const response = await fetch(`/api/v2/${path}`, { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.message || payload.error || `请求失败：${response.status}`);
+  return payload;
+};
 
 const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
 const text = (value, fallback = "--") => value === null || value === undefined || value === "" ? fallback : String(value);
@@ -96,7 +102,7 @@ const renderCandidates = () => {
 
 const cards = {
   backtests: items => items.length ? items.map(item => `<article class="record"><div><div class="tag-stack"><span class="tag">${escapeHtml(item.window)}</span><span class="tag">样本置信 ${percent(item.sampleConfidence)}</span><span class="tag">覆盖 ${percent(item.coverageConfidence)}</span></div><h3>${escapeHtml(item.entityId)}</h3><p>${escapeHtml(item.strategyVersion)} · 10x 命中 ${percent(item.hit10xRate)}</p></div><div class="score"><strong>${percent(item.adjustedQuality)}</strong><span>${text(item.validSamples, 0)} 个有效样本</span></div></article>`).join("") : empty("尚无足够交易样本形成滚动评分，因此暂时没有回测或淘汰记录。"),
-  aggregations: items => items.length ? items.map(item => `<article class="record"><div><div class="tag-stack"><span class="tag chain">${escapeHtml(item.chain)}</span><span class="tag">${escapeHtml(text(item.signalFamily, "生命周期待确认"))}</span><span class="tag">${escapeHtml(text(item.sourceState, "UNKNOWN"))}</span></div><h3>${escapeHtml(item.tokenAddress)}</h3><p>${text(item.participantCount, 0)} 名交易员 · 买入 $${Number(item.totalBuyUsd ?? 0).toLocaleString()} · ${Math.round(Number(item.windowMs ?? 0) / 60_000)} 分钟窗口</p><p>参与者：${escapeHtml(text(item.participantHandles, "身份待解析"))}</p><p>${item.broadcastCount} 次播报 · ${time(item.updatedAt)}</p><small>${escapeHtml(item.missingConditions === "[]" ? "当前通道已满足" : `仍缺少：${item.missingConditions}`)}</small></div><div class="score"><strong>${percent(item.currentScore)}</strong><span>${escapeHtml(text(item.lifecycleStage, "unknown"))}</span></div></article>`).join("") : empty("尚未形成代币评估：当前还没有真实交易证据进入地址雷达。"),
+  aggregations: items => items.length ? items.map(item => `<article class="record"><div><div class="tag-stack"><span class="tag chain">${escapeHtml(item.chain)}</span><span class="tag">${escapeHtml(({ observe: "正在聚合", broadcast: "首次信号合格", rebroadcast: "再次信号合格" })[item.action] || item.action)}</span><span class="tag">${escapeHtml(text(item.sourceState, "数据源待确认"))}</span></div><h3>${escapeHtml(item.tokenAddress)}</h3><p>${text(item.participantCount, 0)} 名交易员 · 累计买入 ${money(item.totalBuyUsd)} · ${Math.round(Number(item.windowMs ?? 0) / 60_000)} 分钟窗口</p><p>${item.broadcastCount} 次播报 · ${time(item.updatedAt)}</p><small>${item.missingConditionLabels?.length ? `仍缺少：${item.missingConditionLabels.map(escapeHtml).join("；")}` : "当前信号通道已满足"}</small></div><div class="score"><strong>${percent(item.currentScore)}</strong><span>${escapeHtml(text(item.lifecycleStage, "阶段待确认"))}</span></div></article>`).join("") : empty("尚未形成代币评估：当前还没有真实交易证据进入地址雷达。"),
   outcomes: items => items.length ? items.map(item => `<article class="record"><div><div class="tag-stack"><span class="tag">${escapeHtml(item.signalAction === "update" ? "再次播报" : "首次播报")}</span><span class="tag chain">${escapeHtml(text(item.opportunityType, "signal"))}</span></div><h3>${escapeHtml(item.tokenId)}</h3><p>${escapeHtml(item.signalId)}</p></div><div class="score"><strong>${percent(item.overallScore)}</strong><span>${time(item.publishedAt)}</span></div></article>`).join("") : empty("当前没有任何已经投递给用户的雷达信号。"),
   identityConflicts: items => items.length ? items.map(item => `<article class="record conflict"><div><span class="tag ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span><h3>@${escapeHtml(item.handle)}</h3><p>${escapeHtml(item.chainFamily)} · ${escapeHtml(item.address)}</p><p>当前归属：${escapeHtml(item.conflictingAccountId)}</p></div><div class="conflict-actions">${item.status === "pending" ? `<button data-conflict="${escapeHtml(item.conflictId)}" data-decision="accepted">接受</button><button data-conflict="${escapeHtml(item.conflictId)}" data-decision="rejected">拒绝</button>` : `<span>${escapeHtml(item.resolution || item.status)}</span>`}</div></article>`).join("") : empty("当前没有身份冲突。"),
 };
@@ -171,8 +177,11 @@ const loadIdentity = async () => {
 
 const renderAggregations = () => {
   const minimum = Math.max(0, Number($("#aggregation-minimum").value) || 0);
+  const chain = $("#aggregation-chain").value;
+  const lifecycle = $("#aggregation-lifecycle").value;
+  const status = $("#aggregation-status").value;
   localStorage.setItem("addressRadarMinimumAggregationUsd", String(minimum));
-  const items = state.aggregations.filter(item => Number(item.totalBuyUsd ?? 0) >= minimum);
+  const items = state.aggregations.filter(item => Number(item.totalBuyUsd ?? 0) >= minimum && (!chain || item.chain === chain) && (!lifecycle || item.lifecycleStage === lifecycle) && (!status || item.action === status));
   $("#aggregations-grid").innerHTML = cards.aggregations(items);
   $("#aggregation-filter-summary").textContent = `显示 ${items.length}/${state.aggregations.length} 个，低于 ${money(minimum)} 已隐藏`;
 };
@@ -180,16 +189,18 @@ const renderAggregations = () => {
 const renderSignals = () => {
   const query = $("#signal-search").value.trim().toLowerCase();
   const action = $("#signal-action").value;
-  const items = state.signals.filter(item => (!query || `${item.tokenId} ${item.signalId}`.toLowerCase().includes(query)) && (!action || item.signalAction === action));
+  const chain = $("#signal-chain").value;
+  const items = state.signals.filter(item => (!query || `${item.tokenId} ${item.signalId}`.toLowerCase().includes(query)) && (!action || item.signalAction === action) && (!chain || String(item.tokenId || "").split(":")[0] === chain));
   $("#outcomes-grid").innerHTML = cards.outcomes(items);
 };
 
 const renderWalletAnalyses = () => {
-  const statusLabel = value => ({ collecting: "采集中", review_required: "等待审核", accepted: "已收录", rejected: "已拒绝", insufficient_data: "数据不足", failed: "采集失败" })[value] || value;
+  const statusLabel = value => ({ queued: "等待采集", collecting: "采集中", normalizing: "整理交易", pricing: "补充价格", evaluating: "计算能力", completed: "分析完成", retrying: "等待重试", partial: "部分完成", blocked: "任务已阻塞", review_required: "等待审核", accepted: "已收录", rejected: "已拒绝", insufficient_data: "数据不足", failed: "采集失败", cancelled: "已取消" })[value] || value;
   const rows = state.walletAnalyses;
   $("#wallet-analysis-grid").innerHTML = rows.length ? `<table class="operator-table"><thead><tr><th>地址</th><th>状态</th><th>覆盖</th><th>胜率</th><th>峰值倍数</th><th>高倍命中</th><th>更新时间</th><th>操作</th></tr></thead><tbody>${rows.map(item => {
     const metrics = parseJsonObject(item.metrics);
-    return `<tr><td><strong>${escapeHtml(item.displayName || item.fomoHandle || item.chainFamily)}</strong><small>${escapeHtml(item.address)}</small></td><td><span class="tag ${escapeHtml(item.status)}">${escapeHtml(statusLabel(item.status))}</span></td><td><strong>${percent(item.coverageRate)}</strong><small>${text(item.validSampleCount, 0)}/${text(item.requestedSampleCount, 100)} 个样本</small></td><td><strong>${percent(metrics.profitableRate)}</strong></td><td><strong>${metrics.medianPeakMultiple == null ? "--" : `${Number(metrics.medianPeakMultiple).toFixed(2)}x`}</strong><small>均值 ${metrics.meanPeakMultiple == null ? "--" : `${Number(metrics.meanPeakMultiple).toFixed(2)}x`}</small></td><td><strong>5x ${percent(metrics.hit5xRate)}</strong><small>10x ${percent(metrics.hit10xRate)}</small></td><td>${time(item.updatedAt)}</td><td>${item.status === "review_required" ? `<button type="button" data-admit-analysis="${escapeHtml(item.analysisId)}">转入身份解析</button><button type="button" data-analysis-decision="reject" data-analysis-id="${escapeHtml(item.analysisId)}">拒绝</button><button type="button" data-analysis-decision="insufficient" data-analysis-id="${escapeHtml(item.analysisId)}">数据不足</button>` : '<span class="muted">--</span>'}</td></tr>`;
+    const phase = item.phase || item.status;
+    return `<tr><td><strong>${escapeHtml(item.displayName || item.fomoHandle || item.chainFamily)}</strong><small>${escapeHtml(item.address)}</small></td><td><span class="tag ${escapeHtml(phase)}">${escapeHtml(statusLabel(phase))}</span><small>${Number(item.progressPercent ?? 0).toFixed(0)}% · 心跳 ${time(item.heartbeatAt)}</small>${item.lastError ? `<small>${escapeHtml(item.lastError)}</small>` : ""}</td><td><strong>${percent(item.coverageRate)}</strong><small>${text(item.discoveredTokens ?? item.validSampleCount, 0)}/${text(item.requestedSampleCount, 100)} 个样本</small></td><td><strong>${percent(metrics.profitableRate)}</strong></td><td><strong>${metrics.medianPeakMultiple == null ? "--" : `${Number(metrics.medianPeakMultiple).toFixed(2)}x`}</strong><small>均值 ${metrics.meanPeakMultiple == null ? "--" : `${Number(metrics.meanPeakMultiple).toFixed(2)}x`}</small></td><td><strong>5x ${percent(metrics.hit5xRate)}</strong><small>10x ${percent(metrics.hit10xRate)}</small></td><td>${time(item.updatedAt)}</td><td>${item.status === "review_required" ? `<button type="button" data-admit-analysis="${escapeHtml(item.analysisId)}">转入身份解析</button><button type="button" data-analysis-decision="reject" data-analysis-id="${escapeHtml(item.analysisId)}">拒绝</button><button type="button" data-analysis-decision="insufficient" data-analysis-id="${escapeHtml(item.analysisId)}">数据不足</button>` : '<span class="muted">--</span>'}</td></tr>`;
   }).join("")}</tbody></table>` : empty("还没有地址分析任务。");
 };
 
@@ -211,11 +222,10 @@ const renderMilestones = () => {
 };
 
 const load = async () => {
-  const overview = await api("overview");
-  for (const key of ["traders", "candidates", "aggregations", "broadcasts"]) {
-    const node = $(`#metric-${key}`);
-    if (node) node.textContent = text(overview[key], "0");
-  }
+  const [overview, chainPage, aggregationPage] = await Promise.all([apiV2("workbench/summary"), apiV2("chains"), apiV2("token-aggregates")]);
+  const metrics = { traders: overview.addressLibraryCount, candidates: overview.candidateCount, aggregations: overview.aggregatedTokenCount, broadcasts: overview.deliveredSignalCount };
+  for (const [key, value] of Object.entries(metrics)) { const node = $(`#metric-${key}`); if (node) node.textContent = text(value, "0"); }
+  for (const selector of ["#aggregation-chain", "#signal-chain"]) $(selector).insertAdjacentHTML("beforeend", chainPage.items.map(chain => `<option value="${escapeHtml(chain.id)}">${escapeHtml(chain.labelZh)}</option>`).join(""));
   const modules = ["traders", "candidates", "backtests", "aggregations", "outcomes", "milestone-backfills", "milestone-backfills/summary", "wallet-analyses"];
   const data = await Promise.all(modules.map(module => api(module)));
   state.traders = data[0];
@@ -223,7 +233,7 @@ const load = async () => {
   state.candidates = data[1];
   renderCandidates();
   $("#backtests-grid").innerHTML = cards.backtests(data[2]);
-  state.aggregations = data[3];
+  state.aggregations = aggregationPage.items;
   state.signals = data[4];
   state.milestoneBackfills = data[5];
   state.milestoneSummary = data[6];
@@ -240,8 +250,9 @@ document.querySelectorAll("[data-module]").forEach(button => button.addEventList
 ["#trader-search", "#trader-lifecycle", "#trader-wallet-filter", "#trader-label-filter"].forEach(selector => $(selector).addEventListener("input", renderTraders));
 ["#candidate-search", "#candidate-source", "#candidate-chain", "#candidate-identity"].forEach(selector => $(selector).addEventListener("input", renderCandidates));
 ["#identity-search", "#identity-status"].forEach(selector => $(selector).addEventListener("input", renderIdentityQueue));
-$("#aggregation-minimum").addEventListener("input", renderAggregations);
+["#aggregation-minimum", "#aggregation-chain", "#aggregation-lifecycle", "#aggregation-status"].forEach(selector => $(selector).addEventListener("input", renderAggregations));
 $("#signal-search").addEventListener("input", renderSignals);
+$("#signal-chain").addEventListener("input", renderSignals);
 $("#signal-action").addEventListener("input", renderSignals);
 $("#milestone-search").addEventListener("input", renderMilestones);
 $("#milestone-status").addEventListener("input", renderMilestones);

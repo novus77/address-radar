@@ -6,6 +6,7 @@ import { analyzeWalletPositions, type WalletAnalysisPosition } from "@address-ra
 import { migrateAddressRadarDatabase, openAddressRadarRepository } from "@address-radar/database";
 
 import { createManualResolutionService } from "@address-radar/identity";
+import { explainTokenMissingCondition } from "@address-radar/aggregation";
 
 
 export interface ConsoleResult {
@@ -35,6 +36,15 @@ const stringList = (value: unknown): string[] => Array.isArray(value)
   ? [...new Set(value.filter((item): item is string => typeof item === "string").map(item => item.trim()).filter(Boolean))]
   : [];
 
+const chainRegistry = Object.freeze([
+  { id: "solana", labelZh: "Solana" },
+  { id: "bsc", labelZh: "BSC" },
+  { id: "eth", labelZh: "Ethereum" },
+  { id: "base", labelZh: "Base" },
+  { id: "monad", labelZh: "Monad" },
+  { id: "robinhood", labelZh: "Robinhood" },
+]);
+
 export const createAddressConsoleApplication = (databasePath = ":memory:"): AddressConsoleApplication => {
   const database = new DatabaseSync(databasePath);
   migrateAddressRadarDatabase(database);
@@ -51,6 +61,44 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
   };
 
   const read = (pathname: string): ConsoleResult | null => {
+    if (pathname === "/api/v2/chains") return { status: 200, body: { items: chainRegistry } };
+    if (pathname === "/api/v2/workbench/summary") {
+      const scalar = (sql: string): number => Number((database.prepare(sql).get() as { count: number | null }).count ?? 0);
+      return { status: 200, body: {
+        addressLibraryCount: scalar("SELECT COUNT(*) AS count FROM trader_entities WHERE lifecycle IN ('probation', 'active', 'elite', 'degraded') OR manual = 1 OR locked = 1"),
+        candidateCount: scalar("SELECT COUNT(*) AS count FROM trader_entities WHERE lifecycle = 'candidate'"),
+        pendingIdentityCount: scalar("SELECT COUNT(*) AS count FROM identity_resolution_queue WHERE status IN ('pending', 'exported')"),
+        monitoredWalletCount: scalar("SELECT COUNT(*) AS count FROM wallet_identities") + scalar("SELECT COUNT(*) AS count FROM entity_wallet_identities"),
+        aggregatedTokenCount: scalar("SELECT COUNT(*) AS count FROM token_evaluation_state"),
+        qualifiedSignalCount: scalar("SELECT COUNT(*) AS count FROM broadcast_records"),
+        deliveredSignalCount: scalar("SELECT COUNT(*) AS count FROM signal_outbox WHERE status = 'delivered'"),
+      } };
+    }
+    if (pathname === "/api/v2/token-aggregates") {
+      const items = rows(`
+        SELECT e.token_id AS tokenId, e.chain, e.token_address AS tokenAddress,
+          e.action, e.signal_family AS signalFamily, e.lifecycle_stage AS lifecycleStage,
+          e.score AS currentScore, e.participant_count AS participantCount,
+          e.total_buy_usd AS totalBuyUsd, e.source_state AS sourceState,
+          e.window_ms AS windowMs, e.missing_conditions AS missingConditions,
+          COALESCE(a.broadcast_count, 0) AS broadcastCount, e.updated_at AS updatedAt
+        FROM token_evaluation_state e
+        LEFT JOIN token_aggregation_state a ON a.token_id = e.token_id
+        ORDER BY e.updated_at DESC, e.chain, e.token_address
+        LIMIT 500
+      `).map(item => {
+        const row = item as Record<string, unknown>;
+        const conditions = typeof row.missingConditions === "string"
+          ? stringList(JSON.parse(row.missingConditions) as unknown)
+          : [];
+        return Object.freeze({
+          ...row,
+          missingConditions: Object.freeze(conditions),
+          missingConditionLabels: Object.freeze(conditions.map(explainTokenMissingCondition)),
+        });
+      });
+      return { status: 200, body: { total: items.length, page: 1, pageSize: 500, updatedAt: Date.now(), items } };
+    }
     if (pathname === "/api/v1/overview") {
       const count = (table: string): number => Number((database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count);
       const delivered = Number((database.prepare("SELECT COUNT(*) AS count FROM broadcast_records").get() as { count: number }).count);
@@ -242,11 +290,15 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
       return { status: 200, body: { ...body, syncPending: Number(body.version ?? 0) > Number(body.appliedVersion ?? 0) } };
     }
     if (pathname === "/api/v1/wallet-analyses") return { status: 200, body: rows(`
-      SELECT analysis_id AS analysisId, chain_family AS chainFamily, address, display_name AS displayName,
-        fomo_handle AS fomoHandle, status, requested_sample_count AS requestedSampleCount,
-        valid_sample_count AS validSampleCount, coverage_rate AS coverageRate, metrics,
-        last_error AS lastError, created_at AS createdAt, updated_at AS updatedAt, reviewed_at AS reviewedAt
-      FROM wallet_analysis_jobs ORDER BY created_at DESC LIMIT 500
+      SELECT j.analysis_id AS analysisId, j.chain_family AS chainFamily, j.address, j.display_name AS displayName,
+        j.fomo_handle AS fomoHandle, j.status, j.requested_sample_count AS requestedSampleCount,
+        j.valid_sample_count AS validSampleCount, j.coverage_rate AS coverageRate, j.metrics,
+        j.last_error AS lastError, j.created_at AS createdAt, j.updated_at AS updatedAt, j.reviewed_at AS reviewedAt,
+        p.phase, p.processed_transactions AS processedTransactions, p.discovered_tokens AS discoveredTokens,
+        p.progress_percent AS progressPercent, p.heartbeat_at AS heartbeatAt, p.next_retry_at AS nextRetryAt
+      FROM wallet_analysis_jobs j
+      LEFT JOIN wallet_analysis_progress p ON p.analysis_id = j.analysis_id
+      ORDER BY j.created_at DESC LIMIT 500
     `) };
     if (pathname === "/api/v1/config") return { status: 200, body: rows("SELECT strategy_version AS strategyVersion, payload, created_at AS createdAt FROM strategy_config_versions ORDER BY created_at DESC") };
     if (pathname === "/api/v1/audit") return { status: 200, body: rows("SELECT audit_id AS auditId, action, actor, payload, occurred_at AS occurredAt FROM operator_audit_log ORDER BY occurred_at DESC LIMIT 500") };
@@ -328,6 +380,10 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
           now,
           now,
         );
+        database.prepare(`
+          INSERT INTO wallet_analysis_progress(analysis_id, phase, processed_transactions, discovered_tokens, progress_percent, heartbeat_at, next_retry_at, updated_at)
+          VALUES (?, ?, 0, ?, ?, ?, NULL, ?)
+        `).run(analysisId, metrics ? "completed" : "queued", metrics?.validSamples ?? 0, metrics ? 100 : 0, now, now);
         audit("wallet_analysis.create", { analysisId, chainFamily, address, requestedSampleCount, status });
         return { status: 201, body: { analysisId, chainFamily, address, status, metrics } };
       }

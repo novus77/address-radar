@@ -10,6 +10,7 @@
     "start": "node dist/src/cli.js"
   },
   "dependencies": {
+    "@address-radar/aggregation": "workspace:*",
     "@address-radar/database": "workspace:*",
     "@address-radar/domain": "workspace:*",
     "@address-radar/identity": "workspace:*"

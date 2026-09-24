@@ -653,6 +653,15 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       updated_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS wallet_analysis_progress_phase ON wallet_analysis_progress(phase, heartbeat_at);
+    INSERT OR IGNORE INTO wallet_analysis_progress(
+      analysis_id, phase, processed_transactions, discovered_tokens, progress_percent, heartbeat_at, next_retry_at, updated_at
+    )
+    SELECT analysis_id,
+      CASE WHEN status = 'collecting' THEN 'queued' WHEN status IN ('review_required', 'accepted', 'rejected', 'insufficient_data') THEN 'completed' ELSE 'failed' END,
+      0, valid_sample_count,
+      CASE WHEN status = 'collecting' THEN 0 ELSE 100 END,
+      updated_at, NULL, updated_at
+    FROM wallet_analysis_jobs;
 
     INSERT INTO workbench_schema_versions(version, applied_at)
     VALUES (2, CAST(strftime('%s', 'now') AS INTEGER) * 1000)
