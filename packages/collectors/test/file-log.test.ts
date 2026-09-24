@@ -16,10 +16,12 @@ describe("file-log ingestion", () => {
     await writeFile(path, '{"id":1}\n{"id":2');
     const reader = createJsonLineFileReader(path, { cursorPath, startAtEnd: false });
 
-    expect(await reader.read()).toEqual({ values: [{ id: 1 }], malformedLines: 0 });
+    const first = await reader.read();
+    expect(first).toMatchObject({ values: [{ id: 1 }], malformedLines: 0, byteOffset: 0 });
+    expect(await reader.ack(first!)).toBe(true);
     await appendFile(path, '}\nnot-json\n');
     const restarted = createJsonLineFileReader(path, { cursorPath, startAtEnd: false });
-    expect(await restarted.read()).toEqual({ values: [{ id: 2 }], malformedLines: 1 });
+    expect(await restarted.read()).toMatchObject({ values: [{ id: 2 }], malformedLines: 1 });
   });
 
   it("persists an initial end cursor so restart does not skip events written while stopped", async () => {
@@ -28,11 +30,11 @@ describe("file-log ingestion", () => {
     const cursorPath = join(directory, "events.cursor.json");
     await writeFile(path, '{"id":"old"}\n');
     const first = createJsonLineFileReader(path, { cursorPath });
-    expect(await first.read()).toEqual({ values: [], malformedLines: 0 });
+    expect(await first.read()).toBeNull();
 
     await appendFile(path, '{"id":"new"}\n');
     const restarted = createJsonLineFileReader(path, { cursorPath });
-    expect(await restarted.read()).toEqual({ values: [{ id: "new" }], malformedLines: 0 });
+    expect(await restarted.read()).toMatchObject({ values: [{ id: "new" }], malformedLines: 0 });
   });
 
   it("resets a persisted cursor when the journal is truncated", async () => {
@@ -41,11 +43,45 @@ describe("file-log ingestion", () => {
     const cursorPath = join(directory, "events.cursor.json");
     await writeFile(path, '{"id":1}\n{"id":2}\n');
     const first = createJsonLineFileReader(path, { cursorPath, startAtEnd: false });
-    await first.read();
+    const initial = await first.read();
+    await first.ack(initial!);
     await writeFile(path, '{"id":3}\n');
 
     const restarted = createJsonLineFileReader(path, { cursorPath, startAtEnd: false });
-    expect(await restarted.read()).toEqual({ values: [{ id: 3 }], malformedLines: 0 });
+    expect(await restarted.read()).toMatchObject({ values: [{ id: 3 }], malformedLines: 0 });
+  });
+
+  it("replays an unacknowledged batch after downstream failure and restart", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "collector-log-"));
+    const path = join(directory, "events.jsonl");
+    const cursorPath = join(directory, "events.cursor.json");
+    await writeFile(path, '{"id":1}\n{"id":2}\n');
+    const first = createJsonLineFileReader(path, { cursorPath, startAtEnd: false });
+    const failedBatch = await first.read();
+    expect(failedBatch?.values).toEqual([{ id: 1 }, { id: 2 }]);
+
+    const restarted = createJsonLineFileReader(path, { cursorPath, startAtEnd: false });
+    const replayed = await restarted.read();
+    expect(replayed).toEqual(failedBatch);
+    expect(await restarted.ack(replayed!)).toBe(true);
+    expect(await createJsonLineFileReader(path, { cursorPath, startAtEnd: false }).read()).toBeNull();
+  });
+
+  it("rejects stale and out-of-order acknowledgements without corrupting the cursor", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "collector-log-"));
+    const path = join(directory, "events.jsonl");
+    const cursorPath = join(directory, "events.cursor.json");
+    await writeFile(path, '{"id":1}\n');
+    const reader = createJsonLineFileReader(path, { cursorPath, startAtEnd: false });
+    const first = (await reader.read())!;
+    expect(await reader.ack(first)).toBe(true);
+    await appendFile(path, '{"id":2}\n');
+    const second = (await reader.read())!;
+
+    expect(await reader.ack(first)).toBe(false);
+    expect(await reader.ack({ ...second, byteOffset: second.nextByteOffset, nextByteOffset: second.nextByteOffset + 100 })).toBe(false);
+    const restarted = createJsonLineFileReader(path, { cursorPath, startAtEnd: false });
+    expect((await restarted.read())?.values).toEqual([{ id: 2 }]);
   });
 
   it("parses milestone lookup results without losing replay metadata", () => {

@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   createTradeEventIngestor,
+  importFomoHistoryEvent,
   normalizeFomoHistoryLine,
   normalizeOnchainWalletRecord,
+  parseFomoHistoryEvent,
 } from "@address-radar/collectors";
 
 const fomoLine = JSON.stringify({
@@ -126,5 +128,35 @@ describe("trade event ingestion", () => {
     const event = normalizeFomoHistoryLine(fomoLine, { collectedAt: 2_100 })!;
 
     await expect(ingestor.ingest([event, event])).resolves.toEqual({ inserted: 1, duplicates: 1 });
+  });
+
+  it("reuses the canonical account for a known handle when the upstream account id changes", () => {
+    const event = parseFomoHistoryEvent(fomoLine)!;
+    const insertedEvents: unknown[] = [];
+    const repository = {
+      accountByHandle: () => ({ accountId: "canonical-account", handle: "alpha" }),
+      upsertFomoAccount: () => undefined,
+      ensureTraderEntity: () => undefined,
+      linkAccountToEntity: () => undefined,
+      insertTraderEvent: (inserted: unknown) => { insertedEvents.push(inserted); return { inserted: true }; },
+    };
+
+    expect(importFomoHistoryEvent(repository, { ...event, accountId: "changed-upstream-id" }, 2_100)).toBe(true);
+    expect(insertedEvents).toEqual([expect.objectContaining({ accountId: "canonical-account", entityId: "fomo:canonical-account" })]);
+  });
+
+  it("persists account, entity, and identity link before inserting the event", () => {
+    const event = parseFomoHistoryEvent(fomoLine)!;
+    const calls: string[] = [];
+    const repository = {
+      accountByHandle: () => null,
+      upsertFomoAccount: (value: unknown) => { calls.push("account"); expect(value).toMatchObject({ accountId: "account-1", handle: "alpha" }); },
+      ensureTraderEntity: (value: unknown) => { calls.push("entity"); expect(value).toMatchObject({ entityId: "fomo:account-1", lifecycle: "suspended" }); },
+      linkAccountToEntity: (value: unknown) => { calls.push("link"); expect(value).toMatchObject({ accountId: "account-1", entityId: "fomo:account-1", source: "fomo_token_history" }); },
+      insertTraderEvent: (value: unknown) => { calls.push("event"); expect(value).toMatchObject({ eventId: "fomo-1", source: "fomo_token_history" }); return { inserted: true }; },
+    };
+
+    expect(importFomoHistoryEvent(repository, event, 2_100)).toBe(true);
+    expect(calls).toEqual(["account", "entity", "link", "event"]);
   });
 });

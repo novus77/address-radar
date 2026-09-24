@@ -1,7 +1,11 @@
+import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-export interface JsonLineReadResult {
+export interface JsonLineBatch {
+  readonly byteOffset: number;
+  readonly nextByteOffset: number;
+  readonly leaseId: string;
   readonly values: readonly unknown[];
   readonly malformedLines: number;
 }
@@ -19,6 +23,13 @@ const readText = async (path: string): Promise<string> => {
   }
 };
 
+const parsedCursor = (text: string): number | null => {
+  try {
+    const value = JSON.parse(text) as Partial<FileCursor>;
+    return value.version === 1 && Number.isSafeInteger(value.byteOffset) && value.byteOffset! >= 0 ? value.byteOffset! : null;
+  } catch { return null; }
+};
+
 async function persistCursor(path: string, byteOffset: number): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temporaryPath = `${path}.${process.pid}.${Date.now()}.tmp`;
@@ -26,46 +37,65 @@ async function persistCursor(path: string, byteOffset: number): Promise<void> {
   await rename(temporaryPath, path);
 }
 
+const leaseId = (byteOffset: number, nextByteOffset: number, bytes: Buffer): string => createHash("sha256")
+  .update(`${byteOffset}:${nextByteOffset}:`)
+  .update(bytes)
+  .digest("base64url");
+
 export function createJsonLineFileReader(path: string, options: { readonly cursorPath: string; readonly startAtEnd?: boolean }) {
-  let cursor: Promise<number> | undefined;
-  const loadCursor = (initialSize: number): Promise<number> => {
-    cursor ??= readText(options.cursorPath).then(async (text) => {
-      try {
-        const value = JSON.parse(text) as Partial<FileCursor>;
-        if (value.version === 1 && Number.isSafeInteger(value.byteOffset) && value.byteOffset! >= 0) return value.byteOffset!;
-      } catch {
-        // A missing or damaged cursor starts from the configured initial position.
-      }
-      const initial = options.startAtEnd === false ? 0 : initialSize;
-      await persistCursor(options.cursorPath, initial);
-      return initial;
-    });
-    return cursor;
+  let mutationTail: Promise<void> = Promise.resolve();
+
+  const loadCursor = async (initialSize: number): Promise<number> => {
+    const current = parsedCursor(await readText(options.cursorPath));
+    if (current !== null) return current;
+    const initial = options.startAtEnd === false ? 0 : initialSize;
+    await persistCursor(options.cursorPath, initial);
+    return initial;
   };
 
   return Object.freeze({
-    async read(): Promise<JsonLineReadResult> {
+    async read(): Promise<JsonLineBatch | null> {
       const buffer = await readFile(path);
       let start = await loadCursor(buffer.length);
       if (buffer.length < start) {
         start = 0;
         await persistCursor(options.cursorPath, start);
-        cursor = Promise.resolve(start);
       }
       const finalNewline = buffer.lastIndexOf(10);
-      if (finalNewline < start) return Object.freeze({ values: Object.freeze([]), malformedLines: 0 });
+      if (finalNewline < start) return null;
       const next = finalNewline + 1;
-      const chunk = buffer.subarray(start, next).toString("utf8");
+      const bytes = buffer.subarray(start, next);
       const values: unknown[] = [];
       let malformedLines = 0;
-      for (const line of chunk.split("\n")) {
+      for (const line of bytes.toString("utf8").split("\n")) {
         if (!line.trim()) continue;
         try { values.push(JSON.parse(line)); } catch { malformedLines += 1; }
       }
-      await persistCursor(options.cursorPath, next);
-      cursor = Promise.resolve(next);
-      return Object.freeze({ values: Object.freeze(values), malformedLines });
+      return Object.freeze({
+        byteOffset: start,
+        nextByteOffset: next,
+        leaseId: leaseId(start, next, bytes),
+        values: Object.freeze(values),
+        malformedLines,
+      });
     },
+
+    ack(batch: JsonLineBatch): Promise<boolean> {
+      let committed = false;
+      const operation = mutationTail.then(async () => {
+        const current = parsedCursor(await readText(options.cursorPath));
+        if (current === null || current !== batch.byteOffset || batch.nextByteOffset <= batch.byteOffset) return;
+        const buffer = await readFile(path);
+        if (batch.nextByteOffset > buffer.length || buffer[batch.nextByteOffset - 1] !== 0x0a) return;
+        const bytes = buffer.subarray(batch.byteOffset, batch.nextByteOffset);
+        if (leaseId(batch.byteOffset, batch.nextByteOffset, bytes) !== batch.leaseId) return;
+        await persistCursor(options.cursorPath, batch.nextByteOffset);
+        committed = true;
+      });
+      mutationTail = operation.then(() => undefined, () => undefined);
+      return operation.then(() => committed);
+    },
+
     async cursor(): Promise<number> { return loadCursor(0); },
   });
 }
