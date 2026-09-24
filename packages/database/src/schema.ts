@@ -313,6 +313,40 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       UNIQUE(milestone_id, strategy_version, event_watermark)
     );
     CREATE INDEX IF NOT EXISTS milestone_evaluations_latest ON milestone_evaluations(milestone_id, evaluated_at DESC);
+    CREATE TABLE IF NOT EXISTS historical_backfill_partitions (
+      partition_id TEXT PRIMARY KEY,
+      query_kind TEXT NOT NULL CHECK(query_kind IN ('token_universe', 'milestone_crossings', 'pre_milestone_trades')),
+      chain TEXT NOT NULL,
+      day_start INTEGER NOT NULL,
+      day_end INTEGER NOT NULL,
+      token_addresses TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed')),
+      execution_id TEXT,
+      next_offset INTEGER,
+      row_count INTEGER NOT NULL,
+      attempt_count INTEGER NOT NULL,
+      watermark INTEGER,
+      next_retry_at INTEGER NOT NULL,
+      lease_expires_at INTEGER,
+      last_error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      completed_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS historical_backfill_partitions_claim
+      ON historical_backfill_partitions(status, next_retry_at, created_at, partition_id);
+    CREATE TABLE IF NOT EXISTS historical_backfill_watermarks (
+      chain TEXT NOT NULL,
+      query_kind TEXT NOT NULL,
+      watermark INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY(chain, query_kind)
+    );
+    CREATE TABLE IF NOT EXISTS historical_backfill_credit_usage (
+      usage_day TEXT PRIMARY KEY,
+      credits_used INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS candidate_discoveries (
       discovery_id TEXT PRIMARY KEY,
       account_id TEXT NOT NULL REFERENCES fomo_accounts(account_id),

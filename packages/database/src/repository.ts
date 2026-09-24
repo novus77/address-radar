@@ -149,6 +149,16 @@ export interface AddressRadarRepository extends TokenAggregationRepository, Runt
   milestoneBackfillJobs(): readonly MilestoneBackfillJob[];
   saveMilestoneEvaluation(evaluation: MilestoneEvaluation): void;
   latestMilestoneEvaluation(milestoneId: string): MilestoneEvaluation | null;
+  enqueueHistoricalBackfillPartition(partition: HistoricalBackfillPartition): { readonly inserted: boolean };
+  claimHistoricalBackfillPartition(now: number, leaseMs: number): HistoricalBackfillPartition | null;
+  checkpointHistoricalBackfillPartition(partitionId: string, input: { readonly executionId: string; readonly nextOffset: number; readonly rowCount: number; readonly watermark: number; readonly updatedAt: number }): void;
+  completeHistoricalBackfillPartition(partitionId: string, input: { readonly executionId: string; readonly rowCount: number; readonly watermark: number; readonly completedAt: number }): void;
+  failHistoricalBackfillPartition(partitionId: string, error: string, nextRetryAt: number): void;
+  historicalBackfillPartitions(): readonly HistoricalBackfillPartition[];
+  recordHistoricalCreditUsage(usageDay: string, creditsUsed: number, updatedAt: number): void;
+  historicalCreditsUsed(usageDay: string): number;
+  advanceHistoricalWatermark(chain: string, queryKind: HistoricalBackfillQueryKind, watermark: number, updatedAt: number): void;
+  historicalWatermark(chain: string, queryKind: HistoricalBackfillQueryKind): number | null;
   saveCandidateDiscovery(input: CandidateDiscoveryInput): void;
   activateDiscoveredCandidate(accountId: string, updatedAt: number): string | null;
   candidateDiscoveries(accountId: string): readonly CandidateDiscoveryInput[];
@@ -1008,6 +1018,98 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     latestMilestoneEvaluation(milestoneId) {
       const row = database.prepare("SELECT * FROM milestone_evaluations WHERE milestone_id = ? ORDER BY evaluated_at DESC, evaluation_id DESC LIMIT 1").get(milestoneId) as Record<string, unknown> | undefined;
       return row ? toMilestoneEvaluation(row) : null;
+    },
+
+    enqueueHistoricalBackfillPartition(partition) {
+      const result = database.prepare(`
+        INSERT OR IGNORE INTO historical_backfill_partitions(
+          partition_id, query_kind, chain, day_start, day_end, token_addresses, status,
+          execution_id, next_offset, row_count, attempt_count, watermark, next_retry_at,
+          lease_expires_at, last_error, created_at, updated_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(partition.partitionId, partition.queryKind, partition.chain, partition.dayStart, partition.dayEnd,
+        JSON.stringify(partition.tokenAddresses), partition.status, partition.executionId, partition.nextOffset,
+        partition.rowCount, partition.attemptCount, partition.watermark, partition.nextRetryAt,
+        partition.leaseExpiresAt, partition.lastError, partition.createdAt, partition.updatedAt, partition.completedAt);
+      return Object.freeze({ inserted: result.changes === 1 });
+    },
+
+    claimHistoricalBackfillPartition(now, leaseMs) {
+      return transaction(() => {
+        database.prepare(`
+          UPDATE historical_backfill_partitions
+          SET status = 'pending', lease_expires_at = NULL, next_retry_at = MIN(next_retry_at, ?), updated_at = ?
+          WHERE status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+        `).run(now, now, now);
+        if (database.prepare("SELECT 1 FROM historical_backfill_partitions WHERE status = 'running' LIMIT 1").get()) return null;
+        const row = database.prepare(`
+          SELECT * FROM historical_backfill_partitions
+          WHERE status IN ('pending', 'failed') AND next_retry_at <= ?
+          ORDER BY next_retry_at, created_at, partition_id LIMIT 1
+        `).get(now) as Record<string, unknown> | undefined;
+        if (!row) return null;
+        database.prepare(`
+          UPDATE historical_backfill_partitions
+          SET status = 'running', attempt_count = attempt_count + 1, lease_expires_at = ?, updated_at = ?
+          WHERE partition_id = ?
+        `).run(now + leaseMs, now, row.partition_id as string);
+        return toHistoricalBackfillPartition(database.prepare("SELECT * FROM historical_backfill_partitions WHERE partition_id = ?").get(row.partition_id as string) as Record<string, unknown>);
+      });
+    },
+
+    checkpointHistoricalBackfillPartition(partitionId, input) {
+      database.prepare(`
+        UPDATE historical_backfill_partitions
+        SET status = 'pending', execution_id = ?, next_offset = ?, row_count = ?, watermark = ?,
+            next_retry_at = ?, lease_expires_at = NULL, last_error = NULL, updated_at = ?
+        WHERE partition_id = ? AND status = 'running'
+      `).run(input.executionId, input.nextOffset, input.rowCount, input.watermark, input.updatedAt, input.updatedAt, partitionId);
+    },
+
+    completeHistoricalBackfillPartition(partitionId, input) {
+      database.prepare(`
+        UPDATE historical_backfill_partitions
+        SET status = 'completed', execution_id = ?, next_offset = NULL, row_count = ?, watermark = ?,
+            lease_expires_at = NULL, last_error = NULL, completed_at = ?, updated_at = ?
+        WHERE partition_id = ? AND status = 'running'
+      `).run(input.executionId, input.rowCount, input.watermark, input.completedAt, input.completedAt, partitionId);
+    },
+
+    failHistoricalBackfillPartition(partitionId, error, nextRetryAt) {
+      database.prepare(`
+        UPDATE historical_backfill_partitions
+        SET status = 'failed', last_error = ?, next_retry_at = ?, lease_expires_at = NULL, updated_at = ?
+        WHERE partition_id = ? AND status = 'running'
+      `).run(error, nextRetryAt, nextRetryAt, partitionId);
+    },
+
+    historicalBackfillPartitions() {
+      return Object.freeze((database.prepare("SELECT * FROM historical_backfill_partitions ORDER BY created_at, partition_id").all() as Record<string, unknown>[]).map(toHistoricalBackfillPartition));
+    },
+
+    recordHistoricalCreditUsage(usageDay, creditsUsed, updatedAt) {
+      if (!Number.isSafeInteger(creditsUsed) || creditsUsed < 0) throw new Error("Historical credits must be a nonnegative integer");
+      database.prepare(`
+        INSERT INTO historical_backfill_credit_usage(usage_day, credits_used, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(usage_day) DO UPDATE SET credits_used = historical_backfill_credit_usage.credits_used + excluded.credits_used, updated_at = excluded.updated_at
+      `).run(usageDay, creditsUsed, updatedAt);
+    },
+
+    historicalCreditsUsed(usageDay) {
+      const row = database.prepare("SELECT credits_used AS creditsUsed FROM historical_backfill_credit_usage WHERE usage_day = ?").get(usageDay) as { creditsUsed: number } | undefined;
+      return row?.creditsUsed ?? 0;
+    },
+
+    advanceHistoricalWatermark(chain, queryKind, watermark, updatedAt) {
+      database.prepare(`
+        INSERT INTO historical_backfill_watermarks(chain, query_kind, watermark, updated_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT(chain, query_kind) DO UPDATE SET watermark = MAX(historical_backfill_watermarks.watermark, excluded.watermark), updated_at = excluded.updated_at
+      `).run(chain, queryKind, watermark, updatedAt);
+    },
+
+    historicalWatermark(chain, queryKind) {
+      const row = database.prepare("SELECT watermark FROM historical_backfill_watermarks WHERE chain = ? AND query_kind = ?").get(chain, queryKind) as { watermark: number } | undefined;
+      return row?.watermark ?? null;
     },
 
     saveCandidateDiscovery(input) {
@@ -1917,6 +2019,10 @@ export interface TokenMilestoneRecord { readonly milestoneId: string; readonly c
 export interface MilestoneBackfillJob { readonly jobId: string; readonly milestoneId: string; readonly chain: string; readonly tokenAddress: string; readonly status: MilestoneBackfillStatus; readonly source: MilestoneBackfillSource; readonly cursor: string | null; readonly attemptCount: number; readonly nextAttemptAt: number; readonly coverageStartAt: number | null; readonly coverageEndAt: number | null; readonly recordsSeen: number; readonly recordsInserted: number; readonly lastError: string | null; readonly createdAt: number; readonly updatedAt: number; readonly completedAt: number | null; }
 export interface MilestoneBackfillCompletion { readonly coverageStartAt: number | null; readonly coverageEndAt: number | null; readonly recordsSeen: number; readonly recordsInserted: number; readonly status: "completed" | "partial"; readonly completedAt: number; }
 export interface MilestoneEvaluation { readonly evaluationId: string; readonly milestoneId: string; readonly strategyVersion: string; readonly eventWatermark: number; readonly eligibleBuyCount: number; readonly evaluatedAccountCount: number; readonly qualifiedCandidateCount: number; readonly coverageStatus: MilestoneCoverageStatus; readonly evaluatedAt: number; }
+export type HistoricalBackfillQueryKind = "token_universe" | "milestone_crossings" | "pre_milestone_trades";
+export type HistoricalBackfillStatus = "pending" | "running" | "completed" | "failed";
+export interface HistoricalBackfillPartition { readonly partitionId: string; readonly queryKind: HistoricalBackfillQueryKind; readonly chain: string; readonly dayStart: number; readonly dayEnd: number; readonly tokenAddresses: readonly string[]; readonly status: HistoricalBackfillStatus; readonly executionId: string | null; readonly nextOffset: number | null; readonly rowCount: number; readonly attemptCount: number; readonly watermark: number | null; readonly nextRetryAt: number; readonly leaseExpiresAt: number | null; readonly lastError: string | null; readonly createdAt: number; readonly updatedAt: number; readonly completedAt: number | null; }
 
 const toMilestoneBackfillJob = (row: Record<string, unknown>): MilestoneBackfillJob => Object.freeze({ jobId: row.job_id as string, milestoneId: row.milestone_id as string, chain: row.chain as string, tokenAddress: row.token_address as string, status: row.status as MilestoneBackfillJob["status"], source: row.source as MilestoneBackfillJob["source"], cursor: row.cursor as string | null, attemptCount: row.attempt_count as number, nextAttemptAt: row.next_attempt_at as number, coverageStartAt: row.coverage_start_at as number | null, coverageEndAt: row.coverage_end_at as number | null, recordsSeen: row.records_seen as number, recordsInserted: row.records_inserted as number, lastError: row.last_error as string | null, createdAt: row.created_at as number, updatedAt: row.updated_at as number, completedAt: row.completed_at as number | null });
 const toMilestoneEvaluation = (row: Record<string, unknown>): MilestoneEvaluation => Object.freeze({ evaluationId: row.evaluation_id as string, milestoneId: row.milestone_id as string, strategyVersion: row.strategy_version as string, eventWatermark: row.event_watermark as number, eligibleBuyCount: row.eligible_buy_count as number, evaluatedAccountCount: row.evaluated_account_count as number, qualifiedCandidateCount: row.qualified_candidate_count as number, coverageStatus: row.coverage_status as MilestoneEvaluation["coverageStatus"], evaluatedAt: row.evaluated_at as number });
+const toHistoricalBackfillPartition = (row: Record<string, unknown>): HistoricalBackfillPartition => Object.freeze({ partitionId: row.partition_id as string, queryKind: row.query_kind as HistoricalBackfillQueryKind, chain: row.chain as string, dayStart: row.day_start as number, dayEnd: row.day_end as number, tokenAddresses: Object.freeze(JSON.parse(row.token_addresses as string) as string[]), status: row.status as HistoricalBackfillStatus, executionId: row.execution_id as string | null, nextOffset: row.next_offset as number | null, rowCount: row.row_count as number, attemptCount: row.attempt_count as number, watermark: row.watermark as number | null, nextRetryAt: row.next_retry_at as number, leaseExpiresAt: row.lease_expires_at as number | null, lastError: row.last_error as string | null, createdAt: row.created_at as number, updatedAt: row.updated_at as number, completedAt: row.completed_at as number | null });
