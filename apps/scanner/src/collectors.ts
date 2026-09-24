@@ -1,4 +1,4 @@
-import { createJsonLineFileReader, createJsonRpcClient, normalizeFomoHistoryLine, normalizeOnchainWalletRecord, validateOnchainWalletRecord, type JsonLineRecord, type JsonRpcClient, type OnchainWalletRecord } from "@address-radar/collectors";
+import { createJsonLineFileReader, createJsonRpcClient, parseFomoHistoryLine, normalizeOnchainWalletRecord, validateOnchainWalletRecord, type JsonLineRecord, type JsonRpcClient, type OnchainWalletRecord } from "@address-radar/collectors";
 import type { AddressRadarRepository } from "@address-radar/database";
 import type { MonitoringRegistry } from "@address-radar/identity";
 import type { ScannerConfig } from "./config.js";
@@ -31,8 +31,15 @@ export function createConfiguredCollectors(input: { readonly config: ScannerConf
       }
       const observations = batch.records.flatMap(record => {
         if (!Object.hasOwn(record, "value")) return [];
-        const event = normalizeFomoHistoryLine(JSON.stringify(record.value), { collectedAt: now() });
-        if (!event) { deadLetter(path, record, "fomo_schema_invalid"); return []; }
+        const parsed = parseFomoHistoryLine(JSON.stringify(record.value), { collectedAt: now() });
+        if (!parsed) { deadLetter(path, record, "fomo_schema_invalid"); return []; }
+        const existing = input.repository.accountByHandle(parsed.handle);
+        const accountId = existing?.accountId ?? parsed.event.accountId;
+        const entityId = input.repository.entityForAccount(accountId) ?? `fomo:${accountId}`;
+        input.repository.upsertFomoAccount({ accountId, handle: parsed.handle, firstSeenAt: parsed.event.occurredAt, lastSeenAt: parsed.event.occurredAt });
+        input.repository.ensureTraderEntity({ entityId, lifecycle: "suspended", manual: false, locked: false, createdAt: parsed.event.occurredAt, updatedAt: parsed.event.occurredAt });
+        input.repository.linkAccountToEntity({ entityId, accountId, confidence: "high", source: "fomo_token_history", observedAt: parsed.event.occurredAt });
+        const event = Object.freeze({ ...parsed.event, accountId, entityId });
         return [{ event, ...lifecycleEvidence(record.value) } satisfies ScannerObservation];
       });
       return { observations, status: "ready" as const, queueOldestAt: observations[0]?.event?.occurredAt ?? null, registryVersion: input.monitoringRegistry?.version() ?? 0, commit: async () => { if (!(await reader.ack(batch))) throw new Error(`Unable to acknowledge ${path}`); } };

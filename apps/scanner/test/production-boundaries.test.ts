@@ -11,6 +11,27 @@ const config = (path: string) => ({ databasePath: ":memory:", strategyVersion: "
 const line = (eventId: string) => JSON.stringify({ kind: "event", value: { eventId, eventType: "fomo.activity.buy", payload: { action: "buy", occurredAt: 1_000, usdAmount: 1_000, tokenCreatedAt: 500, asset: { chain: "solana", tokenAddress: "TokenA" }, trader: { id: "account-a", handle: "alpha" } } } });
 
 describe("scanner production boundaries", () => {
+  it("creates identity state for a previously unseen Fomo trader and advances the cursor", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "scanner-new-trader-"));
+    const path = join(directory, "fomo.jsonl");
+    await writeFile(path, `${line("event-new-trader")}\n`);
+    const repository = openAddressRadarRepository(":memory:");
+    const scannerConfig = config(path);
+
+    await createScannerRuntime({
+      repository,
+      collectors: createConfiguredCollectors({ config: scannerConfig, repository, now: () => 2_000 }),
+      clock: { now: () => 2_000 },
+      config: scannerConfig,
+    }).runOnce();
+
+    expect(repository.accountByHandle("alpha")).toMatchObject({ accountId: "account-a" });
+    expect(repository.entityForAccount("account-a")).toBe("fomo:account-a");
+    expect(repository.eventsForToken("solana", "TokenA").map(event => event.eventId)).toEqual(["event-new-trader"]);
+    expect(JSON.parse(await (await import("node:fs/promises")).readFile(`${path}.scanner.cursor`, "utf8")).byteOffset).toBeGreaterThan(0);
+    repository.close();
+  });
+
   it("quarantines a malformed middle line, persists later events, advances, and deduplicates on restart", async () => {
     const directory = await mkdtemp(join(tmpdir(), "scanner-dlq-"));
     const path = join(directory, "fomo.jsonl");

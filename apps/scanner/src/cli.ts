@@ -25,6 +25,7 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
     config,
     lifecycleResolver,
     marketProvider,
+    onCollectorError: (error, collectorIndex) => console.error(`Scanner collector ${collectorIndex} failed`, error),
   });
   const polling = createPollingRuntimeJob({
     runOnce: () => runtime.runOnce(),
