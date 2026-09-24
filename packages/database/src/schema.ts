@@ -480,6 +480,38 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       payload TEXT NOT NULL,
       recorded_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS economic_evidence_consumption (
+      dedupe_key TEXT PRIMARY KEY,
+      broadcast_id TEXT NOT NULL REFERENCES broadcast_records(broadcast_id),
+      consumed_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS signal_outbox (
+      outbox_id TEXT PRIMARY KEY,
+      broadcast_id TEXT NOT NULL UNIQUE REFERENCES broadcast_records(broadcast_id),
+      token_id TEXT NOT NULL,
+      broadcast_sequence INTEGER NOT NULL,
+      payload TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'processing', 'delivered')),
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      next_retry_at INTEGER NOT NULL,
+      last_error TEXT,
+      claimed_by TEXT,
+      claimed_at INTEGER,
+      delivered_at INTEGER,
+      created_at INTEGER NOT NULL,
+      UNIQUE(token_id, broadcast_sequence)
+    );
+    CREATE INDEX IF NOT EXISTS signal_outbox_pending ON signal_outbox(status, next_retry_at, created_at, token_id, broadcast_sequence);
+    CREATE TABLE IF NOT EXISTS collector_dead_letters (
+      dead_letter_id TEXT PRIMARY KEY,
+      source_path TEXT NOT NULL,
+      byte_offset INTEGER NOT NULL,
+      content_hash TEXT NOT NULL,
+      error TEXT NOT NULL,
+      raw_payload TEXT NOT NULL,
+      recorded_at INTEGER NOT NULL,
+      UNIQUE(source_path, byte_offset, content_hash)
+    );
 
     INSERT OR IGNORE INTO trader_tags(entity_id, category, tag, created_at)
     SELECT entity_id, 'source', 'source.manual', created_at

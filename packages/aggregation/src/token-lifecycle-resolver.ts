@@ -29,6 +29,7 @@ export interface TokenLifecycleResolver {
     readonly observedAt: number;
     readonly createdAt?: number | null;
     readonly launchedAt?: number | null;
+    readonly launchProviderStatus?: "ready" | "rate_limited" | "unavailable";
   }): Promise<TokenLifecycleStage>;
 }
 
@@ -43,7 +44,7 @@ export function createTokenLifecycleResolver(input: {
   const cache = new Map<string, { readonly createdAt: number | null; readonly launchedAt: number | null; readonly expiresAt: number }>();
 
   return Object.freeze({
-    async resolve(request: { readonly chain: string; readonly tokenAddress: string; readonly observedAt: number; readonly createdAt?: number | null; readonly launchedAt?: number | null }) {
+    async resolve(request: { readonly chain: string; readonly tokenAddress: string; readonly observedAt: number; readonly createdAt?: number | null; readonly launchedAt?: number | null; readonly launchProviderStatus?: "ready" | "rate_limited" | "unavailable" }) {
       const chain = request.chain.toLowerCase();
       if (!supportedChains.has(chain)) return "unknown";
       const key = `${chain}:${request.tokenAddress.toLowerCase()}`;
@@ -53,8 +54,9 @@ export function createTokenLifecycleResolver(input: {
       }
       const providerRequest = { chain, tokenAddress: request.tokenAddress, signal: new AbortController().signal };
       const creation = request.createdAt !== undefined ? null : await input.creationProvider?.creationFacts(providerRequest);
-      const launch = request.launchedAt !== undefined ? null : await input.launchProvider?.launchFacts(providerRequest);
-      if (request.launchedAt === undefined && launch?.status !== "ready") return "unknown";
+      const launch = request.launchProviderStatus !== undefined || request.launchedAt !== undefined ? null : await input.launchProvider?.launchFacts(providerRequest);
+      const launchStatus = request.launchProviderStatus ?? (request.launchedAt !== undefined ? "ready" : launch?.status);
+      if (launchStatus !== "ready") return "unknown";
       const createdAt = request.createdAt ?? (creation?.status === "ready" ? creation.createdAt ?? null : null);
       const launchTimes = launch?.status === "ready" ? launch.markets.flatMap(market => market.launchedAt === undefined ? [] : [market.launchedAt]) : [];
       const launchedAt = request.launchedAt ?? (launchTimes.length > 0 ? Math.min(...launchTimes) : null);

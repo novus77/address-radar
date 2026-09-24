@@ -73,6 +73,7 @@ export interface ScannerPreflightFilesystem {
 
 export interface ScannerPreflightReport {
   readonly ready: boolean;
+  readonly delivery: "disabled_outbox_only";
   readonly failures: readonly { readonly code: string; readonly message: string }[];
 }
 
@@ -102,5 +103,5 @@ export async function runScannerPreflight(input: {
   const files = [...input.config.fomoFilePaths, ...(input.config.onchainFilePath ? [input.config.onchainFilePath] : [])];
   const usableFiles = (await Promise.all(files.map(path => filesystem.exists(path)))).filter(Boolean).length;
   if (usableFiles === 0 && !input.config.onchainRpcEndpoint) failures.push({ code: "collector_unavailable", message: "At least one usable collector is required" });
-  return Object.freeze({ ready: failures.length === 0, failures: Object.freeze(failures) });
+  return Object.freeze({ ready: failures.length === 0, delivery: "disabled_outbox_only" as const, failures: Object.freeze(failures) });
 }

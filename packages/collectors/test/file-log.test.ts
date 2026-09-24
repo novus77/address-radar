@@ -67,6 +67,21 @@ describe("file-log ingestion", () => {
     expect(await createJsonLineFileReader(path, { cursorPath, startAtEnd: false }).read()).toBeNull();
   });
 
+  it("reports stable per-line offsets and bounded malformed payloads", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "collector-log-"));
+    const path = join(directory, "events.jsonl");
+    const cursorPath = join(directory, "events.cursor.json");
+    await writeFile(path, '{"id":1}\nnot-json\n{"id":2}\n');
+    const batch = await createJsonLineFileReader(path, { cursorPath, startAtEnd: false }).read();
+
+    expect(batch?.records).toEqual([
+      expect.objectContaining({ byteOffset: 0, value: { id: 1 } }),
+      expect.objectContaining({ byteOffset: 9, error: expect.any(String), raw: "not-json" }),
+      expect.objectContaining({ byteOffset: 18, value: { id: 2 } }),
+    ]);
+    expect(batch?.records[1]?.hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
   it("rejects stale and out-of-order acknowledgements without corrupting the cursor", async () => {
     const directory = await mkdtemp(join(tmpdir(), "collector-log-"));
     const path = join(directory, "events.jsonl");

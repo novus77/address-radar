@@ -30,17 +30,16 @@ describe("configured scanner end to end", () => {
       saveAbility(entityId);
     }
     const config = parseScannerConfig({ ADDRESS_RADAR_DATABASE_PATH: join(directory, "address.sqlite"), ADDRESS_RADAR_STRATEGY_VERSION: "address-v1", ADDRESS_RADAR_FOMO_EVENT_LOG_PATH: eventPath, ADDRESS_RADAR_FILE_START_AT_END: "false" });
-    const emitted: unknown[] = [];
     const runtime = createScannerRuntime({
       repository, collectors: createConfiguredCollectors({ config, repository, now: () => 3_000 }),
-      signalSink: { accept: values => { emitted.push(...values); } }, clock: { now: () => 3_000 },
+      clock: { now: () => 3_000 },
       lifecycleResolver: { resolve: async () => "launched_0_2h" },
       marketProvider: { lookup: async () => ({ chain: "solana", tokenAddress: "TokenA", symbol: "TOK", name: "Token A", imageUrl: null, priceUsd: 0.01, marketCapUsd: 100_000, liquidityUsd: 50_000, createdAt: 500, launchedAt: 900, observedAt: new Date(3_000).toISOString() }) },
       config,
     });
     expect(await runtime.runOnce()).toMatchObject({ collected: 2, accepted: 2, candidateCount: 1 });
     expect(repository.eventsForToken("solana", "TokenA")).toHaveLength(2);
-    expect(emitted).toEqual([expect.objectContaining({ schemaVersion: "1", signalId: "solana:TokenA", category: "new_token_discovery", broadcastSequence: 1, token: { chain: "solana", contractAddress: "TokenA", symbol: "TOK", name: "Token A", imageUrl: null } })]);
+    expect(repository.pendingSignalOutbox().map(row => row.payload)).toEqual([expect.objectContaining({ schemaVersion: "1", signalId: "solana:TokenA", category: "new_token_discovery", broadcastSequence: 1, token: { chain: "solana", contractAddress: "TokenA", symbol: "TOK", name: "Token A", imageUrl: null } })]);
   });
 
   it.each(["database", "resolver", "aggregation"] as const)("does not acknowledge after %s failure and replays after restart", async (failure) => {
@@ -92,9 +91,8 @@ describe("configured scanner end to end", () => {
       saveAbility(`fomo:${id}`);
     }
     const config = parseScannerConfig({ ADDRESS_RADAR_DATABASE_PATH: join(directory, "address.sqlite"), ADDRESS_RADAR_STRATEGY_VERSION: "address-v1", ADDRESS_RADAR_FOMO_EVENT_LOG_PATH: eventPath, ADDRESS_RADAR_FILE_START_AT_END: "false" });
-    const emitted: unknown[] = [];
-    const runtime = createScannerRuntime({ repository, collectors: createConfiguredCollectors({ config, repository, now: () => 6_000 }), signalSink: { accept: signals => { emitted.push(...signals); } }, clock: { now: () => 6_000 }, lifecycleResolver: { resolve: async input => input.createdAt ? "created" : "unknown" }, config });
+    const runtime = createScannerRuntime({ repository, collectors: createConfiguredCollectors({ config, repository, now: () => 6_000 }), clock: { now: () => 6_000 }, lifecycleResolver: { resolve: async input => input.createdAt ? "created" : "unknown" }, config });
     await runtime.runOnce();
-    expect(emitted).toEqual([expect.objectContaining({ category: "new_token_discovery" })]);
+    expect(repository.pendingSignalOutbox().map(row => row.payload)).toEqual([expect.objectContaining({ category: "new_token_discovery" })]);
   });
 });

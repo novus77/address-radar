@@ -19,7 +19,6 @@ describe("scanner runtime", () => {
       repository.upsertTraderSignalProfile({ entityId, monitoringEnabled: true, fomoMonitoringEnabled: true, onchainMonitoringEnabled: true, updatedAt: 1 });
       repository.insertTraderEvent({ eventId, accountId, entityId, chain: index === 3 ? "base" : "solana", tokenAddress: "TokenA", side: "buy", amountUsd: index === 2 ? 10 : 1_000, priceUsd: 0.01, marketCapUsd: 100_000, tokenAgeMs: 60_000, occurredAt: 1_000, collectedAt: 1_000, source: "fomo_stream" });
     }
-    const accepted = vi.fn();
     const runtime = createScannerRuntime({
       repository,
       collectors: [{
@@ -30,7 +29,6 @@ describe("scanner runtime", () => {
           { chain: "base", tokenAddress: "TokenA", evidence: { eventId: "blocked-chain", entityId: "entity-3", contribution: 0.9, occurredAt: 1_003, side: "buy", amountUsd: 1_000, lifecycleStage: "launched_0_2h" } },
         ],
       }],
-      signalSink: { accept: accepted },
       clock: { now: () => 3_000 },
       config: {
         strategyVersion: "address-v1",
@@ -45,7 +43,7 @@ describe("scanner runtime", () => {
     const result = await runtime.runOnce();
 
     expect(result).toMatchObject({ collected: 4, accepted: 2, rejected: 2, candidateCount: 1 });
-    expect(accepted).toHaveBeenCalledWith([expect.objectContaining({ signalId: "solana:TokenA", broadcastSequence: 1 })]);
+    expect(repository.pendingSignalOutbox().map(row => row.payload)).toEqual([expect.objectContaining({ signalId: "solana:TokenA", broadcastSequence: 1 })]);
   });
 
   it("isolates failed providers and persists runtime quality", async () => {

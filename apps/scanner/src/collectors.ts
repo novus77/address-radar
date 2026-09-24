@@ -23,8 +23,11 @@ export function createConfiguredCollectors(input: { readonly config: ScannerConf
     return { name: `fomo-file-${index}`, async collect() {
       const batch = await reader.read();
       if (!batch) return { observations: [], status: "ready" as const, queueOldestAt: null, registryVersion: input.monitoringRegistry?.version() ?? 0 };
+      for (const malformed of batch.records.filter(record => record.error)) {
+        input.repository.recordCollectorDeadLetter({ deadLetterId: `jsonl:${path}:${malformed.byteOffset}:${malformed.hash}`, sourcePath: path, byteOffset: malformed.byteOffset, contentHash: malformed.hash, error: malformed.error!, rawPayload: malformed.raw ?? "", recordedAt: now() });
+      }
       const observations = batch.values.flatMap(value => { const event = normalizeFomoHistoryLine(JSON.stringify(value), { collectedAt: now() }); return event ? [{ event, ...lifecycleEvidence(value) } satisfies ScannerObservation] : []; });
-      return { observations, status: batch.malformedLines ? "degraded" as const : "ready" as const, queueOldestAt: observations[0]?.event?.occurredAt ?? null, registryVersion: input.monitoringRegistry?.version() ?? 0, commit: async () => { if (!(await reader.ack(batch))) throw new Error(`Unable to acknowledge ${path}`); } };
+      return { observations, status: "ready" as const, queueOldestAt: observations[0]?.event?.occurredAt ?? null, registryVersion: input.monitoringRegistry?.version() ?? 0, commit: async () => { if (!(await reader.ack(batch))) throw new Error(`Unable to acknowledge ${path}`); } };
     } };
   });
   const makeOnchain = (name: string, load: () => Promise<{ readonly records: readonly OnchainWalletRecord[]; readonly commit?: () => Promise<void> }>): ScannerCollector => ({ name, async collect() {
@@ -43,7 +46,7 @@ export function createConfiguredCollectors(input: { readonly config: ScannerConf
   if (input.config.onchainFilePath && input.monitoringRegistry) {
     const path = input.config.onchainFilePath;
     const reader = createJsonLineFileReader(path, { cursorPath: `${path}.scanner.cursor`, startAtEnd: input.config.fileStartAtEnd });
-    collectors.push(makeOnchain("onchain-file", async () => { const batch = await reader.read(); if (!batch) return { records: [] }; return { records: batch.values as OnchainWalletRecord[], commit: async () => { if (!(await reader.ack(batch))) throw new Error(`Unable to acknowledge ${path}`); } }; }));
+    collectors.push(makeOnchain("onchain-file", async () => { const batch = await reader.read(); if (!batch) return { records: [] }; for (const malformed of batch.records.filter(record => record.error)) input.repository.recordCollectorDeadLetter({ deadLetterId: `jsonl:${path}:${malformed.byteOffset}:${malformed.hash}`, sourcePath: path, byteOffset: malformed.byteOffset, contentHash: malformed.hash, error: malformed.error!, rawPayload: malformed.raw ?? "", recordedAt: now() }); return { records: batch.values as OnchainWalletRecord[], commit: async () => { if (!(await reader.ack(batch))) throw new Error(`Unable to acknowledge ${path}`); } }; }));
   }
   if (input.config.onchainRpcEndpoint && input.monitoringRegistry) {
     const rpc = input.rpcClient ?? createJsonRpcClient({ endpoint: input.config.onchainRpcEndpoint });

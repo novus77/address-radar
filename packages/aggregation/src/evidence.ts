@@ -20,6 +20,7 @@ export interface AddressSignalEvidence {
 export interface TokenAggregationPrevious {
   readonly broadcastCount: number;
   readonly consumedEvidenceIds: readonly string[];
+  readonly consumedEconomicKeys?: readonly string[];
 }
 
 export interface AggregatedTraderEvidence {
@@ -56,7 +57,8 @@ export function aggregateEvidenceWindow(input: {
   readonly windowMs: (stage: TokenLifecycleStage) => number;
 }): TokenEvidenceSnapshot {
   const consumed = new Set(input.previous?.consumedEvidenceIds ?? []);
-  const freshBuys = input.evidence.filter(item => !consumed.has(item.eventId) && (item.side ?? "buy") === "buy");
+  const consumedEconomic = new Set(input.previous?.consumedEconomicKeys ?? []);
+  const freshBuys = input.evidence.filter(item => !consumed.has(item.eventId) && !consumedEconomic.has(item.dedupeKey ?? item.eventId) && (item.side ?? "buy") === "buy");
   if (freshBuys.length === 0) {
     return Object.freeze({
       lifecycleStage: "unknown",

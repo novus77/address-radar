@@ -28,7 +28,8 @@ export interface ScannerRunResult { readonly collected: number; readonly accepte
 export interface ScannerRuntimeOptions {
   readonly repository: AddressRadarRepository;
   readonly collectors: readonly ScannerCollector[];
-  readonly signalSink: SignalCandidateSink;
+  /** External delivery is owned by the outbox publisher, never by candidate generation. */
+  readonly signalSink?: SignalCandidateSink;
   readonly clock: { now(): number };
   readonly config: ScannerPolicyConfig;
   readonly lifecycleResolver?: Pick<TokenLifecycleResolver, "resolve">;
@@ -82,7 +83,7 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
         registryVersion = Math.max(registryVersion, batch.registryVersion ?? 0);
         if (batch.queueOldestAt != null) queueOldestAt = queueOldestAt === null ? batch.queueOldestAt : Math.min(queueOldestAt, batch.queueOldestAt);
 
-        let batchFailed = batch.status !== "ready";
+        let batchFailed = false;
         const groups = new Map<string, { chain: string; tokenAddress: string; evidence: AddressSignalEvidence[]; market: TokenMarketSnapshot | null }>();
         for (const observation of batch.observations) {
           try {
@@ -90,6 +91,7 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
             let tokenAddress: string;
             let evidence: AddressSignalEvidence;
             let market: TokenMarketSnapshot | null = null;
+            let observationLaunchStatus: "ready" | "unavailable" | undefined;
             if (observation.event) {
               const mappedEntity = options.repository.entityForAccount(observation.event.accountId);
               const event = mappedEntity ? { ...observation.event, entityId: mappedEntity } : observation.event;
@@ -97,13 +99,14 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
               chain = event.chain.toLowerCase();
               tokenAddress = event.tokenAddress;
               if (options.marketProvider) {
-                try { market = await options.marketProvider.lookup(chain, tokenAddress); }
-                catch (error) { marketStatus = "degraded"; batchFailed = true; options.onCollectorError?.(error, index); }
+                try { market = await options.marketProvider.lookup(chain, tokenAddress); observationLaunchStatus = "ready"; }
+                catch (error) { marketStatus = "degraded"; observationLaunchStatus = "unavailable"; batchFailed = true; options.onCollectorError?.(error, index); }
               }
               let lifecycleStage: AddressSignalEvidence["lifecycleStage"] = "unknown";
               if (options.lifecycleResolver) {
                 try {
-                  lifecycleStage = await options.lifecycleResolver.resolve({ chain, tokenAddress, observedAt: event.occurredAt, ...(observation.createdAt !== undefined ? { createdAt: observation.createdAt } : {}), ...(observation.launchedAt !== undefined ? { launchedAt: observation.launchedAt } : {}) });
+                  const launchProviderStatus = observationLaunchStatus ?? (observation.launchedAt !== undefined ? "ready" as const : undefined);
+                  lifecycleStage = await options.lifecycleResolver.resolve({ chain, tokenAddress, observedAt: event.occurredAt, ...(observation.createdAt !== undefined ? { createdAt: observation.createdAt } : {}), ...(observation.launchedAt !== undefined ? { launchedAt: observation.launchedAt } : {}), ...(launchProviderStatus ? { launchProviderStatus } : {}) });
                 } catch (error) {
                   lifecycleStatus = "degraded";
                   batchFailed = true;
@@ -168,10 +171,6 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
           catch (error) { batchFailed = true; options.onCollectorError?.(error, index); }
         }
         if (batchFailed) failures += 1;
-        if (candidates.length > 0) {
-          try { await options.signalSink.accept(Object.freeze(candidates)); }
-          catch (error) { options.onCollectorError?.(error, index); }
-        }
       }
 
       if (options.lifecycleResolver) statuses.lifecycle = lifecycleStatus;

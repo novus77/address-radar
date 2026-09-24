@@ -11,6 +11,8 @@ export type {
   CandidateDiscoveryInput,
   CommitTokenBroadcastInput,
   CommitTokenBroadcastResult,
+  SignalOutboxRecord,
+  CollectorDeadLetter,
   IdentityConflictRecord,
   IdentityResolutionBatchRecord,
   IdentityResolutionCache,

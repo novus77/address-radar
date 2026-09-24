@@ -52,19 +52,32 @@ const exactKeys = (value: Record<string, unknown>, expected: readonly string[]):
 };
 const finiteNullable = (value: unknown): boolean => value === null || (typeof value === "number" && Number.isFinite(value));
 const iso = (value: unknown): value is string => typeof value === "string" && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
+const supportedChains = new Set(["eth", "bnb", "bsc", "monad", "robinhood", "base", "solana", "sol"]);
+const nonempty = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
+
+export class RadarSignalValidationError extends Error {
+  readonly name = "RadarSignalValidationError";
+  constructor(readonly field: string, message: string) { super(`Invalid RadarSignalV1 ${field}: ${message}`); }
+}
+
+const invalid = (field: string, message: string): never => { throw new RadarSignalValidationError(field, message); };
 
 function parseCurrentRadarSignalEnvelope(payload: unknown): RadarSignalV1 {
   let decoded = payload;
   if (typeof decoded === "string") {
     try { decoded = JSON.parse(decoded) as unknown; } catch { throw new Error("Corrupt RadarSignalV1 replay payload"); }
   }
-  if (!record(decoded) || decoded.kind !== "radar_signal_evaluation" || decoded.version !== 1 || !record(decoded.publicSignal)) throw new Error("Corrupt RadarSignalV1 replay envelope");
+  if (!record(decoded) || decoded.kind !== "radar_signal_evaluation" || decoded.version !== 1 || !record(decoded.publicSignal)) return invalid("envelope", "corrupt replay envelope");
   const signal = decoded.publicSignal;
-  if (!exactKeys(signal, ["schemaVersion", "signalId", "idempotencyKey", "token", "category", "broadcastSequence", "score", "confidence", "marketCapUsd", "priceUsd", "triggeredAt", "expiresAt", "display"]) || signal.schemaVersion !== "1" || typeof signal.signalId !== "string" || typeof signal.idempotencyKey !== "string") throw new Error("Corrupt RadarSignalV1 public contract");
-  if (!record(signal.token) || !exactKeys(signal.token, ["chain", "contractAddress", "symbol", "name", "imageUrl"]) || typeof signal.token.chain !== "string" || typeof signal.token.contractAddress !== "string" || ![signal.token.symbol, signal.token.name, signal.token.imageUrl].every(value => value === null || typeof value === "string")) throw new Error("Corrupt RadarSignalV1 token");
-  if (signal.category !== "new_token_discovery" && signal.category !== "old_token_momentum") throw new Error("Corrupt RadarSignalV1 category");
-  if (!Number.isSafeInteger(signal.broadcastSequence) || (signal.broadcastSequence as number) < 1 || typeof signal.score !== "number" || !Number.isFinite(signal.score) || typeof signal.confidence !== "number" || !Number.isFinite(signal.confidence) || !finiteNullable(signal.marketCapUsd) || !finiteNullable(signal.priceUsd) || !iso(signal.triggeredAt) || !iso(signal.expiresAt)) throw new Error("Corrupt RadarSignalV1 values");
-  if (!record(signal.display) || !exactKeys(signal.display, ["title", "summary", "reasonCodes"]) || typeof signal.display.title !== "string" || typeof signal.display.summary !== "string" || !Array.isArray(signal.display.reasonCodes) || !signal.display.reasonCodes.every(value => typeof value === "string")) throw new Error("Corrupt RadarSignalV1 display");
+  if (!exactKeys(signal, ["schemaVersion", "signalId", "idempotencyKey", "token", "category", "broadcastSequence", "score", "confidence", "marketCapUsd", "priceUsd", "triggeredAt", "expiresAt", "display"]) || signal.schemaVersion !== "1") return invalid("keys", "contract keys are not exact");
+  if (!nonempty(signal.signalId) || !nonempty(signal.idempotencyKey)) return invalid("identity", "IDs must be nonempty");
+  if (!record(signal.token) || !exactKeys(signal.token, ["chain", "contractAddress", "symbol", "name", "imageUrl"]) || !nonempty(signal.token.chain) || !supportedChains.has(signal.token.chain.toLowerCase()) || !nonempty(signal.token.contractAddress) || ![signal.token.symbol, signal.token.name, signal.token.imageUrl].every(value => value === null || typeof value === "string")) return invalid("token", "unsupported or malformed token");
+  if (signal.category !== "new_token_discovery" && signal.category !== "old_token_momentum") return invalid("category", "unsupported category");
+  if (!Number.isSafeInteger(signal.broadcastSequence) || (signal.broadcastSequence as number) < 1) return invalid("broadcastSequence", "must be positive");
+  if (typeof signal.score !== "number" || !Number.isFinite(signal.score) || signal.score < 0 || signal.score > 1 || typeof signal.confidence !== "number" || !Number.isFinite(signal.confidence) || signal.confidence < 0 || signal.confidence > 1) return invalid("score", "score and confidence must be within [0, 1]");
+  if (!finiteNullable(signal.marketCapUsd) || !finiteNullable(signal.priceUsd) || (typeof signal.marketCapUsd === "number" && signal.marketCapUsd < 0) || (typeof signal.priceUsd === "number" && signal.priceUsd < 0)) return invalid("market", "market values must be nonnegative finite numbers");
+  if (!iso(signal.triggeredAt) || !iso(signal.expiresAt) || Date.parse(signal.expiresAt) <= Date.parse(signal.triggeredAt)) return invalid("dates", "dates must be ISO and expiration must follow trigger");
+  if (!record(signal.display) || !exactKeys(signal.display, ["title", "summary", "reasonCodes"]) || !nonempty(signal.display.title) || !nonempty(signal.display.summary) || !Array.isArray(signal.display.reasonCodes) || signal.display.reasonCodes.length === 0 || !signal.display.reasonCodes.every(nonempty)) return invalid("display", "display fields must be nonempty");
   return Object.freeze({ ...signal, token: Object.freeze({ ...signal.token }), display: Object.freeze({ ...signal.display, reasonCodes: Object.freeze([...signal.display.reasonCodes]) }) }) as unknown as RadarSignalV1;
 }
 
@@ -202,6 +215,7 @@ export function createTokenSignalService(options: TokenSignalServiceOptions) {
         }),
       });
     },
+    publicSignal: candidate => candidate.publicSignal,
   });
   return Object.freeze({
     evaluate(chain: string, tokenAddress: string, evidence: readonly AddressSignalEvidence[], metadata?: TokenSignalMetadata): TokenSignalEvaluation {

@@ -13,6 +13,15 @@ export interface SignalTraderProfile {
 export interface TokenAggregationState {
   readonly broadcastCount: number;
   readonly consumedEvidenceIds: readonly string[];
+  readonly consumedEconomicKeys: readonly string[];
+}
+
+export interface TokenEvaluationInput {
+  readonly chain: string; readonly tokenAddress: string; readonly action: "observe" | "broadcast" | "rebroadcast";
+  readonly signalFamily: "NEW_TOKEN_DISCOVERY" | "OLD_TOKEN_MOVEMENT" | null;
+  readonly lifecycleStage: string; readonly score: number; readonly participantCount: number;
+  readonly totalBuyUsd: number; readonly sourceState: AddressEvidenceSourceState; readonly windowMs: number;
+  readonly missingConditions: readonly string[]; readonly updatedAt: number;
 }
 
 export interface TokenAggregationRepository {
@@ -27,16 +36,11 @@ export interface TokenAggregationRepository {
     readonly onchainMonitoringEnabled: boolean;
     readonly updatedAt: number;
   }): void;
-  saveTokenEvaluation(input: {
-    readonly chain: string; readonly tokenAddress: string; readonly action: "observe" | "broadcast" | "rebroadcast";
-    readonly signalFamily: "NEW_TOKEN_DISCOVERY" | "OLD_TOKEN_MOVEMENT" | null;
-    readonly lifecycleStage: string; readonly score: number; readonly participantCount: number;
-    readonly totalBuyUsd: number; readonly sourceState: AddressEvidenceSourceState; readonly windowMs: number;
-    readonly missingConditions: readonly string[]; readonly updatedAt: number;
-  }): void;
+  saveTokenEvaluation(input: TokenEvaluationInput): void;
   commitTokenBroadcast(input: {
     readonly chain: string; readonly tokenAddress: string; readonly expectedPreviousBroadcastCount: number;
     readonly strategyVersion: string; readonly score: number; readonly triggeredAt: number;
-    readonly evidenceIds: readonly string[]; readonly payload: unknown;
+    readonly evidenceIds: readonly string[]; readonly economicKeys: readonly string[];
+    readonly evaluation: TokenEvaluationInput; readonly payload: unknown; readonly publicSignal: unknown;
   }): { readonly inserted: boolean; readonly broadcastNumber: number };
 }

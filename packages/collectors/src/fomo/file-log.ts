@@ -8,6 +8,16 @@ export interface JsonLineBatch {
   readonly leaseId: string;
   readonly values: readonly unknown[];
   readonly malformedLines: number;
+  readonly records: readonly JsonLineRecord[];
+}
+
+export interface JsonLineRecord {
+  readonly byteOffset: number;
+  readonly nextByteOffset: number;
+  readonly hash: string;
+  readonly raw?: string;
+  readonly error?: string;
+  readonly value?: unknown;
 }
 
 interface FileCursor {
@@ -67,9 +77,22 @@ export function createJsonLineFileReader(path: string, options: { readonly curso
       const bytes = buffer.subarray(start, next);
       const values: unknown[] = [];
       let malformedLines = 0;
-      for (const line of bytes.toString("utf8").split("\n")) {
-        if (!line.trim()) continue;
-        try { values.push(JSON.parse(line)); } catch { malformedLines += 1; }
+      const records: JsonLineRecord[] = [];
+      let relativeOffset = 0;
+      for (const lineBytes of bytes.toString("utf8").split("\n")) {
+        const lineLength = Buffer.byteLength(lineBytes, "utf8");
+        const lineOffset = start + relativeOffset;
+        relativeOffset += lineLength + 1;
+        if (!lineBytes.trim()) continue;
+        const hash = createHash("sha256").update(lineBytes).digest("hex");
+        try {
+          const value = JSON.parse(lineBytes) as unknown;
+          values.push(value);
+          records.push(Object.freeze({ byteOffset: lineOffset, nextByteOffset: lineOffset + lineLength + 1, hash, value }));
+        } catch (error) {
+          malformedLines += 1;
+          records.push(Object.freeze({ byteOffset: lineOffset, nextByteOffset: lineOffset + lineLength + 1, hash, raw: lineBytes.slice(0, 4_096), error: error instanceof Error ? error.message : String(error) }));
+        }
       }
       return Object.freeze({
         byteOffset: start,
@@ -77,6 +100,7 @@ export function createJsonLineFileReader(path: string, options: { readonly curso
         leaseId: leaseId(start, next, bytes),
         values: Object.freeze(values),
         malformedLines,
+        records: Object.freeze(records),
       });
     },
 

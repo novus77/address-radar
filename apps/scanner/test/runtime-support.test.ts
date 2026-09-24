@@ -45,7 +45,7 @@ describe("scanner runtime support", () => {
     });
 
     expect(config.allowedChains).toEqual(["solana", "base"]);
-    expect(report).toEqual({ ready: true, failures: [] });
+    expect(report).toEqual({ ready: true, delivery: "disabled_outbox_only", failures: [] });
   });
 
   it("fails preflight without a usable collector", async () => {

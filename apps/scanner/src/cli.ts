@@ -15,21 +15,11 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
   const repository = openAddressRadarRepository(config.databasePath);
   const monitoringRegistry = openMonitoringRegistry(config.databasePath);
   const marketProvider = createDexScreenerClient({ ...(config.marketBaseUrl ? { baseUrl: config.marketBaseUrl } : {}) });
-  const lifecycleResolver = createTokenLifecycleResolver({ launchProvider: {
-    async launchFacts(request) {
-      const market = await marketProvider.lookup(request.chain, request.tokenAddress);
-      if (!market) return { status: "unavailable" as const, markets: [] };
-      return {
-        status: "ready" as const,
-        markets: market.launchedAt != null ? [{ launchedAt: market.launchedAt }] : [],
-      };
-    },
-  } });
+  const lifecycleResolver = createTokenLifecycleResolver({});
   const collectors = createConfiguredCollectors({ config, repository, monitoringRegistry });
   const runtime = createScannerRuntime({
     repository,
     collectors,
-    signalSink: { accept: () => undefined },
     clock: { now: Date.now },
     config,
     lifecycleResolver,

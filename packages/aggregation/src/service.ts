@@ -20,6 +20,7 @@ export function createTokenAggregationService<TCandidate>(input: {
   readonly now: () => number;
   readonly evaluate: (input: { previous: TokenAggregationStateLike | null; threshold: number; minimumTotalBuyUsd?: number | undefined; evidence: readonly AddressSignalEvidence[] }) => AggregationDecision;
   readonly createCandidate: (input: { chain: string; tokenAddress: string; decision: AggregationDecision; evidence: readonly AddressSignalEvidence[]; triggeredAt: number; metadata?: Readonly<Record<string, unknown>> }) => TCandidate;
+  readonly publicSignal: (candidate: TCandidate) => unknown;
 }) {
   return Object.freeze({
     evaluate(chain: string, tokenAddress: string, evidence: readonly AddressSignalEvidence[], metadata?: Readonly<Record<string, unknown>>) {
@@ -37,15 +38,18 @@ export function createTokenAggregationService<TCandidate>(input: {
         return Object.freeze({ decision, candidate: null });
       }
       const candidate = input.createCandidate({ chain, tokenAddress, decision, evidence: eligible, triggeredAt: at, ...(metadata ? { metadata } : {}) });
-      const committed = input.repository.commitTokenBroadcast({ chain, tokenAddress, expectedPreviousBroadcastCount: previous?.broadcastCount ?? 0, strategyVersion: input.strategyVersion, score: decision.score, triggeredAt: at, evidenceIds: decision.consumeEvidenceIds, payload: candidate });
+      const selected = eligible.filter(item => decision.consumeEvidenceIds.includes(item.eventId));
+      const economicKeys = [...new Set(selected.map(item => item.dedupeKey ?? item.eventId))];
+      const evaluation = evaluationInput(chain, tokenAddress, decision, at);
+      const committed = input.repository.commitTokenBroadcast({ chain, tokenAddress, expectedPreviousBroadcastCount: previous?.broadcastCount ?? 0, strategyVersion: input.strategyVersion, score: decision.score, triggeredAt: at, evidenceIds: decision.consumeEvidenceIds, economicKeys, evaluation, payload: candidate, publicSignal: input.publicSignal(candidate) });
       if (!committed.inserted) return Object.freeze({ decision: { ...decision, action: "observe" as const, broadcastNumber: committed.broadcastNumber, consumeEvidenceIds: [] }, candidate: null });
-      save(input.repository, chain, tokenAddress, decision, at);
       return Object.freeze({ decision, candidate });
     },
   });
 }
 
-interface TokenAggregationStateLike { readonly broadcastCount: number; readonly consumedEvidenceIds: readonly string[] }
+interface TokenAggregationStateLike { readonly broadcastCount: number; readonly consumedEvidenceIds: readonly string[]; readonly consumedEconomicKeys?: readonly string[] }
 function save(repository: TokenAggregationRepository, chain: string, tokenAddress: string, decision: AggregationDecision, updatedAt: number): void {
-  repository.saveTokenEvaluation({ chain, tokenAddress, action: decision.action, signalFamily: decision.signalFamily, lifecycleStage: decision.lifecycleStage, score: decision.score, participantCount: decision.participantCount, totalBuyUsd: decision.totalBuyUsd, sourceState: decision.sourceState, windowMs: decision.windowMs, missingConditions: decision.missingConditions, updatedAt });
+  repository.saveTokenEvaluation(evaluationInput(chain, tokenAddress, decision, updatedAt));
 }
+const evaluationInput = (chain: string, tokenAddress: string, decision: AggregationDecision, updatedAt: number) => ({ chain, tokenAddress, action: decision.action, signalFamily: decision.signalFamily, lifecycleStage: decision.lifecycleStage, score: decision.score, participantCount: decision.participantCount, totalBuyUsd: decision.totalBuyUsd, sourceState: decision.sourceState, windowMs: decision.windowMs, missingConditions: decision.missingConditions, updatedAt });

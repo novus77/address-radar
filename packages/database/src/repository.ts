@@ -64,11 +64,13 @@ export interface TraderEntityRecord { readonly entityId: string; readonly lifecy
 export interface TraderPopulationAuditRecord { readonly current30dAccountIds: readonly string[]; readonly admitToObservation: number; readonly suspend24hOnly: number; readonly genuineCandidates: number; readonly historical24hObservations: number }
 
 export interface TraderLifecycleEventRecord { readonly lifecycleEventId: string; readonly entityId: string; readonly previousState: TraderEntityInput["lifecycle"]; readonly nextState: TraderEntityInput["lifecycle"]; readonly reasons: readonly string[]; readonly strategyVersion: string; readonly occurredAt: number }
-export interface TokenAggregationStateRecord { readonly tokenId: string; readonly chain: string; readonly tokenAddress: string; readonly currentScore: number; readonly peakScore: number; readonly broadcastCount: number; readonly updatedAt: number; readonly consumedEvidenceIds: readonly string[] }
+export interface TokenAggregationStateRecord { readonly tokenId: string; readonly chain: string; readonly tokenAddress: string; readonly currentScore: number; readonly peakScore: number; readonly broadcastCount: number; readonly updatedAt: number; readonly consumedEvidenceIds: readonly string[]; readonly consumedEconomicKeys: readonly string[] }
 export interface TokenEvaluationRecord { readonly tokenId: string; readonly chain: string; readonly tokenAddress: string; readonly action: "observe" | "broadcast" | "rebroadcast"; readonly signalFamily: AddressSignalFamily | null; readonly lifecycleStage: TokenLifecycleStage; readonly score: number; readonly participantCount: number; readonly totalBuyUsd: number; readonly sourceState: AddressEvidenceSourceState; readonly windowMs: number; readonly missingConditions: readonly string[]; readonly updatedAt: number }
 export interface BroadcastRecord { readonly broadcastId: string; readonly tokenId: string; readonly broadcastNumber: number; readonly strategyVersion: string; readonly score: number; readonly triggeredAt: number; readonly payload: unknown }
-export interface CommitTokenBroadcastInput { readonly chain: string; readonly tokenAddress: string; readonly expectedPreviousBroadcastCount: number; readonly strategyVersion: string; readonly score: number; readonly triggeredAt: number; readonly evidenceIds: readonly string[]; readonly payload: unknown }
+export interface CommitTokenBroadcastInput { readonly chain: string; readonly tokenAddress: string; readonly expectedPreviousBroadcastCount: number; readonly strategyVersion: string; readonly score: number; readonly triggeredAt: number; readonly evidenceIds: readonly string[]; readonly economicKeys: readonly string[]; readonly evaluation: Omit<TokenEvaluationRecord, "tokenId">; readonly payload: unknown; readonly publicSignal: unknown }
 export interface CommitTokenBroadcastResult { readonly inserted: boolean; readonly broadcastNumber: number }
+export interface SignalOutboxRecord { readonly outboxId: string; readonly broadcastId: string; readonly tokenId: string; readonly broadcastSequence: number; readonly payload: unknown; readonly status: "pending" | "processing" | "delivered"; readonly attemptCount: number; readonly nextRetryAt: number; readonly lastError: string | null; readonly claimedBy: string | null; readonly claimedAt: number | null; readonly deliveredAt: number | null; readonly createdAt: number }
+export interface CollectorDeadLetter { readonly deadLetterId: string; readonly sourcePath: string; readonly byteOffset: number; readonly contentHash: string; readonly error: string; readonly rawPayload: string; readonly recordedAt: number }
 export interface IdentityResolutionQueueInput { readonly handle: string; readonly accountId: string; readonly priority: number; readonly reason: string; readonly observedAt: number }
 export interface IdentityResolutionQueueRecord { readonly handle: string; readonly accountId: string; readonly priority: number; readonly reasons: readonly string[]; readonly status: "pending" | "exported" | "resolved" | "not_found" | "conflict"; readonly firstSeenAt: number; readonly lastSeenAt: number; readonly nextExportAt: number; readonly lastBatchId: string | null; readonly resolvedAt: number | null }
 export interface IdentityResolutionBatchRecord { readonly batchId: string; readonly createdAt: number; readonly maxSize: number; readonly status: "exported" | "partially_imported" | "imported"; readonly importedAt: number | null; readonly items: readonly IdentityResolutionQueueRecord[] }
@@ -141,6 +143,12 @@ export interface AddressRadarRepository extends TokenAggregationRepository, Runt
   tokenAggregationState(chain: string, tokenAddress: string): TokenAggregationStateRecord | null;
   commitTokenBroadcast(input: CommitTokenBroadcastInput): CommitTokenBroadcastResult;
   broadcasts(tokenId: string): readonly BroadcastRecord[];
+  pendingSignalOutbox(): readonly SignalOutboxRecord[];
+  claimSignalOutbox(input: { readonly workerId: string; readonly now: number; readonly leaseMs: number }): SignalOutboxRecord | null;
+  markSignalOutboxDelivered(input: { readonly outboxId: string; readonly workerId: string; readonly deliveredAt: number }): boolean;
+  failSignalOutbox(input: { readonly outboxId: string; readonly workerId: string; readonly nextRetryAt: number; readonly error: string }): boolean;
+  recordCollectorDeadLetter(input: CollectorDeadLetter): boolean;
+  collectorDeadLetters(sourcePath: string): readonly CollectorDeadLetter[];
   saveOutcomeObservation(observation: OutcomeObservation, observedAt: number): void;
   outcomesForBroadcast(broadcastId: string): readonly OutcomeObservation[];
   enqueueIdentityResolution(input: IdentityResolutionQueueInput): void;
@@ -1049,7 +1057,12 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         WHERE br.token_id = ?
         ORDER BY ec.consumed_at, ec.event_id
       `).all(tokenId) as Array<{ eventId: string }>;
-      return Object.freeze({ ...row, consumedEvidenceIds: Object.freeze(consumed.map(item => item.eventId)) });
+      const economic = database.prepare(`
+        SELECT dedupe_key AS dedupeKey FROM economic_evidence_consumption
+        WHERE broadcast_id IN (SELECT broadcast_id FROM broadcast_records WHERE token_id = ?)
+        ORDER BY consumed_at, dedupe_key
+      `).all(tokenId) as Array<{ dedupeKey: string }>;
+      return Object.freeze({ ...row, consumedEvidenceIds: Object.freeze(consumed.map(item => item.eventId)), consumedEconomicKeys: Object.freeze(economic.map(item => item.dedupeKey)) });
     },
 
     commitTokenBroadcast(input) {
@@ -1060,7 +1073,8 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         if (currentCount !== input.expectedPreviousBroadcastCount || input.evidenceIds.length === 0) {
           return Object.freeze({ inserted: false, broadcastNumber: currentCount });
         }
-        const alreadyConsumed = input.evidenceIds.some(eventId => database.prepare("SELECT 1 FROM evidence_consumption WHERE event_id = ?").get(eventId));
+        const alreadyConsumed = input.evidenceIds.some(eventId => database.prepare("SELECT 1 FROM evidence_consumption WHERE event_id = ?").get(eventId))
+          || input.economicKeys.some(key => database.prepare("SELECT 1 FROM economic_evidence_consumption WHERE dedupe_key = ?").get(key));
         if (alreadyConsumed) return Object.freeze({ inserted: false, broadcastNumber: currentCount });
 
         const broadcastNumber = currentCount + 1;
@@ -1080,8 +1094,62 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         `).run(broadcastId, tokenId, broadcastNumber, input.strategyVersion, input.score, input.triggeredAt, JSON.stringify(input.payload));
         const consume = database.prepare("INSERT INTO evidence_consumption(event_id, broadcast_id, consumed_at) VALUES (?, ?, ?)");
         for (const eventId of input.evidenceIds) consume.run(eventId, broadcastId, input.triggeredAt);
+        const consumeEconomic = database.prepare("INSERT INTO economic_evidence_consumption(dedupe_key, broadcast_id, consumed_at) VALUES (?, ?, ?)");
+        for (const key of input.economicKeys) consumeEconomic.run(key, broadcastId, input.triggeredAt);
+        const evaluation = input.evaluation;
+        database.prepare(`
+          INSERT INTO token_evaluation_state(token_id, chain, token_address, action, signal_family, lifecycle_stage, score, participant_count, total_buy_usd, source_state, window_ms, missing_conditions, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(token_id) DO UPDATE SET action = excluded.action, signal_family = excluded.signal_family,
+            lifecycle_stage = excluded.lifecycle_stage, score = excluded.score, participant_count = excluded.participant_count,
+            total_buy_usd = excluded.total_buy_usd, source_state = excluded.source_state, window_ms = excluded.window_ms,
+            missing_conditions = excluded.missing_conditions, updated_at = excluded.updated_at
+        `).run(tokenId, input.chain.toLowerCase(), normalizeAddressRadarTokenAddress(input.chain, input.tokenAddress), evaluation.action, evaluation.signalFamily, evaluation.lifecycleStage, evaluation.score, evaluation.participantCount, evaluation.totalBuyUsd, evaluation.sourceState, evaluation.windowMs, JSON.stringify(evaluation.missingConditions), evaluation.updatedAt);
+        database.prepare(`
+          INSERT INTO signal_outbox(outbox_id, broadcast_id, token_id, broadcast_sequence, payload, status, attempt_count, next_retry_at, last_error, claimed_by, claimed_at, delivered_at, created_at)
+          VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, NULL, NULL, NULL, NULL, ?)
+        `).run(`outbox:${broadcastId}`, broadcastId, tokenId, broadcastNumber, JSON.stringify(input.publicSignal), input.triggeredAt, input.triggeredAt);
         return Object.freeze({ inserted: true, broadcastNumber });
       });
+    },
+
+    pendingSignalOutbox() {
+      const rows = database.prepare("SELECT * FROM signal_outbox WHERE status = 'pending' ORDER BY created_at, token_id, broadcast_sequence").all() as Array<Record<string, unknown>>;
+      return Object.freeze(rows.map(row => Object.freeze({ outboxId: row.outbox_id as string, broadcastId: row.broadcast_id as string, tokenId: row.token_id as string, broadcastSequence: row.broadcast_sequence as number, payload: JSON.parse(row.payload as string) as unknown, status: row.status as SignalOutboxRecord["status"], attemptCount: row.attempt_count as number, nextRetryAt: row.next_retry_at as number, lastError: row.last_error as string | null, claimedBy: row.claimed_by as string | null, claimedAt: row.claimed_at as number | null, deliveredAt: row.delivered_at as number | null, createdAt: row.created_at as number })));
+    },
+
+    claimSignalOutbox(input) {
+      return transaction(() => {
+        database.prepare("UPDATE signal_outbox SET status = 'pending', claimed_by = NULL, claimed_at = NULL WHERE status = 'processing' AND claimed_at <= ?").run(input.now - input.leaseMs);
+        const candidate = database.prepare(`
+          SELECT candidate.outbox_id AS outboxId FROM signal_outbox candidate
+          WHERE candidate.status = 'pending' AND candidate.next_retry_at <= ?
+            AND NOT EXISTS (SELECT 1 FROM signal_outbox earlier WHERE earlier.token_id = candidate.token_id AND earlier.broadcast_sequence < candidate.broadcast_sequence AND earlier.status != 'delivered')
+          ORDER BY candidate.created_at, candidate.token_id, candidate.broadcast_sequence LIMIT 1
+        `).get(input.now) as { outboxId: string } | undefined;
+        if (!candidate) return null;
+        const changed = database.prepare("UPDATE signal_outbox SET status = 'processing', claimed_by = ?, claimed_at = ?, attempt_count = attempt_count + 1 WHERE outbox_id = ? AND status = 'pending'").run(input.workerId, input.now, candidate.outboxId);
+        if (changed.changes !== 1) return null;
+        const row = database.prepare("SELECT * FROM signal_outbox WHERE outbox_id = ?").get(candidate.outboxId) as Record<string, unknown>;
+        return Object.freeze({ outboxId: row.outbox_id as string, broadcastId: row.broadcast_id as string, tokenId: row.token_id as string, broadcastSequence: row.broadcast_sequence as number, payload: JSON.parse(row.payload as string) as unknown, status: row.status as SignalOutboxRecord["status"], attemptCount: row.attempt_count as number, nextRetryAt: row.next_retry_at as number, lastError: row.last_error as string | null, claimedBy: row.claimed_by as string | null, claimedAt: row.claimed_at as number | null, deliveredAt: row.delivered_at as number | null, createdAt: row.created_at as number });
+      });
+    },
+
+    markSignalOutboxDelivered(input) {
+      return database.prepare("UPDATE signal_outbox SET status = 'delivered', delivered_at = ?, claimed_by = NULL, claimed_at = NULL, last_error = NULL WHERE outbox_id = ? AND status = 'processing' AND claimed_by = ?").run(input.deliveredAt, input.outboxId, input.workerId).changes === 1;
+    },
+
+    failSignalOutbox(input) {
+      return database.prepare("UPDATE signal_outbox SET status = 'pending', next_retry_at = ?, last_error = ?, claimed_by = NULL, claimed_at = NULL WHERE outbox_id = ? AND status = 'processing' AND claimed_by = ?").run(input.nextRetryAt, input.error.slice(0, 2_048), input.outboxId, input.workerId).changes === 1;
+    },
+
+    recordCollectorDeadLetter(input) {
+      return database.prepare("INSERT OR IGNORE INTO collector_dead_letters(dead_letter_id, source_path, byte_offset, content_hash, error, raw_payload, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(input.deadLetterId, input.sourcePath, input.byteOffset, input.contentHash, input.error.slice(0, 2_048), input.rawPayload.slice(0, 4_096), input.recordedAt).changes === 1;
+    },
+
+    collectorDeadLetters(sourcePath) {
+      const rows = database.prepare("SELECT dead_letter_id AS deadLetterId, source_path AS sourcePath, byte_offset AS byteOffset, content_hash AS contentHash, error, raw_payload AS rawPayload, recorded_at AS recordedAt FROM collector_dead_letters WHERE source_path = ? ORDER BY byte_offset").all(sourcePath) as unknown as CollectorDeadLetter[];
+      return Object.freeze(rows.map(row => Object.freeze(row)));
     },
 
     broadcasts(tokenId) {
