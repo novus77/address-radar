@@ -21,4 +21,13 @@ describe("standalone systemd units", () => {
     expect(content).not.toContain("/opt/fomo-radar");
     expect(content).not.toContain("/var/lib/fomo-address-radar");
   });
+
+  it("bounds backup resource usage and publishes completed snapshots atomically", async () => {
+    const content = await readFile(resolve("scripts/backup-production-state.sh"), "utf8");
+    expect(content).toContain("ADDRESS_RADAR_BACKUP_PAGES_PER_STEP");
+    expect(content).toContain("ADDRESS_RADAR_BACKUP_SLEEP_MS");
+    expect(content).toContain("ADDRESS_RADAR_BACKUP_TIMEOUT_SECONDS");
+    expect(content).toContain("ionice -c2 -n7 nice -n 15 timeout");
+    expect(content).toContain("address-radar.db.partial");
+  });
 });
