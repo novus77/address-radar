@@ -16,7 +16,20 @@ const finite = (value: unknown): number | null => {
   return typeof parsed === "number" && Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 };
 
-const normalizeAddress = (chain: string, address: string): string => chain === "solana" ? address : address.toLowerCase();
+export const DEX_SCREENER_CHAIN_IDS: Readonly<Record<string, string>> = Object.freeze({
+  eth: "ethereum",
+  bnb: "bsc",
+  bsc: "bsc",
+  monad: "monad",
+  robinhood: "robinhood",
+  base: "base",
+  solana: "solana",
+  sol: "solana",
+});
+
+export const dexScreenerChainId = (chain: string): string => DEX_SCREENER_CHAIN_IDS[chain.trim().toLowerCase()] ?? chain.trim().toLowerCase();
+
+const normalizeAddress = (providerChain: string, address: string): string => providerChain === "solana" ? address.trim() : address.trim().toLowerCase();
 
 export function createDexScreenerClient(input: {
   readonly fetch?: FetchLike;
@@ -32,7 +45,8 @@ export function createDexScreenerClient(input: {
   return Object.freeze({
     async lookup(chain: string, tokenAddress: string): Promise<TokenMarketSnapshot | null> {
       const normalizedChain = chain.trim().toLowerCase();
-      const normalizedAddress = normalizeAddress(normalizedChain, tokenAddress.trim());
+      const providerChain = dexScreenerChainId(normalizedChain);
+      const normalizedAddress = normalizeAddress(providerChain, tokenAddress);
       if (!normalizedChain || !normalizedAddress) throw new Error("Chain and token address are required");
       const endpoint = `${baseUrl}/latest/dex/tokens/${encodeURIComponent(normalizedAddress)}`;
       const controller = new AbortController();
@@ -46,9 +60,9 @@ export function createDexScreenerClient(input: {
         if (body.pairs === null) return null;
         if (!Array.isArray(body.pairs)) throw new Error("Malformed Dex Screener response");
         const pairs = (body.pairs as DexPair[]).filter(pair => {
-          if (pair.chainId !== normalizedChain) return false;
-          const base = typeof pair.baseToken?.address === "string" ? normalizeAddress(normalizedChain, pair.baseToken.address) : null;
-          const quote = typeof pair.quoteToken?.address === "string" ? normalizeAddress(normalizedChain, pair.quoteToken.address) : null;
+          if (pair.chainId !== providerChain) return false;
+          const base = typeof pair.baseToken?.address === "string" ? normalizeAddress(providerChain, pair.baseToken.address) : null;
+          const quote = typeof pair.quoteToken?.address === "string" ? normalizeAddress(providerChain, pair.quoteToken.address) : null;
           return base === normalizedAddress || quote === normalizedAddress;
         });
         const selected = pairs.sort((left, right) => (finite(right.liquidity?.usd) ?? -1) - (finite(left.liquidity?.usd) ?? -1))[0];

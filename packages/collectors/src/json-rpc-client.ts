@@ -78,7 +78,7 @@ export function createJsonRpcClient(input: {
         } catch (error) {
           if (error instanceof JsonRpcRateLimitError || error instanceof JsonRpcResponseError) {
             lastError = error;
-            if (error instanceof JsonRpcResponseError && !error.message.includes("HTTP 5")) throw error;
+            if (!retryableRpcFailure(error)) throw error;
           } else {
             lastError = error instanceof Error ? error : new Error(String(error));
           }
@@ -89,4 +89,11 @@ export function createJsonRpcClient(input: {
       throw lastError ?? new Error("JSON-RPC request failed");
     },
   });
+}
+
+function retryableRpcFailure(error: Error): boolean {
+  if (error instanceof JsonRpcRateLimitError) return true;
+  if (!(error instanceof JsonRpcResponseError)) return true;
+  if (error.code !== undefined) return error.code === -32005 || /rate|limit|timeout|overload|unavailable/i.test(error.message);
+  return /HTTP (408|429|5\d\d)|Malformed JSON-RPC response/i.test(error.message);
 }

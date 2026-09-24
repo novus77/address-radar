@@ -26,18 +26,3 @@ export interface FomoTraderActivitySource {
   authenticated(): Promise<boolean>;
   recentActivity(accountId: string, after: number | null): Promise<readonly RawFomoTraderActivityEvent[]>;
 }
-
-export interface FomoTokenLookupRequest {
-  readonly version: 1 | 2;
-  readonly lookupId: string;
-  readonly chainId: string;
-  readonly tokenAddress: string;
-  readonly requestedAt: number;
-  readonly purpose?: "milestone_backfill";
-  readonly milestoneId?: string;
-  readonly beforeAt?: number;
-}
-
-export interface FomoTokenLookupQueue {
-  enqueue(request: FomoTokenLookupRequest): Promise<void>;
-}

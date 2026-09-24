@@ -16,7 +16,7 @@ export function normalizeSolanaWalletRecord(record: OnchainWalletRecord, identit
     accountId: identity.accountId,
     entityId: identity.entityId,
     chain: "solana",
-    tokenAddress: record.tokenAddress,
+    tokenAddress: record.tokenAddress.trim(),
     side: record.side,
     amountUsd: finiteOrNull(record.amountUsd),
     priceUsd: finiteOrNull(record.priceUsd),

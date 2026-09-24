@@ -78,14 +78,29 @@ describe("trade event normalization", () => {
       eventId: "sol-1",
       chainFamily: "solana",
       chain: "SOLANA",
-      walletAddress: "WalletCase",
-      tokenAddress: "MintCase",
+      walletAddress: "  WalletCase  ",
+      tokenAddress: "  MintCase  ",
       side: "sell",
       occurredAt: 4_000,
     }, { accountId: "account-1", entityId: "entity-1", collectedAt: 4_100 });
 
     expect(event?.tokenAddress).toBe("MintCase");
     expect(event?.chain).toBe("solana");
+  });
+
+  it("trims EVM addresses before lowercasing", () => {
+    const event = normalizeOnchainWalletRecord({
+      eventId: "evm-whitespace",
+      chainFamily: "evm",
+      chain: " BASE ",
+      walletAddress: "  0xFfF  ",
+      tokenAddress: "  0xAbC  ",
+      side: "buy",
+      occurredAt: 5_000,
+    }, { accountId: "account-1", entityId: "entity-1", collectedAt: 5_100 });
+
+    expect(event?.chain).toBe("base");
+    expect(event?.tokenAddress).toBe("0xabc");
   });
 
   it("rejects malformed external events", () => {
