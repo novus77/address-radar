@@ -47,7 +47,7 @@ export function createWalletAnalysisRuntime(input: {
         }
         const page = await provider.collect({ analysisId: job.analysisId, address: job.address, from: job.from, to: job.to, limit: job.maxTokens, cursor: job.checkpoint, signal });
         if (!page.done && page.nextCursor === null) throw new Error("Incomplete wallet history page requires nextCursor");
-        const bounded = page.positions.filter(position => position.enteredAt >= job.from && position.enteredAt <= job.to).slice(0, remaining);
+        const bounded = page.positions.filter(position => position.enteredAt >= job.from && position.enteredAt <= job.to);
         const saved = input.store.savePage(job.analysisId, bounded, page.done ? null : page.nextCursor, page.provenance, now());
         if (!page.done) return Object.freeze({ analysisId: job.analysisId, processed: true, status: "collecting" as const, saved });
         const metrics = analyzeWalletPositions({ requestedSamples: job.requestedSamples, positions: input.store.positions(job.analysisId) });

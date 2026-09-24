@@ -6,17 +6,90 @@ import type { WalletHistoryProvider } from "./runtime.js";
 export interface HistoricalTokenEvent { readonly eventId: string; readonly chain: string; readonly tokenAddress: string; readonly side: "buy" | "sell"; readonly tokenAmount: number; readonly occurredAt: number; readonly source: string; readonly sourceBlockNumber?: number; readonly sourceBlockHash?: string }
 export interface HistoricalMarketSource { priceAt(chain: string, tokenAddress: string, observedAt: number): Promise<number | null>; peakPrice(chain: string, tokenAddress: string, from: number, to: number): Promise<number | null>; minimumPrice(chain: string, tokenAddress: string, from: number, to: number): Promise<number | null>; firstObservedAt(chain: string, tokenAddress: string): Promise<number | null> }
 export interface AnalysisRpcClient { request(chain: DiscoveryChain, method: string, params: readonly unknown[], signal: AbortSignal): Promise<unknown> }
-export interface HistoricalEventStore { append(analysisId: string, events: readonly HistoricalTokenEvent[]): void; events(analysisId: string): readonly HistoricalTokenEvent[]; close(): void }
+export interface HistoricalEventStore { append(analysisId: string, events: readonly HistoricalTokenEvent[]): void; reconcileBlocks?(analysisId: string, blocks: readonly HistoricalCanonicalBlock[], observedAt: number): void; blockHash?(analysisId: string, chain: string, blockNumber: number): string | null; events(analysisId: string): readonly HistoricalTokenEvent[]; close(): void }
+export interface HistoricalCanonicalBlock { readonly chain: string; readonly blockNumber: number; readonly blockHash: string }
 
 export function openHistoricalEventStore(databasePath: string): HistoricalEventStore {
   const database = new DatabaseSync(databasePath);
-  database.exec("CREATE TABLE IF NOT EXISTS wallet_analysis_provider_events(analysis_id TEXT NOT NULL, event_id TEXT NOT NULL, chain TEXT NOT NULL, token_address TEXT NOT NULL, side TEXT NOT NULL, token_amount REAL NOT NULL, occurred_at INTEGER NOT NULL, source TEXT NOT NULL, source_block_number INTEGER, source_block_hash TEXT, orphaned_at INTEGER, PRIMARY KEY(analysis_id, event_id))");
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS wallet_analysis_provider_events(
+      analysis_id TEXT NOT NULL, event_id TEXT NOT NULL, chain TEXT NOT NULL,
+      token_address TEXT NOT NULL, side TEXT NOT NULL, token_amount REAL NOT NULL,
+      occurred_at INTEGER NOT NULL, source TEXT NOT NULL, source_block_number INTEGER,
+      source_block_hash TEXT, orphaned_at INTEGER, PRIMARY KEY(analysis_id, event_id)
+    );
+    CREATE TABLE IF NOT EXISTS wallet_analysis_provider_blocks(
+      analysis_id TEXT NOT NULL, chain TEXT NOT NULL, block_number INTEGER NOT NULL,
+      block_hash TEXT NOT NULL, observed_at INTEGER NOT NULL,
+      PRIMARY KEY(analysis_id, chain, block_number)
+    );
+  `);
   ensureHistoryColumn(database, "source_block_number", "INTEGER");
   ensureHistoryColumn(database, "source_block_hash", "TEXT");
   ensureHistoryColumn(database, "orphaned_at", "INTEGER");
+
+  const reconcileBlocks = (analysisId: string, blocks: readonly HistoricalCanonicalBlock[], observedAt: number): void => {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const orphan = database.prepare(`
+        UPDATE wallet_analysis_provider_events SET orphaned_at = ?
+        WHERE analysis_id = ? AND chain = ? AND source_block_number = ?
+          AND source_block_hash IS NOT NULL AND source_block_hash <> ? AND orphaned_at IS NULL
+      `);
+      const upsert = database.prepare(`
+        INSERT INTO wallet_analysis_provider_blocks(analysis_id, chain, block_number, block_hash, observed_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(analysis_id, chain, block_number) DO UPDATE SET
+          block_hash = excluded.block_hash, observed_at = excluded.observed_at
+      `);
+      for (const block of blocks) {
+        orphan.run(observedAt, analysisId, block.chain, block.blockNumber, block.blockHash);
+        upsert.run(analysisId, block.chain, block.blockNumber, block.blockHash, observedAt);
+      }
+      database.exec("COMMIT");
+    } catch (error) { database.exec("ROLLBACK"); throw error; }
+  };
+
   const store: HistoricalEventStore = {
-    append(analysisId, events) { const insert = database.prepare("INSERT OR IGNORE INTO wallet_analysis_provider_events(analysis_id, event_id, chain, token_address, side, token_amount, occurred_at, source, source_block_number, source_block_hash, orphaned_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)"); database.exec("BEGIN IMMEDIATE"); try { for (const event of events) { if (event.sourceBlockNumber !== undefined && event.sourceBlockHash) database.prepare("UPDATE wallet_analysis_provider_events SET orphaned_at = ? WHERE analysis_id = ? AND source_block_number = ? AND source_block_hash <> ? AND orphaned_at IS NULL").run(event.occurredAt, analysisId, event.sourceBlockNumber, event.sourceBlockHash); insert.run(analysisId, event.eventId, event.chain, event.tokenAddress, event.side, event.tokenAmount, event.occurredAt, event.source, event.sourceBlockNumber ?? null, event.sourceBlockHash ?? null); } database.exec("COMMIT"); } catch (error) { database.exec("ROLLBACK"); throw error; } },
-    events(analysisId) { return database.prepare("SELECT event_id AS eventId, chain, token_address AS tokenAddress, side, token_amount AS tokenAmount, occurred_at AS occurredAt, source, source_block_number AS sourceBlockNumber, source_block_hash AS sourceBlockHash FROM wallet_analysis_provider_events WHERE analysis_id = ? AND orphaned_at IS NULL ORDER BY occurred_at, event_id").all(analysisId) as unknown as readonly HistoricalTokenEvent[]; },
+    append(analysisId, events) {
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const upsert = database.prepare(`
+          INSERT INTO wallet_analysis_provider_events(
+            analysis_id, event_id, chain, token_address, side, token_amount, occurred_at,
+            source, source_block_number, source_block_hash, orphaned_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+          ON CONFLICT(analysis_id, event_id) DO UPDATE SET
+            chain = excluded.chain, token_address = excluded.token_address, side = excluded.side,
+            token_amount = excluded.token_amount, occurred_at = excluded.occurred_at,
+            source = excluded.source, source_block_number = excluded.source_block_number,
+            source_block_hash = excluded.source_block_hash, orphaned_at = NULL
+        `);
+        for (const event of events) upsert.run(
+          analysisId, event.eventId, event.chain, event.tokenAddress, event.side,
+          event.tokenAmount, event.occurredAt, event.source,
+          event.sourceBlockNumber ?? null, event.sourceBlockHash ?? null,
+        );
+        database.exec("COMMIT");
+      } catch (error) { database.exec("ROLLBACK"); throw error; }
+    },
+    reconcileBlocks,
+    blockHash(analysisId, chain, blockNumber) {
+      const row = database.prepare(`
+        SELECT block_hash AS blockHash FROM wallet_analysis_provider_blocks
+        WHERE analysis_id = ? AND chain = ? AND block_number = ?
+      `).get(analysisId, chain, blockNumber) as { blockHash: string } | undefined;
+      return row?.blockHash ?? null;
+    },
+    events(analysisId) {
+      return database.prepare(`
+        SELECT event_id AS eventId, chain, token_address AS tokenAddress, side,
+          token_amount AS tokenAmount, occurred_at AS occurredAt, source,
+          source_block_number AS sourceBlockNumber, source_block_hash AS sourceBlockHash
+        FROM wallet_analysis_provider_events
+        WHERE analysis_id = ? AND orphaned_at IS NULL ORDER BY occurred_at, event_id
+      `).all(analysisId) as unknown as readonly HistoricalTokenEvent[];
+    },
     close() { database.close(); },
   };
   return Object.freeze(store);
@@ -58,44 +131,118 @@ export function createSolanaRpcWalletHistoryProvider(input: { readonly rpc: Anal
   const pageSize = input.pageSize ?? 100;
   const provider: WalletHistoryProvider = { async collect(request) {
     const effectiveLimit = Math.min(pageSize, request.limit);
-    const options = { commitment: "confirmed", limit: effectiveLimit, ...(request.cursor ? { before: request.cursor } : {}) };
-    const signatures = await input.rpc.request("solana", "getSignaturesForAddress", [request.address, options], request.signal) as readonly { signature: string; blockTime: number | null }[];
-    const events: HistoricalTokenEvent[] = []; let reachedStart = false; let skipped = 0; let missingBlockTime = 0;
-    for (const record of signatures) {
+    const state = parseSolanaHistoryCursor(request.cursor);
+    const events: HistoricalTokenEvent[] = [];
+    let skipped = 0;
+    let missingBlockTime = 0;
+    let reachedStart = false;
+
+    const processRecord = async (record: SolanaHistoryRecord): Promise<"processed" | "unavailable" | "reached_start"> => {
       const tx = await input.rpc.request("solana", "getTransaction", [record.signature, { commitment: "confirmed", encoding: "jsonParsed", maxSupportedTransactionVersion: 0 }], request.signal) as (SolanaSwapTransaction & { readonly blockTime?: number | null }) | null;
-      const blockTime = record.blockTime ?? tx?.blockTime ?? null;
-      if (blockTime === null) { missingBlockTime += 1; continue; }
+      if (!tx) return "unavailable";
+      const blockTime = record.blockTime ?? tx.blockTime ?? null;
+      if (blockTime === null) { missingBlockTime += 1; return "processed"; }
       const occurredAt = blockTime * 1_000;
-      if (occurredAt < request.from) { reachedStart = true; break; }
-      if (occurredAt > request.to || !tx?.meta) continue;
+      if (occurredAt < request.from) return "reached_start";
+      if (occurredAt > request.to || !tx.meta) return "processed";
       const extracted = solanaEvents(request.address, record.signature, occurredAt, tx);
-      events.push(...extracted.events); skipped += extracted.skipped;
+      events.push(...extracted.events);
+      skipped += extracted.skipped;
+      return "processed";
+    };
+
+    const finish = async (done: boolean, nextCursor: string | null) => {
+      input.events.append(request.analysisId, events);
+      const pageTokens = new Set(events.map(event => event.chain + ":" + event.tokenAddress));
+      const positions = (await reconstructWalletPositions({ events: input.events.events(request.analysisId), market: input.market, limit: request.limit, observedAt: request.to })).filter(position => pageTokens.has(position.tokenId));
+      return Object.freeze({ positions, nextCursor, done, provenance: "solana-rpc;skipped_insufficient_swap_evidence=" + skipped + ";missing_block_time=" + missingBlockTime });
+    };
+
+    let before = state.before;
+    if (state.pending) {
+      const status = await processRecord(state.pending);
+      if (status === "unavailable") return finish(false, encodeSolanaPendingCursor(state.pending));
+      if (status === "reached_start") return finish(true, null);
+      before = state.pending.signature;
     }
-    input.events.append(request.analysisId, events);
+
+    const options = { commitment: "confirmed", limit: effectiveLimit, ...(before ? { before } : {}) };
+    const signatures = await input.rpc.request("solana", "getSignaturesForAddress", [request.address, options], request.signal) as readonly SolanaHistoryRecord[];
+    for (const record of signatures) {
+      const status = await processRecord(record);
+      if (status === "unavailable") return finish(false, encodeSolanaPendingCursor(record));
+      if (status === "reached_start") { reachedStart = true; break; }
+    }
     const done = reachedStart || signatures.length < effectiveLimit;
-    const pageTokens = new Set(events.map(event => `${event.chain}:${event.tokenAddress}`));
-    const positions = (await reconstructWalletPositions({ events: input.events.events(request.analysisId), market: input.market, limit: request.limit, observedAt: request.to })).filter(position => pageTokens.has(position.tokenId));
-    return Object.freeze({ positions, nextCursor: done ? null : signatures.at(-1)?.signature ?? null, done, provenance: `solana-rpc;skipped_insufficient_swap_evidence=${skipped};missing_block_time=${missingBlockTime}` });
+    const nextCursor = done ? null : signatures.at(-1)?.signature ?? before ?? null;
+    return finish(done, nextCursor);
   } };
   return Object.freeze(provider);
 }
 
-export function createEvmRpcWalletHistoryProvider(input: { readonly rpc: AnalysisRpcClient; readonly chains: readonly Exclude<DiscoveryChain, "solana">[]; readonly market: HistoricalMarketSource; readonly events: HistoricalEventStore; readonly blocksPerPage?: number; readonly confirmationDepth?: number }): WalletHistoryProvider {
+export function createEvmRpcWalletHistoryProvider(input: { readonly rpc: AnalysisRpcClient; readonly chains: readonly Exclude<DiscoveryChain, "solana">[]; readonly market: HistoricalMarketSource; readonly events: HistoricalEventStore; readonly blocksPerPage?: number; readonly confirmationDepth?: number; readonly reorgLookback?: number }): WalletHistoryProvider {
   const pageSize = input.blocksPerPage ?? 100;
+  const confirmationDepth = input.confirmationDepth ?? 12;
+  const reorgLookback = input.reorgLookback ?? Math.max(confirmationDepth, 12);
   const provider: WalletHistoryProvider = { async collect(request) {
-    const state = parseEvmCursor(request.cursor); const chainIndex = state.chainIndex; const chain = input.chains[chainIndex];
-    if (!chain) return { positions: await reconstructWalletPositions({ events: input.events.events(request.analysisId), market: input.market, limit: request.limit, observedAt: request.to }), nextCursor: null, done: true, provenance: "evm-rpc" };
-    const head = Math.max(0, parseHex(await input.rpc.request(chain, "eth_blockNumber", [], request.signal)) - (input.confirmationDepth ?? 12));
-    const fromBlock = state.nextBlock ?? await blockAtOrAfter(input.rpc, chain, head, request.from, request.signal);
-    const toBlock = await blockAtOrAfter(input.rpc, chain, head, request.to, request.signal);
-    const end = Math.min(toBlock, fromBlock + pageSize - 1); const events: HistoricalTokenEvent[] = []; let skipped = 0;
-    for (let blockNumber = fromBlock; blockNumber <= end; blockNumber += 1) { const block = await input.rpc.request(chain, "eth_getBlockByNumber", [`0x${blockNumber.toString(16)}`, true], request.signal) as { timestamp: string; hash?: string; transactions: readonly EvmSwapTransaction[] } | null; if (!block?.hash) throw new Error(`Block ${blockNumber} is unavailable`); const occurredAt = parseHex(block.timestamp) * 1_000; if (occurredAt < request.from || occurredAt > request.to) continue; for (const tx of block.transactions) { const normalized = request.address.toLowerCase(); if (tx.from.toLowerCase() !== normalized && tx.to?.toLowerCase() !== normalized) continue; const receipt = await input.rpc.request(chain, "eth_getTransactionReceipt", [tx.hash], request.signal) as { logs: readonly EvmSwapLog[]; blockHash?: string } | null; if (!receipt || (receipt.blockHash && receipt.blockHash !== block.hash)) throw new Error(`Receipt ${tx.hash} is unavailable`); const extracted = await evmEvents(chain, request.address, tx, occurredAt, receipt.logs, input.rpc, request.signal, blockNumber, block.hash); events.push(...extracted.events); skipped += extracted.skipped; } }
+    const state = parseEvmCursor(request.cursor);
+    const chainIndex = state.chainIndex;
+    const chain = input.chains[chainIndex];
+    if (!chain) return { positions: [], nextCursor: null, done: true, provenance: "evm-rpc" };
+
+    const head = parseHex(await input.rpc.request(chain, "eth_blockNumber", [], request.signal));
+    const safeHead = Math.max(0, head - confirmationDepth);
+    const safeBlock = await input.rpc.request(chain, "eth_getBlockByNumber", ["0x" + safeHead.toString(16), false], request.signal) as EvmHistoryBlock | null;
+    if (!safeBlock?.hash) throw new Error("Block " + safeHead + " is unavailable");
+    const safeReachedTo = parseHex(safeBlock.timestamp) * 1_000 >= request.to;
+    const windowStart = await blockAtOrAfter(input.rpc, chain, safeHead, request.from, request.signal);
+    const logicalNext = state.nextBlock ?? windowStart;
+    let scanStart = state.checkpointBlock === undefined ? logicalNext : Math.max(windowStart, logicalNext - reorgLookback);
+    if (state.checkpointBlock !== undefined && state.checkpointHash) {
+      const canonical = await input.rpc.request(chain, "eth_getBlockByNumber", ["0x" + state.checkpointBlock.toString(16), false], request.signal) as EvmHistoryBlock | null;
+      if (!canonical?.hash) throw new Error("Block " + state.checkpointBlock + " is unavailable");
+      if (canonical.hash !== state.checkpointHash) scanStart = Math.max(windowStart, state.checkpointBlock - reorgLookback);
+    }
+    const targetBlock = safeReachedTo
+      ? await blockAtOrAfter(input.rpc, chain, safeHead, request.to, request.signal)
+      : safeHead;
+
+    if (scanStart > targetBlock) {
+      if (!safeReachedTo) return { positions: [], nextCursor: JSON.stringify(state), done: false, provenance: "evm-rpc;waiting_for_safe_head=1" };
+      const done = chainIndex + 1 >= input.chains.length;
+      return { positions: [], nextCursor: done ? null : JSON.stringify({ chainIndex: chainIndex + 1 }), done, provenance: "evm-rpc" };
+    }
+
+    const end = Math.min(targetBlock, logicalNext + pageSize - 1);
+    const events: HistoricalTokenEvent[] = [];
+    let skipped = 0;
+    let lastBlock: { blockNumber: number; blockHash: string } | null = null;
+    for (let blockNumber = scanStart; blockNumber <= end; blockNumber += 1) {
+      const block = await input.rpc.request(chain, "eth_getBlockByNumber", ["0x" + blockNumber.toString(16), true], request.signal) as EvmHistoryBlock | null;
+      if (!block?.hash) throw new Error("Block " + blockNumber + " is unavailable");
+      input.events.reconcileBlocks?.(request.analysisId, [{ chain, blockNumber, blockHash: block.hash }], request.to);
+      lastBlock = { blockNumber, blockHash: block.hash };
+      const occurredAt = parseHex(block.timestamp) * 1_000;
+      if (occurredAt < request.from || occurredAt > request.to) continue;
+      for (const tx of block.transactions ?? []) {
+        const normalized = request.address.toLowerCase();
+        if (tx.from.toLowerCase() !== normalized && tx.to?.toLowerCase() !== normalized) continue;
+        const receipt = await input.rpc.request(chain, "eth_getTransactionReceipt", [tx.hash], request.signal) as { logs: readonly EvmSwapLog[]; blockHash?: string } | null;
+        if (!receipt || (receipt.blockHash && receipt.blockHash !== block.hash)) throw new Error("Receipt " + tx.hash + " is unavailable");
+        const extracted = await evmEvents(chain, request.address, tx, occurredAt, receipt.logs, input.rpc, request.signal, blockNumber, block.hash);
+        events.push(...extracted.events);
+        skipped += extracted.skipped;
+      }
+    }
     input.events.append(request.analysisId, events);
-    const finishedChain = end >= toBlock; const done = finishedChain && chainIndex + 1 >= input.chains.length;
-    const nextCursor = done ? null : JSON.stringify(finishedChain ? { chainIndex: chainIndex + 1 } : { chainIndex, nextBlock: end + 1 });
-    const pageTokens = new Set(events.map(event => `${event.chain}:${event.tokenAddress}`));
+    const finishedChain = safeReachedTo && end >= targetBlock;
+    const done = finishedChain && chainIndex + 1 >= input.chains.length;
+    const nextCursor = done ? null : JSON.stringify(finishedChain
+      ? { chainIndex: chainIndex + 1 }
+      : { chainIndex, nextBlock: end + 1, checkpointBlock: lastBlock?.blockNumber, checkpointHash: lastBlock?.blockHash });
+    const pageTokens = new Set(events.map(event => event.chain + ":" + event.tokenAddress));
     const positions = (await reconstructWalletPositions({ events: input.events.events(request.analysisId), market: input.market, limit: request.limit, observedAt: request.to })).filter(position => pageTokens.has(position.tokenId));
-    return Object.freeze({ positions, nextCursor, done, provenance: `evm-rpc;skipped_insufficient_swap_evidence=${skipped}` });
+    return Object.freeze({ positions, nextCursor, done, provenance: "evm-rpc;skipped_insufficient_swap_evidence=" + skipped + (safeReachedTo ? "" : ";waiting_for_safe_head=1") });
   } };
   return Object.freeze(provider);
 }
@@ -132,7 +279,31 @@ function solanaEvents(wallet: string, signature: string, occurredAt: number, tx:
   return { events, skipped: evidence.candidateDeltas.length > 0 && events.length === 0 ? 1 : 0 };
 }
 async function blockAtOrAfter(rpc: AnalysisRpcClient, chain: Exclude<DiscoveryChain, "solana">, head: number, timestamp: number, signal: AbortSignal) { let low = 0, high = head; while (low < high) { const middle = Math.floor((low + high) / 2); const block = await rpc.request(chain, "eth_getBlockByNumber", [`0x${middle.toString(16)}`, false], signal) as { timestamp: string } | null; if (!block) throw new Error(`Block ${middle} is unavailable`); if (parseHex(block.timestamp) * 1_000 < timestamp) low = middle + 1; else high = middle; } return low; }
-function parseEvmCursor(value: string | null): { chainIndex: number; nextBlock?: number } { if (!value) return { chainIndex: 0 }; try { const parsed = JSON.parse(value) as { chainIndex?: unknown; nextBlock?: unknown }; return { chainIndex: Number.isSafeInteger(parsed.chainIndex) ? parsed.chainIndex as number : 0, ...(Number.isSafeInteger(parsed.nextBlock) ? { nextBlock: parsed.nextBlock as number } : {}) }; } catch { return { chainIndex: 0 }; } }
+interface SolanaHistoryRecord { readonly signature: string; readonly blockTime: number | null }
+interface SolanaHistoryCursor { readonly before?: string; readonly pending?: SolanaHistoryRecord }
+interface EvmHistoryBlock { readonly hash?: string; readonly timestamp: string; readonly transactions?: readonly EvmSwapTransaction[] }
+function parseSolanaHistoryCursor(value: string | null): SolanaHistoryCursor {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as { pending?: SolanaHistoryRecord; before?: string };
+    if (parsed.pending?.signature) return { pending: parsed.pending };
+    if (typeof parsed.before === "string") return { before: parsed.before };
+  } catch { return { before: value }; }
+  return { before: value };
+}
+function encodeSolanaPendingCursor(record: SolanaHistoryRecord): string { return JSON.stringify({ pending: record }); }
+function parseEvmCursor(value: string | null): { chainIndex: number; nextBlock?: number; checkpointBlock?: number; checkpointHash?: string } {
+  if (!value) return { chainIndex: 0 };
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    return {
+      chainIndex: Number.isSafeInteger(parsed.chainIndex) ? parsed.chainIndex as number : 0,
+      ...(Number.isSafeInteger(parsed.nextBlock) ? { nextBlock: parsed.nextBlock as number } : {}),
+      ...(Number.isSafeInteger(parsed.checkpointBlock) ? { checkpointBlock: parsed.checkpointBlock as number } : {}),
+      ...(typeof parsed.checkpointHash === "string" ? { checkpointHash: parsed.checkpointHash } : {}),
+    };
+  } catch { return { chainIndex: 0 }; }
+}
 function parseHex(value: unknown): number { if (typeof value !== "string" || !/^0x[0-9a-f]+$/i.test(value)) throw new Error("Invalid hexadecimal RPC value"); return Number.parseInt(value, 16); }
 function normalizeToken(chain: string, token: string) { return chain.toLowerCase() === "solana" ? token.trim() : token.trim().toLowerCase(); }
 

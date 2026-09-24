@@ -119,11 +119,43 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
         }
         let inserted = 0;
         const insert = database.prepare(`
-          INSERT OR IGNORE INTO wallet_monitor_observations (
+          INSERT INTO wallet_monitor_observations (
             source, event_id, chain_family, chain, wallet_address, token_address,
             account_id, entity_id, side, amount_usd, price_usd, market_cap_usd,
             occurred_at, collected_at, source_reference, source_block_number, source_block_hash, orphaned_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+          ON CONFLICT(source, event_id) DO UPDATE SET
+            chain_family = excluded.chain_family,
+            chain = excluded.chain,
+            wallet_address = excluded.wallet_address,
+            token_address = excluded.token_address,
+            account_id = excluded.account_id,
+            entity_id = excluded.entity_id,
+            side = excluded.side,
+            amount_usd = excluded.amount_usd,
+            price_usd = excluded.price_usd,
+            market_cap_usd = excluded.market_cap_usd,
+            occurred_at = excluded.occurred_at,
+            collected_at = excluded.collected_at,
+            source_reference = excluded.source_reference,
+            source_block_number = excluded.source_block_number,
+            source_block_hash = excluded.source_block_hash,
+            orphaned_at = NULL
+          WHERE wallet_monitor_observations.chain_family IS NOT excluded.chain_family
+            OR wallet_monitor_observations.chain IS NOT excluded.chain
+            OR wallet_monitor_observations.wallet_address IS NOT excluded.wallet_address
+            OR wallet_monitor_observations.token_address IS NOT excluded.token_address
+            OR wallet_monitor_observations.account_id IS NOT excluded.account_id
+            OR wallet_monitor_observations.entity_id IS NOT excluded.entity_id
+            OR wallet_monitor_observations.side IS NOT excluded.side
+            OR wallet_monitor_observations.amount_usd IS NOT excluded.amount_usd
+            OR wallet_monitor_observations.price_usd IS NOT excluded.price_usd
+            OR wallet_monitor_observations.market_cap_usd IS NOT excluded.market_cap_usd
+            OR wallet_monitor_observations.occurred_at IS NOT excluded.occurred_at
+            OR wallet_monitor_observations.source_reference IS NOT excluded.source_reference
+            OR wallet_monitor_observations.source_block_number IS NOT excluded.source_block_number
+            OR wallet_monitor_observations.source_block_hash IS NOT excluded.source_block_hash
+            OR wallet_monitor_observations.orphaned_at IS NOT NULL
         `);
         for (const observation of observations) {
           inserted += Number(insert.run(

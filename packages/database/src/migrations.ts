@@ -15,6 +15,7 @@ export function migrateAddressRadarDatabase(database: DatabaseSync): void {
     ensureColumn(database, "signal_outbox_migration_review", "decided_by", "TEXT");
     ensureColumn(database, "signal_outbox_migration_review", "decision_reason", "TEXT");
     ensureColumn(database, "signal_outbox_migration_review", "decided_at", "INTEGER");
+    migrateEntityAccountUniqueness(database);
     database.exec(`
       UPDATE signal_outbox_migration_review
       SET decision = 'approved', decided_by = 'legacy_migration', decision_reason = 'previously approved', decided_at = reviewed_at
@@ -36,6 +37,49 @@ export function migrateAddressRadarDatabase(database: DatabaseSync): void {
     }
     throw error;
   }
+}
+
+function migrateEntityAccountUniqueness(database: DatabaseSync): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS entity_account_mapping_conflicts (
+      conflict_id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      canonical_entity_id TEXT NOT NULL,
+      removed_entity_id TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+  `);
+  const mappings = database.prepare(`
+    SELECT entity_id AS entityId, account_id AS accountId, confidence, source,
+      first_observed_at AS firstObservedAt, last_observed_at AS lastObservedAt
+    FROM entity_accounts
+    ORDER BY account_id,
+      CASE confidence WHEN 'confirmed' THEN 0 ELSE 1 END,
+      first_observed_at,
+      entity_id
+  `).all() as Array<{ entityId: string; accountId: string; confidence: string; source: string; firstObservedAt: number; lastObservedAt: number }>;
+  const canonical = new Map<string, string>();
+  const quarantine = database.prepare(`
+    INSERT OR IGNORE INTO entity_account_mapping_conflicts(
+      conflict_id, account_id, canonical_entity_id, removed_entity_id, payload, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const remove = database.prepare("DELETE FROM entity_accounts WHERE entity_id = ? AND account_id = ?");
+  for (const mapping of mappings) {
+    const owner = canonical.get(mapping.accountId);
+    if (!owner) { canonical.set(mapping.accountId, mapping.entityId); continue; }
+    quarantine.run(
+      `entity-account-migration:${mapping.accountId}:${mapping.entityId}`,
+      mapping.accountId,
+      owner,
+      mapping.entityId,
+      JSON.stringify({ confidence: mapping.confidence, source: mapping.source, firstObservedAt: mapping.firstObservedAt, lastObservedAt: mapping.lastObservedAt }),
+      mapping.lastObservedAt,
+    );
+    remove.run(mapping.entityId, mapping.accountId);
+  }
+  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS entity_accounts_account_unique ON entity_accounts(account_id)");
 }
 
 function ensureColumn(database: DatabaseSync, table: string, column: string, definition: string): void {

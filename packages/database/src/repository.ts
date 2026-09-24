@@ -465,6 +465,8 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
       assertId(input.entityId, "entityId");
       assertId(input.accountId, "accountId");
       assertTimestamp(input.observedAt, "observedAt");
+      const existingOwner = database.prepare("SELECT entity_id AS entityId FROM entity_accounts WHERE account_id = ?").get(input.accountId) as { entityId: string } | undefined;
+      if (existingOwner && existingOwner.entityId !== input.entityId) throw new Error(`Entity account conflict: ${input.accountId} is already linked to ${existingOwner.entityId}`);
       transaction(() => {
         database.prepare(`
           INSERT INTO trader_entities(entity_id, lifecycle, manual, locked, created_at, updated_at)
@@ -572,6 +574,8 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
 
     linkAccountToEntity(input) {
       assertTimestamp(input.observedAt, "observedAt");
+      const owner = database.prepare("SELECT entity_id AS entityId FROM entity_accounts WHERE account_id = ?").get(input.accountId) as { entityId: string } | undefined;
+      if (owner && owner.entityId !== input.entityId) throw new Error(`Entity account conflict: ${input.accountId} is already linked to ${owner.entityId}`);
       const existing = database.prepare("SELECT confidence, first_observed_at FROM entity_accounts WHERE entity_id = ? AND account_id = ?").get(input.entityId, input.accountId) as { confidence: EntityAccountLinkInput["confidence"]; first_observed_at: number } | undefined;
       const confidence = existing ? strongestIdentityConfidence(existing.confidence, input.confidence) : input.confidence;
       database.prepare(`

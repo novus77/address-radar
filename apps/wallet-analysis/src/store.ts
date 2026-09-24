@@ -58,9 +58,19 @@ export function openWalletAnalysisStore(databasePath: string): WalletAnalysisSto
   const savePage = (analysisId: string, positions: readonly WalletAnalysisPosition[], nextCursor: string | null, provenance: string, updatedAt: number): number => {
     database.exec("BEGIN IMMEDIATE");
     try {
+    const capacity = database.prepare(`
+      SELECT MIN(j.requested_sample_count, b.max_tokens) AS maximum,
+        (SELECT COUNT(*) FROM wallet_analysis_positions p WHERE p.analysis_id = j.analysis_id) AS existing
+      FROM wallet_analysis_jobs j JOIN wallet_analysis_job_bounds b ON b.analysis_id = j.analysis_id
+      WHERE j.analysis_id = ?
+    `).get(analysisId) as { maximum: number; existing: number } | undefined;
+    if (!capacity) throw new Error(`Wallet analysis not found: ${analysisId}`);
     const insert = database.prepare("INSERT OR IGNORE INTO wallet_analysis_positions(analysis_id, token_id, payload, entered_at) VALUES (?, ?, ?, ?)");
     let saved = 0;
-    for (const position of positions) saved += Number(insert.run(analysisId, position.tokenId, JSON.stringify(position), position.enteredAt).changes);
+    for (const position of positions) {
+      if (capacity.existing + saved >= capacity.maximum) break;
+      saved += Number(insert.run(analysisId, position.tokenId, JSON.stringify(position), position.enteredAt).changes);
+    }
     if (nextCursor === null) database.prepare("DELETE FROM wallet_analysis_checkpoints WHERE analysis_id = ? AND scope = 'history'").run(analysisId);
     else database.prepare(`
       INSERT INTO wallet_analysis_checkpoints(analysis_id, scope, cursor, updated_at) VALUES (?, 'history', ?, ?)
