@@ -1,0 +1,27 @@
+{
+  "name": "address-radar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "scanner": "tsx apps/scanner/src/cli.ts",
+    "console": "tsx apps/console/src/cli.ts",
+    "wallet-monitor": "tsx apps/wallet-monitor/src/cli.ts",
+    "wallet-analysis": "tsx apps/wallet-analysis/src/cli.ts"
+  },
+  "dependencies": {
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "^24.13.3",
+    "tsx": "^4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11"
+  }
+}
