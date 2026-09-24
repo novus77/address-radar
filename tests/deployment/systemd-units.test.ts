@@ -24,10 +24,13 @@ describe("standalone systemd units", () => {
 
   it("bounds backup resource usage and publishes completed snapshots atomically", async () => {
     const content = await readFile(resolve("scripts/backup-production-state.sh"), "utf8");
+    const unit = await readFile(resolve("deployment/systemd/address-radar-backup.service"), "utf8");
     expect(content).toContain("ADDRESS_RADAR_BACKUP_PAGES_PER_STEP");
     expect(content).toContain("ADDRESS_RADAR_BACKUP_SLEEP_MS");
     expect(content).toContain("ADDRESS_RADAR_BACKUP_TIMEOUT_SECONDS");
     expect(content).toContain("ionice -c2 -n7 nice -n 15 timeout");
     expect(content).toContain("address-radar.db.partial");
+    expect(unit).toContain("ExecStartPre=+/usr/bin/systemctl stop address-radar-scanner.service address-radar-wallet-monitor.service address-radar-wallet-analysis.service");
+    expect(unit).toContain("ExecStopPost=+/usr/bin/systemctl start address-radar-scanner.service address-radar-wallet-monitor.service address-radar-wallet-analysis.service");
   });
 });
