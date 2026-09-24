@@ -21,7 +21,7 @@ export interface WalletMonitorDiagnostic {
 
 export interface WalletMonitorStore {
   checkpoint(source: string, partitionKey: string): string | null;
-  persist(source: string, partitionKey: string, observations: readonly NormalizedWalletObservation[], nextCheckpoint: string, updatedAt: number): number;
+  persist(source: string, partitionKey: string, observations: readonly NormalizedWalletObservation[], nextCheckpoint: string, updatedAt: number, canonicalBlocks?: readonly { readonly blockNumber: number; readonly blockHash: string }[]): number;
   recordFailure(source: string, error: string, updatedAt: number): void;
   recordProviderResult(source: string, successfulPartitionKeys: readonly string[], failures: readonly { readonly partitionKey: string; readonly error: string }[], updatedAt: number): void;
   recordDiagnostics(source: string, diagnostics: readonly { readonly partitionKey: string; readonly reason: string; readonly sourceReference: string }[], updatedAt: number): void;
@@ -83,6 +83,9 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
       PRIMARY KEY (source, partition_key, reason, source_reference)
     );
   `);
+  ensureColumn(database, "wallet_monitor_observations", "source_block_number", "INTEGER");
+  ensureColumn(database, "wallet_monitor_observations", "source_block_hash", "TEXT");
+  ensureColumn(database, "wallet_monitor_observations", "orphaned_at", "INTEGER");
 
   const transaction = <T>(operation: () => T): T => {
     database.exec("BEGIN IMMEDIATE");
@@ -104,15 +107,23 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
       `).get(source, partitionKey) as { checkpoint: string } | undefined;
       return row?.checkpoint ?? null;
     },
-    persist(source, partitionKey, observations, nextCheckpoint, updatedAt) {
+    persist(source, partitionKey, observations, nextCheckpoint, updatedAt, canonicalBlocks = []) {
       return transaction(() => {
+        for (const block of canonicalBlocks) {
+          database.prepare(`
+            UPDATE wallet_monitor_observations SET orphaned_at = ?
+            WHERE source = ? AND source_block_number = ?
+              AND source_block_hash IS NOT NULL AND source_block_hash <> ?
+              AND orphaned_at IS NULL
+          `).run(updatedAt, source, block.blockNumber, block.blockHash);
+        }
         let inserted = 0;
         const insert = database.prepare(`
           INSERT OR IGNORE INTO wallet_monitor_observations (
             source, event_id, chain_family, chain, wallet_address, token_address,
             account_id, entity_id, side, amount_usd, price_usd, market_cap_usd,
-            occurred_at, collected_at, source_reference
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            occurred_at, collected_at, source_reference, source_block_number, source_block_hash, orphaned_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
         `);
         for (const observation of observations) {
           inserted += Number(insert.run(
@@ -131,6 +142,8 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
             observation.occurredAt,
             observation.collectedAt,
             observation.sourceReference,
+            observation.sourceBlockNumber ?? null,
+            observation.sourceBlockHash ?? null,
           ).changes);
         }
         database.prepare(`
@@ -232,7 +245,7 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
     },
     observations() {
       return database.prepare(`
-        SELECT * FROM wallet_monitor_observations ORDER BY occurred_at, event_id
+        SELECT * FROM wallet_monitor_observations WHERE orphaned_at IS NULL ORDER BY occurred_at, event_id
       `).all().map((row) => {
         const value = row as Record<string, unknown>;
         return {
@@ -251,6 +264,8 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
           occurredAt: Number(value.occurred_at),
           collectedAt: Number(value.collected_at),
           sourceReference: String(value.source_reference),
+          ...(value.source_block_number === null ? {} : { sourceBlockNumber: Number(value.source_block_number) }),
+          ...(value.source_block_hash === null ? {} : { sourceBlockHash: String(value.source_block_hash) }),
         };
       });
     },
@@ -258,4 +273,9 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
       database.close();
     },
   };
+}
+
+function ensureColumn(database: DatabaseSync, table: string, column: string, definition: string): void {
+  const columns = database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!columns.some(item => item.name === column)) database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }

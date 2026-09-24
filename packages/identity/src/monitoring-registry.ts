@@ -36,6 +36,13 @@ export function openMonitoringRegistry(databasePath: string): MonitoringRegistry
         JOIN entity_accounts ea ON ea.account_id = w.account_id
         JOIN trader_entities e ON e.entity_id = ea.entity_id
         WHERE w.chain_family = ? AND e.lifecycle != 'suspended'
+          AND ea.entity_id = (
+            SELECT owner.entity_id
+            FROM entity_accounts owner
+            WHERE owner.account_id = w.account_id
+            ORDER BY owner.confidence = 'confirmed' DESC, owner.last_observed_at DESC, owner.entity_id
+            LIMIT 1
+          )
         UNION ALL
         SELECT ew.address, e.entity_id AS accountId, e.entity_id AS entityId, e.lifecycle
         FROM entity_wallet_identities ew

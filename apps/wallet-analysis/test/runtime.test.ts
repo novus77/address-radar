@@ -35,7 +35,7 @@ describe("wallet analysis runtime", () => {
     await expect(second.runOnce()).resolves.toMatchObject({ status: "review_required", saved: 1, metrics: { requestedSamples: 300, validSamples: 2, hit5xRate: 1 } });
     expect(requests).toEqual([
       expect.objectContaining({ cursor: null, from: 40 * DAY, to: 100 * DAY, limit: 300 }),
-      expect.objectContaining({ cursor: "page-2", from: 40 * DAY, to: 100 * DAY, limit: 299 }),
+      expect.objectContaining({ cursor: "page-2", from: 40 * DAY, to: 100 * DAY, limit: 300 }),
     ]);
     expect(secondStore.job("analysis-1")).toMatchObject({ status: "review_required", checkpoint: null, provenance: ["solana-rpc"] });
     secondStore.close();

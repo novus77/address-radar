@@ -7,5 +7,11 @@ export async function runWalletMonitorService(input: { readonly signal: AbortSig
 }
 
 function sleep(milliseconds: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => { const timer = setTimeout(resolve, milliseconds); signal.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason ?? new Error("Aborted")); }, { once: true }); });
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error("Aborted"));
+  return new Promise((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const timer = setTimeout(() => { cleanup(); resolve(); }, milliseconds);
+    const onAbort = () => { clearTimeout(timer); cleanup(); reject(signal.reason ?? new Error("Aborted")); };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }

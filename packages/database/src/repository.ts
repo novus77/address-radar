@@ -217,6 +217,7 @@ const toSignalOutboxRecord = (row: Record<string, unknown>): SignalOutboxRecord 
 export function openAddressRadarRepository(databasePath: string): AddressRadarRepository {
   const database = new DatabaseSync(databasePath);
   migrateAddressRadarDatabase(database);
+  database.exec("PRAGMA busy_timeout = 100");
 
   const transaction = <T>(operation: () => T): T => {
     if (database.isTransaction) return operation();
@@ -1594,7 +1595,27 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         `).get(input.analysisId) as { analysisId: string; chainFamily: "solana" | "evm"; address: string; status: string } | undefined;
         if (!job) throw new Error("Wallet analysis not found");
         if (job.status !== "review_required") {
-          if (input.decision === "accept" && job.status === "accepted") return Object.freeze({ status: "accepted" as const, entityId: input.entityId });
+          if (input.decision === "accept" && job.status === "accepted") {
+            const address = normalizeWalletAddress(job.chainFamily, job.address);
+            const persisted = database.prepare(`
+              SELECT ew.entity_id AS entityId, NULL AS accountId, NULL AS handle
+              FROM entity_wallet_identities ew
+              WHERE ew.chain_family = ? AND ew.address = ?
+              UNION ALL
+              SELECT ea.entity_id AS entityId, w.account_id AS accountId, f.handle
+              FROM wallet_identities w
+              JOIN entity_accounts ea ON ea.account_id = w.account_id
+              JOIN fomo_accounts f ON f.account_id = w.account_id
+              WHERE w.chain_family = ? AND w.address = ?
+              LIMIT 1
+            `).get(job.chainFamily, address, job.chainFamily, address) as { entityId: string; accountId: string | null; handle: string | null } | undefined;
+            if (!persisted) throw new Error("Persisted wallet analysis admission is incomplete");
+            const accountMatches = input.account
+              ? persisted.accountId === input.account.accountId && persisted.handle?.toLowerCase() === input.account.handle.toLowerCase()
+              : persisted.accountId === null;
+            if (persisted.entityId !== input.entityId || !accountMatches) throw new Error("Review request does not match persisted admission");
+            return Object.freeze({ status: "accepted" as const, entityId: persisted.entityId });
+          }
           if (input.decision === "reject" && job.status === "rejected") return Object.freeze({ status: "rejected" as const });
           throw new Error(`Wallet analysis decision already finalized as ${job.status}`);
         }
@@ -1607,6 +1628,18 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
 
         assertId(input.entityId, "entityId");
         const address = normalizeWalletAddress(job.chainFamily, job.address);
+        const existingAccountEntity = input.account
+          ? database.prepare("SELECT entity_id AS entityId FROM entity_accounts WHERE account_id = ? ORDER BY confidence = 'confirmed' DESC, last_observed_at DESC LIMIT 1").get(input.account.accountId) as { entityId: string } | undefined
+          : undefined;
+        if (existingAccountEntity && existingAccountEntity.entityId !== input.entityId) {
+          database.prepare(`
+            INSERT OR IGNORE INTO wallet_identity_conflicts(
+              conflict_id, analysis_id, chain_family, address, requested_entity_id,
+              conflicting_entity_id, status, payload, created_at, resolved_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL)
+          `).run(`wallet-analysis-account-conflict:${input.analysisId}:${existingAccountEntity.entityId}`, input.analysisId, job.chainFamily, address, input.entityId, existingAccountEntity.entityId, JSON.stringify({ source: "wallet_analysis_review", account: input.account }), input.reviewedAt);
+          return Object.freeze({ status: "conflict" as const, conflictingEntityId: existingAccountEntity.entityId, conflictingAccountId: input.account!.accountId });
+        }
         const directOwner = database.prepare("SELECT entity_id AS entityId FROM entity_wallet_identities WHERE chain_family = ? AND address = ?").get(job.chainFamily, address) as { entityId: string } | undefined;
         const rawAccountOwner = database.prepare("SELECT account_id AS accountId FROM wallet_identities WHERE chain_family = ? AND address = ? ORDER BY confidence DESC, first_observed_at LIMIT 1").get(job.chainFamily, address) as { accountId: string } | undefined;
         const accountOwner = database.prepare(`

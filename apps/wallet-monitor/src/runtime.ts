@@ -49,6 +49,7 @@ export function createWalletMonitorRuntime(input: {
             observations,
             partition.nextCheckpoint,
             collectedAt,
+            partition.canonicalBlocks,
           );
         }
         const failures = result.failures ?? [];

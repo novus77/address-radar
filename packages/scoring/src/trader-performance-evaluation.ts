@@ -22,7 +22,9 @@ export function evaluateTraderPerformance(input: {
   readonly strategyVersion: string;
 }): TraderPerformanceEvaluation {
   const evaluation = evaluateTraderAbility(input);
-  const styles = deriveStyles(evaluation.metrics, input.samples);
+  const since = input.window === "lifetime" ? 0 : input.asOf - Number.parseInt(input.window, 10) * 24 * 60 * 60_000;
+  const styleSamples = input.samples.filter(sample => sample.firstBuyAt >= since && sample.firstBuyAt <= input.asOf);
+  const styles = deriveStyles(evaluation.metrics, styleSamples);
   const snapshot: TraderAbilitySnapshot = Object.freeze({
     snapshotId: `${input.entityId}:${input.window}:${input.asOf}:${input.strategyVersion}`,
     entityId: input.entityId,

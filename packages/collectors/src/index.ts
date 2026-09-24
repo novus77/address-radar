@@ -23,6 +23,8 @@ export type {
   SolanaSwapTokenBalance,
   SolanaSwapTransaction,
 } from "./solana-swap-evidence.js";
+export { extractEvmSwapEvidence } from "./evm-swap-evidence.js";
+export type { EvmSwapLog, EvmSwapTransaction, EvmWalletTransfer } from "./evm-swap-evidence.js";
 export { RADAR_DISCOVERY_CHAINS, createRadarChainDiscoveryConfiguration, createRadarRpcDiscoveryProvider } from "./rpc-provider.js";
 export type { DiscoveryChain, RadarChainDiscoveryConfiguration, RadarRpcDiscoveryProvider, RadarRpcSubscription, RadarRpcTradeEvent, SupportedCollectorChain } from "./rpc-provider.js";
 export * from "./solana/index.js";

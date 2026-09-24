@@ -81,10 +81,12 @@ test("EVM history excludes an arbitrary ERC20 transfer without swap and quote ev
     async request(_chain, method, params) {
       if (method === "eth_blockNumber") return "0x0";
       if (method === "eth_getBlockByNumber") return {
+        hash: "0xblock0",
         timestamp: "0x64",
         transactions: params[1] === true ? [{ hash: "0xhash", from: WALLET, to: TOKEN, value: "0x0" }] : [],
       };
       if (method === "eth_getTransactionReceipt") return {
+        blockHash: "0xblock0",
         logs: [{
           address: TOKEN,
           logIndex: "0x0",
@@ -99,7 +101,7 @@ test("EVM history excludes an arbitrary ERC20 transfer without swap and quote ev
       throw new Error(`unexpected ${method}`);
     },
   };
-  const provider = createEvmRpcWalletHistoryProvider({ rpc, chains: ["eth"], market: market(), events: eventStore });
+  const provider = createEvmRpcWalletHistoryProvider({ rpc, chains: ["eth"], market: market(), events: eventStore, confirmationDepth: 0 });
   const result = await provider.collect({
     analysisId: "analysis",
     address: WALLET,

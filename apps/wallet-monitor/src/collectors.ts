@@ -1,6 +1,9 @@
 import {
+  extractEvmSwapEvidence,
   extractSolanaSwapEvidence,
   type DiscoveryChain,
+  type EvmSwapLog,
+  type EvmSwapTransaction,
   type SolanaSwapTransaction,
   type TokenMarketProvider,
 } from "@address-radar/collectors";
@@ -50,10 +53,12 @@ export function createEvmBlockWalletCollector(input: {
   readonly market?: TokenMarketProvider;
   readonly confirmationDepth?: number;
   readonly maxBlocksPerPoll?: number;
+  readonly reorgLookback?: number;
   readonly now?: () => number;
 }): WalletCollector {
   const confirmationDepth = input.confirmationDepth ?? 2;
   const maxBlocksPerPoll = input.maxBlocksPerPoll ?? 20;
+  const reorgLookback = input.reorgLookback ?? Math.max(confirmationDepth, 12);
   const now = input.now ?? Date.now;
 
   return {
@@ -64,59 +69,110 @@ export function createEvmBlockWalletCollector(input: {
       const head = hexNumber(await input.rpc.request(input.chain, "eth_blockNumber", [], request.signal));
       const safeHead = Math.max(0, head - confirmationDepth);
       const previous = parseBlockCheckpoint(request.checkpoint(partitionKey));
-      if (previous !== null && previous >= safeHead) {
-        return {
-          partitions: [{
-            partitionKey,
-            nextCheckpoint: JSON.stringify({ blockNumber: previous, checkedAt: now() }),
-            events: [],
-          }],
-        };
+      let reorg = false;
+      if (previous?.blockHash) {
+        const canonical = await input.rpc.request(input.chain, "eth_getBlockByNumber", [
+          `0x${previous.blockNumber.toString(16)}`, false,
+        ], request.signal) as EvmBlock | null;
+        if (!canonical) {
+          return { partitions: [], failures: [{ partitionKey, error: `canonical_block_unavailable:${previous.blockNumber}` }] };
+        }
+        reorg = canonical.hash !== previous.blockHash;
       }
-      const from = previous === null ? safeHead : Math.min(previous + 1, safeHead);
+      if (!reorg && previous && previous.blockNumber >= safeHead) {
+        return { partitions: [{
+          partitionKey,
+          nextCheckpoint: JSON.stringify({ blockNumber: previous.blockNumber, blockHash: previous.blockHash }),
+          events: [],
+          canonicalBlocks: previous.blockHash ? [{ blockNumber: previous.blockNumber, blockHash: previous.blockHash }] : [],
+        }] };
+      }
+
+      const from = reorg && previous
+        ? Math.max(0, previous.blockNumber - reorgLookback)
+        : previous ? previous.blockNumber + 1 : safeHead;
       const to = Math.min(safeHead, from + maxBlocksPerPoll - 1);
       const walletByAddress = new Map(request.wallets.map((wallet) => [wallet.address.toLowerCase(), wallet]));
       const events: WalletCollectorEvent[] = [];
       const diagnostics: Array<NonNullable<WalletCollectorResult["diagnostics"]>[number]> = [];
+      const failures: Array<NonNullable<WalletCollectorResult["failures"]>[number]> = [];
+      const canonicalBlocks: Array<{ blockNumber: number; blockHash: string }> = [];
+      let lastCompleted = reorg ? null : previous;
 
       for (let blockNumber = from; blockNumber <= to; blockNumber += 1) {
-        if (request.signal.aborted) break;
-        const block = await input.rpc.request(input.chain, "eth_getBlockByNumber", [
-          `0x${blockNumber.toString(16)}`,
-          true,
-        ], request.signal) as EvmBlock | null;
-        for (const transaction of block?.transactions ?? []) {
+        if (request.signal.aborted) {
+          failures.push({ partitionKey, error: "aborted" });
+          break;
+        }
+        let block: EvmBlock | null;
+        try {
+          block = await input.rpc.request(input.chain, "eth_getBlockByNumber", [
+            `0x${blockNumber.toString(16)}`, true,
+          ], request.signal) as EvmBlock | null;
+        } catch (error) {
+          failures.push({ partitionKey, error: request.signal.aborted ? "aborted" : `block_failed:${blockNumber}:${error instanceof Error ? error.message : String(error)}` });
+          break;
+        }
+        if (!block?.hash) {
+          failures.push({ partitionKey, error: `block_unavailable:${blockNumber}` });
+          break;
+        }
+        const blockEvents: WalletCollectorEvent[] = [];
+        const blockDiagnostics: Array<NonNullable<WalletCollectorResult["diagnostics"]>[number]> = [];
+        let complete = true;
+        for (const transaction of block.transactions ?? []) {
           const wallet = walletByAddress.get(transaction.from.toLowerCase())
             ?? (transaction.to ? walletByAddress.get(transaction.to.toLowerCase()) : undefined);
           if (!wallet) continue;
-          const receipt = await input.rpc.request(input.chain, "eth_getTransactionReceipt", [
-            transaction.hash,
-          ], request.signal) as EvmReceipt | null;
+          let receipt: EvmReceipt | null;
+          try {
+            receipt = await input.rpc.request(input.chain, "eth_getTransactionReceipt", [
+              transaction.hash,
+            ], request.signal) as EvmReceipt | null;
+          } catch (error) {
+            failures.push({ partitionKey, error: request.signal.aborted ? "aborted" : `receipt_failed:${transaction.hash}:${error instanceof Error ? error.message : String(error)}` });
+            complete = false;
+            break;
+          }
+          if (!receipt || (receipt.blockHash && receipt.blockHash !== block.hash)) {
+            failures.push({ partitionKey, error: `receipt_unavailable:${transaction.hash}` });
+            complete = false;
+            break;
+          }
           const extracted = await evmSwapEvents({
             chain: input.chain,
             wallet,
             transaction,
             receipt,
             market: input.market,
-            occurredAt: hexNumber(block?.timestamp ?? "0x0") * 1_000 || now(),
+            occurredAt: hexNumber(block.timestamp ?? "0x0") * 1_000 || now(),
+            blockNumber,
+            blockHash: block.hash,
           });
-          events.push(...extracted.events);
+          blockEvents.push(...extracted.events);
           if (extracted.events.length === 0 && extracted.hadCandidateTransfer) {
-            diagnostics.push({
+            blockDiagnostics.push({
               partitionKey,
               reason: "insufficient_swap_evidence",
               sourceReference: `${input.chain}:${transaction.hash}`,
             });
           }
         }
+        if (!complete) break;
+        events.push(...blockEvents);
+        diagnostics.push(...blockDiagnostics);
+        canonicalBlocks.push({ blockNumber, blockHash: block.hash });
+        lastCompleted = { blockNumber, blockHash: block.hash };
       }
 
       return {
-        partitions: [{
+        partitions: lastCompleted ? [{
           partitionKey,
-          nextCheckpoint: JSON.stringify({ blockNumber: to, checkedAt: now() }),
+          nextCheckpoint: JSON.stringify(lastCompleted),
           events,
-        }],
+          canonicalBlocks,
+        }] : [],
+        failures,
         diagnostics,
       };
     },
@@ -202,6 +258,7 @@ async function collectSolanaWallet(input: {
       signature.signature,
       { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 },
     ], input.signal) as (SolanaSwapTransaction & { readonly blockTime?: number | null }) | null;
+    if (!transaction) throw new Error(`transaction_unavailable:${signature.signature}`);
     const extracted = await solanaSwapEvents({
       wallet: input.wallet,
       signature: signature.signature,
@@ -275,30 +332,23 @@ async function solanaSwapEvents(input: {
 async function evmSwapEvents(input: {
   readonly chain: EvmChain;
   readonly wallet: MonitoredWallet;
-  readonly transaction: EvmTransaction;
-  readonly receipt: EvmReceipt | null;
+  readonly transaction: EvmSwapTransaction;
+  readonly receipt: EvmReceipt;
   readonly market: TokenMarketProvider | undefined;
   readonly occurredAt: number;
+  readonly blockNumber: number;
+  readonly blockHash: string;
 }) {
-  const wallet = input.wallet.address.toLowerCase();
-  const transfers = (input.receipt?.logs ?? []).flatMap((log, index) => {
-    if (!log.topics[0]?.toLowerCase().startsWith(TRANSFER_TOPIC) || log.topics.length < 3) return [];
-    const from = topicAddress(log.topics[1]!);
-    const to = topicAddress(log.topics[2]!);
-    if (from !== wallet && to !== wallet) return [];
-    return [{ token: log.address.toLowerCase(), amount: BigInt(log.data), incoming: to === wallet, index }];
-  });
   const quotes = EVM_QUOTES[input.chain] ?? new Set<string>();
-  const candidates = transfers.filter((transfer) => !quotes.has(transfer.token));
-  const quoteTransfers = transfers.filter((transfer) => quotes.has(transfer.token));
-  const nativeOut = input.transaction.from.toLowerCase() === wallet && hexBigInt(input.transaction.value) > 0n;
-  const swapLog = (input.receipt?.logs ?? []).some((log) =>
-    SWAP_TOPIC_PREFIXES.some((prefix) => log.topics[0]?.toLowerCase().startsWith(prefix)));
+  const evidence = extractEvmSwapEvidence({
+    wallet: input.wallet.address,
+    transaction: input.transaction,
+    logs: input.receipt.logs ?? [],
+    quoteTokens: quotes,
+  });
   const events: WalletCollectorEvent[] = [];
-
-  for (const candidate of candidates) {
-    const oppositeQuote = quoteTransfers.some((quote) => quote.incoming !== candidate.incoming);
-    if (!oppositeQuote && !(nativeOut && candidate.incoming) && !swapLog) continue;
+  for (const candidate of evidence.candidates) {
+    if (!evidence.supportsSwap(candidate)) continue;
     const snapshot = input.market ? await input.market.lookup(input.chain, candidate.token) : null;
     events.push({
       eventId: `${input.chain}:${input.transaction.hash}:${candidate.index}`,
@@ -311,9 +361,11 @@ async function evmSwapEvents(input: {
       marketCapUsd: snapshot?.marketCapUsd ?? null,
       occurredAt: input.occurredAt,
       sourceReference: `${input.chain}:${input.transaction.hash}`,
+      sourceBlockNumber: input.blockNumber,
+      sourceBlockHash: input.blockHash,
     });
   }
-  return { events, hadCandidateTransfer: candidates.length > 0 };
+  return { events, hadCandidateTransfer: evidence.candidates.length > 0 };
 }
 
 function selectRotating<T>(values: readonly T[], start: number, limit: number): T[] {
@@ -358,17 +410,18 @@ function parseSolanaCheckpoint(value: string | null): SolanaCheckpoint {
   }
 }
 
-function parseBlockCheckpoint(value: string | null): number | null {
+function parseBlockCheckpoint(value: string | null): { blockNumber: number; blockHash: string | null } | null {
   if (!value) return null;
   try {
-    const parsed = JSON.parse(value) as { block?: unknown; blockNumber?: unknown };
-    const block = parsed.blockNumber ?? parsed.block;
-    return typeof block === "number" ? block : null;
+    const parsed = JSON.parse(value) as { block?: unknown; blockNumber?: unknown; blockHash?: unknown };
+    const blockNumber = parsed.blockNumber ?? parsed.block;
+    return typeof blockNumber === "number"
+      ? { blockNumber, blockHash: typeof parsed.blockHash === "string" ? parsed.blockHash : null }
+      : null;
   } catch {
     return null;
   }
 }
-
 
 function topicAddress(topic: string): string {
   return `0x${topic.slice(-40)}`.toLowerCase();
@@ -390,19 +443,11 @@ interface SolanaSignature {
   readonly blockTime?: number | null;
 }
 interface EvmBlock {
+  readonly hash?: string;
   readonly timestamp?: string;
-  readonly transactions?: readonly EvmTransaction[];
-}
-interface EvmTransaction {
-  readonly hash: string;
-  readonly from: string;
-  readonly to?: string | null;
-  readonly value?: string;
+  readonly transactions?: readonly EvmSwapTransaction[];
 }
 interface EvmReceipt {
-  readonly logs?: readonly {
-    readonly address: string;
-    readonly topics: readonly string[];
-    readonly data: string;
-  }[];
+  readonly blockHash?: string;
+  readonly logs?: readonly EvmSwapLog[];
 }

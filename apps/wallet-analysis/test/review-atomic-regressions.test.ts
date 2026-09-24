@@ -70,22 +70,43 @@ test("a late registry failure rolls back every acceptance write", () => {
   fixture.close();
 });
 
-test("opposing review decisions are serialized and the losing decision is rejected", () => {
-  const fixture = createFixture("race");
+test("accepted retry returns the persisted entity and rejects conflicting request fields", () => {
+  const fixture = createFixture("accepted-retry");
   const review = createWalletAnalysisReviewService({ store: fixture.store, repository: fixture.repository });
+  review.accept({ analysisId: "analysis-1", entityId: "entity-1", reviewedAt: 2_000 });
+  assert.deepEqual(review.accept({ analysisId: "analysis-1", entityId: "entity-1", reviewedAt: 2_001 }), { status: "accepted", entityId: "entity-1" });
+  assert.throws(() => review.accept({ analysisId: "analysis-1", entityId: "arbitrary", reviewedAt: 2_002 }), /does not match persisted admission/);
+  fixture.close();
+});
 
-  assert.equal(review.accept({
-    analysisId: "analysis-1",
-    entityId: "entity-1",
-    reviewedAt: 2_000,
-  }).status, "accepted");
-  assert.throws(() => review.reject({ analysisId: "analysis-1", reviewedAt: 2_001 }), /finalized as accepted/);
-  assert.equal(review.accept({
-    analysisId: "analysis-1",
-    entityId: "entity-1",
-    reviewedAt: 2_002,
-  }).status, "accepted");
+test("review admission rejects linking one Fomo account to a second entity", () => {
+  const fixture = createFixture("account-owner");
+  fixture.repository.upsertFomoAccount({ accountId: "account", handle: "trader", firstSeenAt: 1, lastSeenAt: 1 });
+  fixture.repository.ensureTraderEntity({ entityId: "existing", lifecycle: "candidate", manual: true, locked: false, createdAt: 1, updatedAt: 1 });
+  fixture.repository.linkAccountToEntity({ accountId: "account", entityId: "existing", confidence: "confirmed", source: "test", observedAt: 1 });
+  const review = createWalletAnalysisReviewService({ store: fixture.store, repository: fixture.repository });
+  const result = review.accept({ analysisId: "analysis-1", entityId: "requested", accountId: "account", handle: "trader", reviewedAt: 2_000 });
+  assert.equal(result.status, "conflict");
+  assert.equal(fixture.repository.entityForAccount("account"), "existing");
+  assert.equal(fixture.repository.traderEntity("requested"), null);
+  fixture.close();
+});
 
+test("two SQLite connections expose deterministic busy then one terminal review decision", () => {
+  const fixture = createFixture("connection-race");
+  const contender = openAddressRadarRepository(fixture.path);
+  const lock = new DatabaseSync(fixture.path);
+  lock.exec("BEGIN IMMEDIATE");
+  assert.throws(() => contender.reviewWalletAnalysisDecision({ decision: "reject", analysisId: "analysis-1", reviewedAt: 2_000 }), /busy|locked/i);
+  lock.exec("ROLLBACK");
+  assert.equal(fixture.repository.reviewWalletAnalysisDecision({ decision: "accept", analysisId: "analysis-1", entityId: "entity-1", reviewedAt: 2_001 }).status, "accepted");
+  assert.throws(() => contender.reviewWalletAnalysisDecision({ decision: "reject", analysisId: "analysis-1", reviewedAt: 2_002 }), /finalized as accepted/);
+  const check = new DatabaseSync(fixture.path);
+  assert.equal(count(check, "entity_wallet_identities"), 1);
+  assert.equal(version(check), 1);
+  check.close();
+  lock.close();
+  contender.close();
   fixture.close();
 });
 

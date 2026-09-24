@@ -12,12 +12,15 @@ export interface WalletCollectorEvent {
   readonly marketCapUsd: number | null;
   readonly occurredAt: number;
   readonly sourceReference: string;
+  readonly sourceBlockNumber?: number;
+  readonly sourceBlockHash?: string;
 }
 
 export interface WalletCollectorPartition {
   readonly partitionKey: string;
   readonly nextCheckpoint: string;
   readonly events: readonly WalletCollectorEvent[];
+  readonly canonicalBlocks?: readonly { readonly blockNumber: number; readonly blockHash: string }[];
 }
 
 export interface WalletCollectorResult {

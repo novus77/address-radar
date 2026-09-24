@@ -42,13 +42,13 @@ describe("wallet monitor production wiring", () => {
     const requestedBlocks: string[] = [];
     const collector = createEvmBlockWalletCollector({ chain: "base", confirmationDepth: 0, maxBlocksPerPoll: 1, rpc: { request: async (_chain, method, params) => {
       if (method === "eth_blockNumber") return "0xa";
-      if (method === "eth_getBlockByNumber") { requestedBlocks.push(String(params[0])); return { timestamp: "0x1", transactions: [] }; }
+      if (method === "eth_getBlockByNumber") { requestedBlocks.push(String(params[0])); return { hash: "0xcanonical-a", timestamp: "0x1", transactions: [] }; }
       throw new Error(`unexpected ${method}`);
     } } });
     const runtime = createWalletMonitorRuntime({ registry, store, collectors: [collector], consumer: "monitor", now: () => 10 });
     await runtime.pollOnce();
     await runtime.pollOnce();
-    expect(requestedBlocks).toEqual(["0xa"]);
+    expect(requestedBlocks).toEqual(["0xa", "0xa"]);
     expect(store.checkpoint("evm:base", "chain:base")).toContain('"blockNumber":10');
     store.close();
     registry.close();

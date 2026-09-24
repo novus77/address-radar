@@ -18,7 +18,8 @@ export function createCandidateDiscoveryService(input: { readonly repository: Ad
       for (const milestone of CANDIDATE_MILESTONES) {
         if (event.marketCapUsd < milestone.marketCapUsd) continue;
         const milestoneId = `${event.chain}:${event.tokenAddress}:${milestone.marketCapUsd}`;
-        input.repository.recordTokenMilestone({ milestoneId, chain: event.chain, tokenAddress: event.tokenAddress, marketCapUsd: milestone.marketCapUsd, reachedAt: event.reachedAt, payload: JSON.stringify({ observedMarketCapUsd: event.marketCapUsd, provenance: event.provenance, processor: "wallet_analysis" }) });
+        const milestoneInsert = input.repository.recordTokenMilestone({ milestoneId, chain: event.chain, tokenAddress: event.tokenAddress, marketCapUsd: milestone.marketCapUsd, reachedAt: event.reachedAt, payload: JSON.stringify({ observedMarketCapUsd: event.marketCapUsd, provenance: event.provenance, processor: "wallet_analysis" }) });
+        if (!milestoneInsert.inserted) continue;
         const buys = input.repository.eventsForToken(event.chain, event.tokenAddress).filter(item => item.side === "buy" && item.occurredAt <= event.reachedAt && item.amountUsd !== null && item.amountUsd > 0 && item.marketCapUsd !== null && item.marketCapUsd > 0);
         const byAccount = new Map<string, typeof buys>();
         for (const buy of buys) byAccount.set(buy.accountId, [...(byAccount.get(buy.accountId) ?? []), buy]);
