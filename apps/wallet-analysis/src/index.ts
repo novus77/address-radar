@@ -1,6 +1,8 @@
 export { createCandidateDiscoveryService } from "./candidate-discovery.js";
 export { createHistoricalBackfillScheduler } from "./historical-backfill.js";
 export type { HistoricalBackfillWorker, HistoricalBackfillWorkerResult } from "./historical-backfill.js";
+export { createHistoricalEvidenceService } from "./historical-evidence.js";
+export type { HistoricalTradeEvidenceRow } from "./historical-evidence.js";
 export { createHistoricalPartitions } from "./historical-partitions.js";
 export type { CandidateDiscoveryResult } from "./candidate-discovery.js";
 export { createTraderPerformanceRuntime } from "./performance.js";
