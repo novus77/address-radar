@@ -8,6 +8,10 @@ timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 target="${backup_root}/${timestamp}"
 
 install -d -m 0750 "${target}"
-sqlite3 "${database_path}" ".backup '${target}/address-radar.db'"
+node --input-type=module - "${database_path}" "${target}/address-radar.db" <<'NODE'
+import { backup, DatabaseSync } from "node:sqlite";
+const source = new DatabaseSync(process.argv[2], { readOnly: true });
+try { await backup(source, process.argv[3]); } finally { source.close(); }
+NODE
 find "${backup_root}" -mindepth 1 -maxdepth 1 -type d -mtime "+${retention_days}" -exec rm -rf -- {} +
 printf '{"status":"ok","backup":"%s"}\n' "${target}/address-radar.db"
