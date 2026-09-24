@@ -577,4 +577,106 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
     JOIN entity_accounts ea ON ea.account_id = d.account_id
     WHERE d.discovery_type LIKE 'market_cap_%';
   `);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS workbench_schema_versions (
+      version INTEGER PRIMARY KEY,
+      applied_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS trader_sources (
+      entity_id TEXT NOT NULL REFERENCES trader_entities(entity_id),
+      source_key TEXT NOT NULL,
+      first_observed_at INTEGER NOT NULL,
+      last_observed_at INTEGER NOT NULL,
+      payload TEXT NOT NULL DEFAULT '{}',
+      PRIMARY KEY(entity_id, source_key)
+    );
+    CREATE INDEX IF NOT EXISTS trader_sources_key ON trader_sources(source_key, last_observed_at DESC);
+    CREATE TABLE IF NOT EXISTS trader_abilities (
+      entity_id TEXT NOT NULL REFERENCES trader_entities(entity_id),
+      ability_key TEXT NOT NULL,
+      confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
+      sample_count INTEGER NOT NULL CHECK(sample_count >= 0),
+      evidence_window TEXT NOT NULL,
+      assigned_at INTEGER NOT NULL,
+      last_evaluated_at INTEGER NOT NULL,
+      PRIMARY KEY(entity_id, ability_key, evidence_window)
+    );
+    CREATE INDEX IF NOT EXISTS trader_abilities_key ON trader_abilities(ability_key, confidence DESC);
+    CREATE TABLE IF NOT EXISTS trader_lifecycle_audit (
+      audit_id TEXT PRIMARY KEY,
+      entity_id TEXT NOT NULL REFERENCES trader_entities(entity_id),
+      from_state TEXT NOT NULL,
+      to_state TEXT NOT NULL,
+      reason_code TEXT NOT NULL,
+      reason_text TEXT NOT NULL,
+      actor TEXT NOT NULL,
+      occurred_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS trader_lifecycle_audit_entity_time ON trader_lifecycle_audit(entity_id, occurred_at DESC);
+    CREATE TABLE IF NOT EXISTS candidate_evidence_v2 (
+      evidence_id TEXT PRIMARY KEY,
+      entity_id TEXT REFERENCES trader_entities(entity_id),
+      account_id TEXT REFERENCES fomo_accounts(account_id),
+      chain TEXT NOT NULL,
+      token_address TEXT NOT NULL,
+      token_symbol TEXT,
+      token_image_url TEXT,
+      entry_market_cap_usd REAL,
+      milestone_market_cap_usd REAL NOT NULL,
+      realized_multiplier REAL,
+      peak_multiplier REAL,
+      lead_time_seconds REAL,
+      evidence_level TEXT NOT NULL,
+      source_event_ids TEXT NOT NULL,
+      observed_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS candidate_evidence_v2_pending ON candidate_evidence_v2(entity_id, account_id, observed_at DESC);
+    CREATE TABLE IF NOT EXISTS sample_diagnostics (
+      sample_id TEXT PRIMARY KEY REFERENCES trader_token_samples(sample_id),
+      reason_code TEXT NOT NULL,
+      label_zh TEXT NOT NULL,
+      detail_zh TEXT NOT NULL,
+      provider TEXT,
+      retryable INTEGER NOT NULL CHECK(retryable IN (0, 1)),
+      next_retry_at INTEGER,
+      updated_at INTEGER NOT NULL
+    );
+
+    INSERT INTO workbench_schema_versions(version, applied_at)
+    VALUES (2, CAST(strftime('%s', 'now') AS INTEGER) * 1000)
+    ON CONFLICT(version) DO NOTHING;
+
+    INSERT INTO trader_sources(entity_id, source_key, first_observed_at, last_observed_at, payload)
+    SELECT entity_id, 'manual', MIN(created_at), MAX(created_at), '{}'
+    FROM trader_tags
+    WHERE category = 'source' AND tag = 'source.manual'
+    GROUP BY entity_id
+    ON CONFLICT(entity_id, source_key) DO UPDATE SET
+      last_observed_at = MAX(trader_sources.last_observed_at, excluded.last_observed_at);
+
+    INSERT INTO trader_sources(entity_id, source_key, first_observed_at, last_observed_at, payload)
+    SELECT entity_id, 'leaderboard_30d_top100', MIN(created_at), MAX(created_at), '{}'
+    FROM trader_tags
+    WHERE category = 'source' AND tag = 'source.30d_top100'
+    GROUP BY entity_id
+    ON CONFLICT(entity_id, source_key) DO UPDATE SET
+      last_observed_at = MAX(trader_sources.last_observed_at, excluded.last_observed_at);
+
+    INSERT INTO trader_sources(entity_id, source_key, first_observed_at, last_observed_at, payload)
+    SELECT entity_id, 'milestone_reverse_discovery', MIN(created_at), MAX(created_at), '{}'
+    FROM trader_tags
+    WHERE category = 'source' AND tag = 'source.milestone_discovery'
+    GROUP BY entity_id
+    ON CONFLICT(entity_id, source_key) DO UPDATE SET
+      last_observed_at = MAX(trader_sources.last_observed_at, excluded.last_observed_at);
+
+    INSERT INTO trader_abilities(entity_id, ability_key, confidence, sample_count, evidence_window, assigned_at, last_evaluated_at)
+    SELECT entity_id, 'early_multiplier', 0.5, 0, 'legacy', MIN(created_at), MAX(created_at)
+    FROM trader_tags
+    WHERE category = 'ability' AND (tag LIKE '%10x%' OR tag LIKE '%5x%' OR tag LIKE '%milestone%')
+    GROUP BY entity_id
+    ON CONFLICT(entity_id, ability_key, evidence_window) DO UPDATE SET
+      last_evaluated_at = MAX(trader_abilities.last_evaluated_at, excluded.last_evaluated_at);
+  `);
 }

@@ -23,3 +23,19 @@ export { analyzeWalletPositions } from "./wallet-analysis.js";
 export type { WalletAnalysisMetrics, WalletAnalysisPosition } from "./wallet-analysis.js";
 export { normalizeManualResolutionHandle, normalizeManualWalletMapping } from "./wallet-mapping.js";
 export type { ManualWalletMapping } from "./wallet-mapping.js";
+export {
+  diagnosticReasonFor,
+  isTerminalWalletAnalysisPhase,
+  TRADER_ABILITY_DEFINITIONS,
+  TRADER_SOURCE_DEFINITIONS,
+  WALLET_ANALYSIS_PHASES,
+  WORKBENCH_LIFECYCLES,
+} from "./workbench-v2.js";
+export type {
+  DiagnosticFacts,
+  DiagnosticReason,
+  TraderAbility,
+  TraderSource,
+  WalletAnalysisPhase,
+  WorkbenchLifecycle,
+} from "./workbench-v2.js";
