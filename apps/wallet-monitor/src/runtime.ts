@@ -29,10 +29,13 @@ export function createWalletMonitorRuntime(input: {
       let providerFailures = 0;
       const results = await Promise.allSettled(input.collectors.map(async collector => {
         const monitored = wallets[collector.chainFamily];
-        const result = await collector.collect({ wallets: monitored, cursor: input.store.cursor(collector.name), signal });
-        const normalized = result.events.flatMap(event => normalize(event, collector.name, collector.chainFamily, monitored, now()));
-        const cursor = result.events.at(-1)?.cursor ?? input.store.cursor(collector.name);
-        accepted += input.store.persist(collector.name, normalized, cursor, now());
+        const result = await collector.collect({ wallets: monitored, checkpoint: partitionKey => input.store.checkpoint(collector.name, partitionKey), signal });
+        providerFailures += result.failures?.length ?? 0;
+        for (const partition of result.partitions) {
+          if (!partition.partitionKey.trim() || !partition.nextCheckpoint.trim()) throw new Error(`Collector ${collector.name} returned an invalid checkpoint`);
+          const normalized = partition.events.flatMap(event => normalize(event, collector.name, collector.chainFamily, monitored, now()));
+          accepted += input.store.persist(collector.name, partition.partitionKey, normalized, partition.nextCheckpoint, now());
+        }
       }));
       for (const [index, result] of results.entries()) {
         if (result.status === "fulfilled") continue;
@@ -45,7 +48,7 @@ export function createWalletMonitorRuntime(input: {
 }
 
 function normalize(event: WalletCollectorEvent, source: string, chainFamily: ChainFamily, wallets: readonly MonitoredWallet[], collectedAt: number): readonly NormalizedWalletObservation[] {
-  if (!event.eventId.trim() || !event.cursor.trim() || !event.sourceReference.trim() || !Number.isSafeInteger(event.occurredAt) || event.occurredAt < 0) return [];
+  if (!event.eventId.trim() || !event.sourceReference.trim() || !Number.isSafeInteger(event.occurredAt) || event.occurredAt < 0) return [];
   const normalizeAddress = (value: string) => chainFamily === "evm" ? value.trim().toLowerCase() : value.trim();
   const walletAddress = normalizeAddress(event.walletAddress);
   const wallet = wallets.find(candidate => normalizeAddress(candidate.address) === walletAddress);

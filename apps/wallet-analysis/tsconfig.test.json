@@ -5,6 +5,7 @@
     "noEmit": true,
     "rootDir": "../..",
     "paths": {
+      "@address-radar/collectors": ["../../packages/collectors/src/index.ts"],
       "@address-radar/domain": ["../../packages/domain/src/index.ts"],
       "@address-radar/database": ["../../packages/database/src/index.ts"],
       "@address-radar/identity": ["../../packages/identity/src/index.ts"],

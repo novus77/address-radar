@@ -54,6 +54,9 @@ importers:
 
   apps/wallet-analysis:
     dependencies:
+      '@address-radar/collectors':
+        specifier: workspace:*
+        version: link:../../packages/collectors
       '@address-radar/database':
         specifier: workspace:*
         version: link:../../packages/database
@@ -69,6 +72,9 @@ importers:
 
   apps/wallet-monitor:
     dependencies:
+      '@address-radar/collectors':
+        specifier: workspace:*
+        version: link:../../packages/collectors
       '@address-radar/database':
         specifier: workspace:*
         version: link:../../packages/database

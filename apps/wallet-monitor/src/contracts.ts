@@ -11,12 +11,18 @@ export interface WalletCollectorEvent {
   readonly priceUsd: number | null;
   readonly marketCapUsd: number | null;
   readonly occurredAt: number;
-  readonly cursor: string;
   readonly sourceReference: string;
 }
 
-export interface WalletCollectorResult {
+export interface WalletCollectorPartition {
+  readonly partitionKey: string;
+  readonly nextCheckpoint: string;
   readonly events: readonly WalletCollectorEvent[];
+}
+
+export interface WalletCollectorResult {
+  readonly partitions: readonly WalletCollectorPartition[];
+  readonly failures?: readonly { readonly partitionKey: string; readonly error: string }[];
 }
 
 export interface WalletCollector {
@@ -24,7 +30,7 @@ export interface WalletCollector {
   readonly chainFamily: ChainFamily;
   collect(input: {
     readonly wallets: readonly MonitoredWallet[];
-    readonly cursor: string | null;
+    readonly checkpoint: (partitionKey: string) => string | null;
     readonly signal: AbortSignal;
   }): Promise<WalletCollectorResult>;
 }

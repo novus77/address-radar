@@ -28,8 +28,14 @@ describe("trader performance evaluation", () => {
     });
     expect(result.snapshot).toEqual(expect.objectContaining({ entityId: "entity-1", strategyVersion: "trader-ability-v2" }));
     expect(result.snapshot.metrics).toEqual(expect.objectContaining({ validSamples: 20, independentHighMultipleCases: 3 }));
-    expect(Object.keys(result.snapshot.styles).sort()).toEqual(["EARLY_LAUNCH", "HIGH_MULTIPLE", "LARGE_CAP", "OLD_TOKEN_MOMENTUM"]);
+    expect(result.snapshot.styles).toMatchObject({ EARLY_LAUNCH: expect.any(Number), HIGH_MULTIPLE: 1, LARGE_CAP: 0.01, OLD_TOKEN_MOMENTUM: 0 });
     expect(result.lifecycle).toEqual(expect.objectContaining({ next: "active", changed: true }));
+  });
+
+  it("does not fabricate large-cap, old-token, leader, or follower styles without evidence", () => {
+    const unknown = samples.slice(0, 2).map(sample => ({ ...sample, weightedEntryMarketCapUsd: null, launchAt: null, lifecycleStageAtEntry: "unknown" }));
+    const result = evaluateTraderPerformance({ entityId: "entity-1", currentLifecycle: "candidate", locked: false, samples: unknown, outcomes: [], discoveries: [], asOf: 30_000, window: "30d", preferredHorizon: "24h", strategyVersion: "trader-ability-v2" });
+    expect(result.snapshot.styles).toMatchObject({ LARGE_CAP: 0, HIGH_CAP: 0, OLD_TOKEN_MOMENTUM: 0, LEADER: 0, FOLLOWER: 0 });
   });
 
   it("keeps sparse high-return evidence in candidate state", () => {

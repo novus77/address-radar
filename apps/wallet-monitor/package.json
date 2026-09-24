@@ -5,9 +5,10 @@
   "type": "module",
   "types": "./dist/src/index.d.ts",
   "exports": { ".": { "types": "./dist/src/index.d.ts", "import": "./dist/src/index.js", "default": "./dist/src/index.js" } },
-  "scripts": { "build": "tsc -b", "typecheck": "tsc -p tsconfig.test.json --pretty false", "test": "vitest run" },
+  "scripts": { "build": "tsc -b", "typecheck": "tsc -p tsconfig.test.json --pretty false", "test": "vitest run", "start": "node dist/src/cli.js" },
   "dependencies": {
     "@address-radar/database": "workspace:*",
+    "@address-radar/collectors": "workspace:*",
     "@address-radar/domain": "workspace:*",
     "@address-radar/identity": "workspace:*"
   }

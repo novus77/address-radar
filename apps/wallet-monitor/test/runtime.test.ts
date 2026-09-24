@@ -32,7 +32,7 @@ describe("wallet monitor runtime", () => {
       collectors: [
         { name: "evm", chainFamily: "evm", collect: async ({ wallets }) => {
           seen.push(wallets.map(wallet => wallet.address));
-          return { events: [{ eventId: "event-1", chain: "BASE", walletAddress: wallets[0]!.address.toUpperCase(), tokenAddress: "0xABC", side: "buy", amountUsd: 12, priceUsd: 2, marketCapUsd: 100_000, occurredAt: 10, cursor: "101", sourceReference: "rpc:block:101" }] };
+          return { partitions: [{ partitionKey: "chain:base", nextCheckpoint: "101", events: [{ eventId: "event-1", chain: "BASE", walletAddress: wallets[0]!.address.toUpperCase(), tokenAddress: "0xABC", side: "buy", amountUsd: 12, priceUsd: 2, marketCapUsd: 100_000, occurredAt: 10, sourceReference: "rpc:block:101" }] }] };
         } },
         { name: "solana", chainFamily: "solana", collect: async () => { throw new Error("solana unavailable"); } },
       ],
@@ -68,9 +68,9 @@ describe("wallet monitor runtime", () => {
       const store = openWalletMonitorStore(databasePath);
       const cursors: Array<string | null> = [];
       const runtime = createWalletMonitorRuntime({ registry, store, consumer: "wallet-monitor", now: () => 20, collectors: [{
-        name: "evm", chainFamily: "evm", collect: async ({ cursor }) => {
-          cursors.push(cursor);
-          return { events: [{ eventId: "same-event", chain: "base", walletAddress: "0x1111111111111111111111111111111111111111", tokenAddress: "0xABC", side: "buy", amountUsd: null, priceUsd: null, marketCapUsd: null, occurredAt: 10, cursor: "102", sourceReference: "rpc:block:102" }] };
+        name: "evm", chainFamily: "evm", collect: async ({ checkpoint }) => {
+          cursors.push(checkpoint("chain:base"));
+          return { partitions: [{ partitionKey: "chain:base", nextCheckpoint: "102", events: [{ eventId: "same-event", chain: "base", walletAddress: "0x1111111111111111111111111111111111111111", tokenAddress: "0xABC", side: "buy", amountUsd: null, priceUsd: null, marketCapUsd: null, occurredAt: 10, sourceReference: "rpc:block:102" }] }] };
         },
       }] });
       const result = await runtime.pollOnce();

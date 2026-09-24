@@ -4,8 +4,8 @@ import { migrateAddressRadarDatabase } from "@address-radar/database";
 import type { NormalizedWalletObservation } from "./contracts.js";
 
 export interface WalletMonitorStore {
-  cursor(source: string): string | null;
-  persist(source: string, observations: readonly NormalizedWalletObservation[], cursor: string | null, updatedAt: number): number;
+  checkpoint(source: string, partitionKey: string): string | null;
+  persist(source: string, partitionKey: string, observations: readonly NormalizedWalletObservation[], nextCheckpoint: string, updatedAt: number): number;
   recordFailure(source: string, error: string, updatedAt: number): void;
   observations(): readonly NormalizedWalletObservation[];
   close(): void;
@@ -15,10 +15,12 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
   const database = new DatabaseSync(databasePath);
   migrateAddressRadarDatabase(database);
   database.exec(`
-    CREATE TABLE IF NOT EXISTS wallet_monitor_cursors (
-      source TEXT PRIMARY KEY,
-      cursor TEXT NOT NULL,
+    CREATE TABLE IF NOT EXISTS wallet_monitor_checkpoints (
+      source TEXT NOT NULL,
+      partition_key TEXT NOT NULL,
+      checkpoint TEXT NOT NULL,
       updated_at INTEGER NOT NULL
+      ,PRIMARY KEY(source, partition_key)
     );
     CREATE TABLE IF NOT EXISTS wallet_monitor_observations (
       event_id TEXT PRIMARY KEY,
@@ -47,7 +49,7 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
     );
   `);
 
-  const persist = (source: string, observations: readonly NormalizedWalletObservation[], cursor: string | null, updatedAt: number): number => {
+  const persist = (source: string, partitionKey: string, observations: readonly NormalizedWalletObservation[], nextCheckpoint: string, updatedAt: number): number => {
     database.exec("BEGIN IMMEDIATE");
     try {
     const insert = database.prepare(`
@@ -65,12 +67,10 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
         event.amountUsd, event.priceUsd, event.marketCapUsd, event.occurredAt, event.collectedAt,
       ).changes);
     }
-    if (cursor !== null) {
-      database.prepare(`
-        INSERT INTO wallet_monitor_cursors(source, cursor, updated_at) VALUES (?, ?, ?)
-        ON CONFLICT(source) DO UPDATE SET cursor = excluded.cursor, updated_at = excluded.updated_at
-      `).run(source, cursor, updatedAt);
-    }
+    database.prepare(`
+      INSERT INTO wallet_monitor_checkpoints(source, partition_key, checkpoint, updated_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(source, partition_key) DO UPDATE SET checkpoint = excluded.checkpoint, updated_at = excluded.updated_at
+    `).run(source, partitionKey, nextCheckpoint, updatedAt);
     database.prepare(`
       INSERT INTO wallet_monitor_provider_status(source, status, last_error, updated_at)
       VALUES (?, 'healthy', NULL, ?)
@@ -85,12 +85,12 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
   };
 
   const store: WalletMonitorStore = {
-    cursor(source) {
-      const row = database.prepare("SELECT cursor FROM wallet_monitor_cursors WHERE source = ?").get(source) as { cursor: string } | undefined;
-      return row?.cursor ?? null;
+    checkpoint(source, partitionKey) {
+      const row = database.prepare("SELECT checkpoint FROM wallet_monitor_checkpoints WHERE source = ? AND partition_key = ?").get(source, partitionKey) as { checkpoint: string } | undefined;
+      return row?.checkpoint ?? null;
     },
-    persist(source, observations, cursor, updatedAt) {
-      return persist(source, observations, cursor, updatedAt);
+    persist(source, partitionKey, observations, nextCheckpoint, updatedAt) {
+      return persist(source, partitionKey, observations, nextCheckpoint, updatedAt);
     },
     recordFailure(source, error, updatedAt) {
       database.prepare(`
@@ -117,7 +117,6 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
         marketCapUsd: row.market_cap_usd as number | null,
         occurredAt: row.occurred_at as number,
         collectedAt: row.collected_at as number,
-        cursor: "",
       })));
     },
     close() { database.close(); },

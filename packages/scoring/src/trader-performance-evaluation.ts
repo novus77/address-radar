@@ -1,6 +1,7 @@
 import { decideLifecycleWithReason, type LifecycleDecision, type TraderAbilitySnapshot, type TraderAbilityWindow, type TraderLifecycle, type TraderOutcomeHorizon, type TraderTokenOutcome, type TraderTokenSample } from "@address-radar/domain";
 
 import { evaluateTraderAbility, type TraderDiscoveryEvidence } from "./trader-ability-evaluator.js";
+import { classifyTraderStyles } from "./style-classifier.js";
 
 export interface TraderPerformanceEvaluation {
   readonly snapshot: TraderAbilitySnapshot;
@@ -21,7 +22,7 @@ export function evaluateTraderPerformance(input: {
   readonly strategyVersion: string;
 }): TraderPerformanceEvaluation {
   const evaluation = evaluateTraderAbility(input);
-  const styles = deriveStyles(evaluation.metrics);
+  const styles = deriveStyles(evaluation.metrics, input.samples);
   const snapshot: TraderAbilitySnapshot = Object.freeze({
     snapshotId: `${input.entityId}:${input.window}:${input.asOf}:${input.strategyVersion}`,
     entityId: input.entityId,
@@ -49,14 +50,23 @@ export function evaluateTraderPerformance(input: {
   return Object.freeze({ snapshot, lifecycle });
 }
 
-function deriveStyles(metrics: ReturnType<typeof evaluateTraderAbility>["metrics"]): TraderAbilitySnapshot["styles"] {
-  return Object.freeze({
-    EARLY_LAUNCH: round(metrics.earlyEntryRate),
-    HIGH_MULTIPLE: round(0.5 * metrics.hit5xRate + 0.5 * metrics.hit10xRate),
-    LARGE_CAP: round(1 - metrics.earlyEntryRate),
-    OLD_TOKEN_MOMENTUM: 0,
-  } satisfies TraderAbilitySnapshot["styles"]);
+function deriveStyles(metrics: ReturnType<typeof evaluateTraderAbility>["metrics"], samples: readonly TraderTokenSample[]): TraderAbilitySnapshot["styles"] {
+  const included = samples.filter(sample => sample.sampleStatus === "included");
+  const marketCaps = included.flatMap(sample => sample.weightedEntryMarketCapUsd === null ? [] : [sample.weightedEntryMarketCapUsd]);
+  const tokenAges = included.flatMap(sample => sample.launchAt === null ? [] : [Math.max(0, sample.firstBuyAt - sample.launchAt)]);
+  const holdings = included.map(sample => Math.max(0, sample.lastActivityAt - sample.firstBuyAt));
+  const totalBuy = included.reduce((sum, sample) => sum + sample.totalBuyUsd, 0);
+  return classifyTraderStyles({
+    ...(marketCaps.length ? { medianEntryMarketCapUsd: median(marketCaps) } : {}),
+    ...(tokenAges.length ? { medianTokenAgeMs: median(tokenAges) } : {}),
+    ...(holdings.length ? { medianHoldingMs: median(holdings) } : {}),
+    ...(totalBuy > 0 ? { relativePositionSize: Math.max(...included.map(sample => sample.totalBuyUsd)) / totalBuy } : {}),
+    highMultipleRate: Math.max(metrics.hit5xRate, metrics.hit10xRate),
+    oldTokenEntryRate: included.length === 0 ? 0 : included.filter(sample => sample.lifecycleStageAtEntry === "old_token").length / included.length,
+  });
 }
+
+function median(values: readonly number[]): number { const ordered = [...values].sort((a, b) => a - b); const middle = Math.floor(ordered.length / 2); return ordered.length % 2 ? ordered[middle]! : (ordered[middle - 1]! + ordered[middle]!) / 2; }
 
 function round(value: number): number {
   return Math.round(Math.max(0, Math.min(1, value)) * 1_000_000) / 1_000_000;

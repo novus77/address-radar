@@ -38,16 +38,16 @@ export function createWalletAnalysisRuntime(input: {
         return Object.freeze({ analysisId: job.analysisId, processed: false, status: "collecting" as const, error });
       }
       try {
-        const to = now();
         const existing = input.store.positions(job.analysisId).length;
-        const remaining = Math.max(0, Math.min(WALLET_HISTORY_TOKEN_LIMIT, job.requestedSamples) - existing);
+        const remaining = Math.max(0, Math.min(job.maxTokens, job.requestedSamples) - existing);
         if (remaining === 0) {
           const metrics = analyzeWalletPositions({ requestedSamples: job.requestedSamples, positions: input.store.positions(job.analysisId) });
           const status = input.store.complete(job.analysisId, metrics, now());
           return Object.freeze({ analysisId: job.analysisId, processed: true, status, saved: 0, metrics });
         }
-        const page = await provider.collect({ analysisId: job.analysisId, address: job.address, from: to - WALLET_HISTORY_WINDOW_MS, to, limit: remaining, cursor: job.checkpoint, signal });
-        const bounded = page.positions.filter(position => position.enteredAt >= to - WALLET_HISTORY_WINDOW_MS && position.enteredAt <= to).slice(0, remaining);
+        const page = await provider.collect({ analysisId: job.analysisId, address: job.address, from: job.from, to: job.to, limit: remaining, cursor: job.checkpoint, signal });
+        if (!page.done && page.nextCursor === null) throw new Error("Incomplete wallet history page requires nextCursor");
+        const bounded = page.positions.filter(position => position.enteredAt >= job.from && position.enteredAt <= job.to).slice(0, remaining);
         const saved = input.store.savePage(job.analysisId, bounded, page.done ? null : page.nextCursor, page.provenance, now());
         if (!page.done) return Object.freeze({ analysisId: job.analysisId, processed: true, status: "collecting" as const, saved });
         const metrics = analyzeWalletPositions({ requestedSamples: job.requestedSamples, positions: input.store.positions(job.analysisId) });

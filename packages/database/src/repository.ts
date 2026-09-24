@@ -272,15 +272,16 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     const walletCount = Number((database.prepare("SELECT COUNT(*) AS count FROM wallet_identities WHERE account_id = ?").get(accountId) as { count: number }).count);
     if (walletCount === 0) return null;
     const nextLifecycle = entity.lifecycle === "candidate" || entity.lifecycle === "suspended" ? "probation" : entity.lifecycle;
-    if (nextLifecycle !== entity.lifecycle) {
+        if (nextLifecycle !== entity.lifecycle) {
       database.prepare("UPDATE trader_entities SET lifecycle = ?, updated_at = ? WHERE entity_id = ?").run(nextLifecycle, occurredAt, entity.entityId);
       database.prepare(`
         INSERT OR IGNORE INTO trader_lifecycle_events(
           lifecycle_event_id, entity_id, previous_state, next_state, reasons, strategy_version, occurred_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
       `).run(`identity-admission:${entity.entityId}:${occurredAt}`, entity.entityId, entity.lifecycle, nextLifecycle, JSON.stringify(["identity_resolved"]), "identity-admission-v1", occurredAt);
-    }
-    database.prepare(`
+        }
+        synchronizeTraderSignalProfile(entity.entityId, occurredAt);
+        database.prepare(`
       INSERT OR IGNORE INTO monitoring_registry_outbox(event_id, entity_id, event_type, payload, status, created_at, published_at)
       VALUES (?, ?, 'identity.updated', ?, 'published', ?, ?)
     `).run(`identity-registry:${entity.entityId}:${occurredAt}`, entity.entityId, JSON.stringify({ entityId: entity.entityId, accountId, lifecycle: nextLifecycle }), occurredAt, occurredAt);

@@ -18,7 +18,7 @@ describe("wallet analysis runtime", () => {
   it("limits history to 60 days and 300 tokens, then resumes a checkpoint after restart", async () => {
     const path = await databasePath();
     const firstStore = openWalletAnalysisStore(path);
-    firstStore.enqueue({ analysisId: "analysis-1", chainFamily: "solana", address: "Wallet", requestedSamples: 999, createdAt: 1 });
+    firstStore.enqueue({ analysisId: "analysis-1", chainFamily: "solana", address: "Wallet", requestedSamples: 999, createdAt: 100 * DAY });
     const requests: unknown[] = [];
     const provider = { collect: async (request: { cursor: string | null; from: number; to: number; limit: number }) => {
       requests.push(request);
@@ -31,7 +31,7 @@ describe("wallet analysis runtime", () => {
     firstStore.close();
 
     const secondStore = openWalletAnalysisStore(path);
-    const second = createWalletAnalysisRuntime({ store: secondStore, providers: { solana: provider }, now: () => 100 * DAY });
+    const second = createWalletAnalysisRuntime({ store: secondStore, providers: { solana: provider }, now: () => 200 * DAY });
     await expect(second.runOnce()).resolves.toMatchObject({ status: "review_required", saved: 1, metrics: { requestedSamples: 300, validSamples: 2, hit5xRate: 1 } });
     expect(requests).toEqual([
       expect.objectContaining({ cursor: null, from: 40 * DAY, to: 100 * DAY, limit: 300 }),
@@ -39,6 +39,17 @@ describe("wallet analysis runtime", () => {
     ]);
     expect(secondStore.job("analysis-1")).toMatchObject({ status: "review_required", checkpoint: null, provenance: ["solana-rpc"] });
     secondStore.close();
+  });
+
+  it("keeps the previous checkpoint when an incomplete page omits nextCursor", async () => {
+    const path = await databasePath();
+    const store = openWalletAnalysisStore(path);
+    store.enqueue({ analysisId: "analysis-1", chainFamily: "solana", address: "Wallet", requestedSamples: 10, createdAt: 100 * DAY });
+    store.savePage("analysis-1", [], "page-1", "solana-rpc", 100 * DAY);
+    const runtime = createWalletAnalysisRuntime({ store, providers: { solana: { collect: async () => ({ positions: [], nextCursor: null, done: false, provenance: "solana-rpc" }) } }, now: () => 200 * DAY });
+    await expect(runtime.runOnce()).resolves.toMatchObject({ processed: false, error: "Incomplete wallet history page requires nextCursor" });
+    expect(store.job("analysis-1")).toMatchObject({ status: "collecting", checkpoint: "page-1", from: 40 * DAY, to: 100 * DAY, maxTokens: 300 });
+    store.close();
   });
 
   it("keeps provider failure retryable without inventing metrics", async () => {
@@ -61,11 +72,15 @@ describe("candidate milestone discovery", () => {
     repository.linkAccountToEntity({ accountId: "u1", entityId: "fomo:u1", confidence: "confirmed", source: "test", observedAt: 1 });
     repository.insertTraderEvent({ eventId: "buy", accountId: "u1", entityId: "fomo:u1", chain: "solana", tokenAddress: "TokenA", side: "buy", amountUsd: 100, priceUsd: 0.01, marketCapUsd: 20_000, tokenAgeMs: 100, occurredAt: 100, collectedAt: 100, source: "fomo_stream" });
     const service = createCandidateDiscoveryService({ repository });
-    const discoveries = service.observe({ chain: "solana", tokenAddress: "TokenA", marketCapUsd: 1_000_000, reachedAt: 1_000 });
+    const discoveries = service.observe({ chain: "solana", tokenAddress: "TokenA", marketCapUsd: 1_000_000, reachedAt: 1_000, provenance: { source: "fomo_stream", sourceEventIds: ["milestone-event"] } });
 
     expect(discoveries.map(item => item.discoveryType)).toEqual(["market_cap_100k_5x", "market_cap_200k_5x", "market_cap_300k_5x", "market_cap_500k_10x", "market_cap_1m_20x"]);
     expect(repository.identityResolutionQueue(10)).toEqual([expect.objectContaining({ handle: "alpha" })]);
     expect(repository.traderEntity("fomo:u1")?.lifecycle).toBe("candidate");
+    const evidence = repository.candidateDiscoveries("u1");
+    expect(JSON.parse(evidence[0]!.payload)).toMatchObject({ processor: "wallet_analysis", evidence: { milestone: { source: "fomo_stream", sourceEventIds: ["milestone-event"] }, trades: [{ source: "fomo_stream", eventId: "buy" }] } });
+    service.observe({ chain: "solana", tokenAddress: "TokenA", marketCapUsd: 1_000_000, reachedAt: 1_000, provenance: { source: "fomo_stream", sourceEventIds: ["milestone-event"] } });
+    expect(repository.candidateDiscoveries("u1")).toHaveLength(5);
     repository.close();
   });
 });

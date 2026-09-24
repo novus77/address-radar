@@ -1,6 +1,13 @@
 export { createCandidateDiscoveryService } from "./candidate-discovery.js";
 export type { CandidateDiscoveryResult } from "./candidate-discovery.js";
 export { createTraderPerformanceRuntime } from "./performance.js";
+export { createWalletAnalysisReviewService } from "./review.js";
+export { loadWalletAnalysisConfig } from "./config.js";
+export type { WalletAnalysisConfig } from "./config.js";
+export { createEvmRpcWalletHistoryProvider, createSolanaRpcWalletHistoryProvider, openHistoricalEventStore, openSqliteHistoricalMarketSource, reconstructWalletPositions } from "./history.js";
+export type { AnalysisRpcClient, HistoricalEventStore, HistoricalMarketSource, HistoricalTokenEvent } from "./history.js";
+export { createConfiguredAnalysisRpcClient } from "./rpc.js";
+export { runWalletAnalysisService } from "./service.js";
 export { createWalletAnalysisRuntime, WALLET_HISTORY_TOKEN_LIMIT, WALLET_HISTORY_WINDOW_MS } from "./runtime.js";
 export type { WalletHistoryProvider } from "./runtime.js";
 export { openWalletAnalysisStore } from "./store.js";
