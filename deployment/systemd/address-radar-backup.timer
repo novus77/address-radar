@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Address Radar backup every six hours
+
+[Timer]
+OnCalendar=*-*-* 00/6:15:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+Unit=address-radar-backup.service
+
+[Install]
+WantedBy=timers.target

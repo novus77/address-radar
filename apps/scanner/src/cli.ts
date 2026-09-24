@@ -31,7 +31,7 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
     intervalMs: config.pollIntervalMs,
     onError: error => console.error("Scanner iteration failed", error),
   });
-  const delivery = config.gatewayEndpoint && config.gatewayKeyId && config.gatewaySharedSecret
+  const delivery = config.gatewayDeliveryEnabled && config.gatewayEndpoint && config.gatewayKeyId && config.gatewaySharedSecret
     ? createGatewayDeliveryWorker({
         repository,
         client: createGatewayClient({ endpoint: config.gatewayEndpoint, keyId: config.gatewayKeyId, secret: config.gatewaySharedSecret, timeoutMs: config.gatewayTimeoutMs ?? 5_000 }),

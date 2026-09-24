@@ -21,6 +21,7 @@ export interface ScannerConfig extends ScannerPolicyConfig {
   readonly fileStartAtEnd: boolean;
   readonly marketBaseUrl: string | null;
   readonly gatewayEndpoint?: string | null;
+  readonly gatewayDeliveryEnabled?: boolean;
   readonly gatewayKeyId?: string | null;
   readonly gatewaySharedSecret?: string | null;
   readonly gatewayDeliveryIntervalMs?: number;
@@ -69,6 +70,7 @@ export function parseScannerConfig(env: Readonly<Record<string, string | undefin
     fileStartAtEnd: env.ADDRESS_RADAR_FILE_START_AT_END !== "false",
     marketBaseUrl: env.ADDRESS_RADAR_MARKET_BASE_URL?.trim() || null,
     gatewayEndpoint: env.ADDRESS_RADAR_GATEWAY_ENDPOINT?.trim() || null,
+    gatewayDeliveryEnabled: env.ADDRESS_RADAR_GATEWAY_DELIVERY_ENABLED === "true",
     gatewayKeyId: env.ADDRESS_RADAR_GATEWAY_KEY_ID?.trim() || null,
     gatewaySharedSecret: env.ADDRESS_RADAR_GATEWAY_SHARED_SECRET?.trim() || null,
     gatewayDeliveryIntervalMs: finiteNumber(env.ADDRESS_RADAR_GATEWAY_DELIVERY_INTERVAL_MS, 1_000, "ADDRESS_RADAR_GATEWAY_DELIVERY_INTERVAL_MS"),
@@ -115,6 +117,6 @@ export async function runScannerPreflight(input: {
   if (usableFiles === 0 && !input.config.onchainRpcEndpoint) failures.push({ code: "collector_unavailable", message: "At least one usable collector is required" });
   const deliveryValues = [input.config.gatewayEndpoint, input.config.gatewayKeyId, input.config.gatewaySharedSecret];
   const configuredDeliveryValues = deliveryValues.filter(Boolean).length;
-  if (configuredDeliveryValues > 0 && configuredDeliveryValues < deliveryValues.length) failures.push({ code: "gateway_configuration_incomplete", message: "Gateway endpoint, key ID, and shared secret must be configured together" });
-  return Object.freeze({ ready: failures.length === 0, delivery: configuredDeliveryValues === deliveryValues.length ? "enabled" as const : "disabled_outbox_only" as const, failures: Object.freeze(failures) });
+  if (input.config.gatewayDeliveryEnabled && configuredDeliveryValues < deliveryValues.length) failures.push({ code: "gateway_configuration_incomplete", message: "Gateway endpoint, key ID, and shared secret must be configured together when delivery is enabled" });
+  return Object.freeze({ ready: failures.length === 0, delivery: input.config.gatewayDeliveryEnabled && configuredDeliveryValues === deliveryValues.length ? "enabled" as const : "disabled_outbox_only" as const, failures: Object.freeze(failures) });
 }

@@ -1,0 +1,20 @@
+[Unit]
+Description=Address Radar Developer Console
+After=network-online.target address-radar-scanner.service
+
+[Service]
+Type=simple
+User=address-radar
+Group=address-radar
+WorkingDirectory=/opt/address-radar/current
+EnvironmentFile=/etc/address-radar/address-radar.env
+ExecStart=/opt/address-radar/current/node_modules/.bin/tsx apps/console/src/cli.ts
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/address-radar /var/log/address-radar
+
+[Install]
+WantedBy=multi-user.target
