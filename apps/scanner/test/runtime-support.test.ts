@@ -4,15 +4,17 @@ import { parseScannerConfig, runScannerPreflight } from "../src/config.js";
 import { createPollingRuntimeJob, reconciliationIntervalMs } from "../src/runtime.js";
 
 describe("scanner runtime support", () => {
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
   it("polls immediately, recovers after an error, and stops cleanly", async () => {
     vi.useFakeTimers();
     const runOnce = vi.fn().mockRejectedValueOnce(new Error("temporary")).mockResolvedValue(undefined);
     const onError = vi.fn();
+    const setInterval = vi.spyOn(globalThis, "setInterval");
     const job = createPollingRuntimeJob({ runOnce, intervalMs: 1_000, onError });
 
     job.start();
+    expect((setInterval.mock.results[0]?.value as NodeJS.Timeout).hasRef()).toBe(true);
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(1_000);
     await job.stop();

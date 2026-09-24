@@ -215,7 +215,7 @@ export const createPollingRuntimeJob = (input: { readonly runOnce: () => unknown
   let running: Promise<void> | undefined;
   let active = false;
   const tick = () => { if (!active || running) return; running = Promise.resolve(input.runOnce()).then(() => undefined).catch(error => input.onError?.(error)).finally(() => { running = undefined; }); };
-  return Object.freeze({ start() { if (active) return; active = true; tick(); timer = setInterval(tick, input.intervalMs); timer.unref(); }, async stop() { active = false; if (timer) clearInterval(timer); timer = undefined; await running; } });
+  return Object.freeze({ start() { if (active) return; active = true; tick(); timer = setInterval(tick, input.intervalMs); }, async stop() { active = false; if (timer) clearInterval(timer); timer = undefined; await running; } });
 };
 export const RECONCILIATION_INTERVAL_MS: Readonly<Record<TraderLifecycle, number>> = Object.freeze({ candidate: 1_800_000, probation: 900_000, active: 300_000, elite: 120_000, degraded: 3_600_000, suspended: 86_400_000 });
 export const reconciliationIntervalMs = (lifecycle: TraderLifecycle, manualPriority = false): number => manualPriority ? RECONCILIATION_INTERVAL_MS.elite : RECONCILIATION_INTERVAL_MS[lifecycle];
