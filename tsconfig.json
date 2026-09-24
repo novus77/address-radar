@@ -4,16 +4,39 @@
     "noEmit": true
   },
   "references": [
-    { "path": "./packages/domain" },
-    { "path": "./packages/scoring" },
-    { "path": "./packages/database" },
-    { "path": "./packages/identity" },
-    { "path": "./packages/collectors" }
-    ,{ "path": "./packages/aggregation" }
-    ,{ "path": "./packages/signal-engine" }
-    ,{ "path": "./packages/observability" }
-    ,{ "path": "./apps/scanner" }
-    ,{ "path": "./apps/console" }
+    {
+      "path": "contracts/radar-signal"
+    },
+    {
+      "path": "./packages/domain"
+    },
+    {
+      "path": "./packages/scoring"
+    },
+    {
+      "path": "./packages/database"
+    },
+    {
+      "path": "./packages/identity"
+    },
+    {
+      "path": "./packages/collectors"
+    },
+    {
+      "path": "./packages/aggregation"
+    },
+    {
+      "path": "./packages/signal-engine"
+    },
+    {
+      "path": "./packages/observability"
+    },
+    {
+      "path": "./apps/scanner"
+    },
+    {
+      "path": "./apps/console"
+    }
   ],
   "include": [
     "vitest.config.ts"

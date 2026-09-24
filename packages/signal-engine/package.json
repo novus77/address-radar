@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@address-radar/aggregation": "workspace:*",
-    "@address-radar/domain": "workspace:*"
+    "@address-radar/domain": "workspace:*",
+    "@address-radar/radar-signal": "workspace:*"
   }
 }

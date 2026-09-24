@@ -1,4 +1,5 @@
 import { addressRadarBroadcastId, addressRadarTokenId } from "@address-radar/domain";
+import type { RadarSignalV1 } from "@address-radar/radar-signal";
 import {
   createTokenAggregationService,
   type AddressSignalEvidence,
@@ -7,21 +8,6 @@ import {
 } from "@address-radar/aggregation";
 import { evaluateTokenSignal, type TokenSignalDecision } from "./policy.js";
 
-export interface RadarSignalV1 {
-  readonly schemaVersion: "1";
-  readonly signalId: string;
-  readonly idempotencyKey: string;
-  readonly token: { readonly chain: string; readonly contractAddress: string; readonly symbol: string | null; readonly name: string | null; readonly imageUrl: string | null };
-  readonly category: "new_token_discovery" | "old_token_momentum";
-  readonly broadcastSequence: number;
-  readonly score: number;
-  readonly confidence: number;
-  readonly marketCapUsd: number | null;
-  readonly priceUsd: number | null;
-  readonly triggeredAt: string;
-  readonly expiresAt: string;
-  readonly display: { readonly title: string; readonly summary: string; readonly reasonCodes: readonly string[] };
-}
 export type SignalCandidate = RadarSignalV1;
 export interface TokenSignalMetadata { readonly symbol: string | null; readonly name: string | null; readonly imageUrl: string | null; readonly marketCapUsd: number | null; readonly priceUsd: number | null }
 export interface TokenSignalEvaluation { readonly decision: TokenSignalDecision; readonly shadowDecision: null; readonly candidate: RadarSignalV1 | null }
