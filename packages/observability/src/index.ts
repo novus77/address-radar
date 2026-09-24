@@ -3,4 +3,5 @@ export type {
   ProviderStatus,
   RuntimeQualityInput,
   RuntimeQualitySnapshot,
+  RuntimeQualityRepository,
 } from "./runtime-quality.js";

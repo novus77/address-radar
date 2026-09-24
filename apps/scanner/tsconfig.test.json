@@ -8,6 +8,8 @@
       "@address-radar/domain": ["../../packages/domain/src/index.ts"],
       "@address-radar/database": ["../../packages/database/src/index.ts"],
       "@address-radar/aggregation": ["../../packages/aggregation/src/index.ts"],
+      "@address-radar/collectors": ["../../packages/collectors/src/index.ts"],
+      "@address-radar/identity": ["../../packages/identity/src/index.ts"],
       "@address-radar/signal-engine": ["../../packages/signal-engine/src/index.ts"],
       "@address-radar/observability": ["../../packages/observability/src/index.ts"]
     }

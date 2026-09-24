@@ -475,6 +475,11 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       applied_version INTEGER NOT NULL,
       applied_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS runtime_quality_snapshots (
+      snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      payload TEXT NOT NULL,
+      recorded_at INTEGER NOT NULL
+    );
 
     INSERT OR IGNORE INTO trader_tags(entity_id, category, tag, created_at)
     SELECT entity_id, 'source', 'source.manual', created_at

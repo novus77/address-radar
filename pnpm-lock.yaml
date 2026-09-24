@@ -33,12 +33,18 @@ importers:
       '@address-radar/aggregation':
         specifier: workspace:*
         version: link:../../packages/aggregation
+      '@address-radar/collectors':
+        specifier: workspace:*
+        version: link:../../packages/collectors
       '@address-radar/database':
         specifier: workspace:*
         version: link:../../packages/database
       '@address-radar/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@address-radar/identity':
+        specifier: workspace:*
+        version: link:../../packages/identity
       '@address-radar/observability':
         specifier: workspace:*
         version: link:../../packages/observability
@@ -51,10 +57,6 @@ importers:
       '@address-radar/domain':
         specifier: workspace:*
         version: link:../domain
-    devDependencies:
-      '@address-radar/database':
-        specifier: workspace:*
-        version: link:../database
 
   packages/collectors:
     dependencies:
@@ -64,9 +66,15 @@ importers:
 
   packages/database:
     dependencies:
+      '@address-radar/aggregation':
+        specifier: workspace:*
+        version: link:../aggregation
       '@address-radar/domain':
         specifier: workspace:*
         version: link:../domain
+      '@address-radar/observability':
+        specifier: workspace:*
+        version: link:../observability
 
   packages/domain: {}
 
@@ -95,9 +103,6 @@ importers:
       '@address-radar/aggregation':
         specifier: workspace:*
         version: link:../aggregation
-      '@address-radar/database':
-        specifier: workspace:*
-        version: link:../database
       '@address-radar/domain':
         specifier: workspace:*
         version: link:../domain

@@ -6,6 +6,8 @@
     "rootDir": "../..",
     "paths": {
       "@address-radar/domain": ["../domain/src/index.ts"],
+      "@address-radar/aggregation": ["../aggregation/src/index.ts"],
+      "@address-radar/observability": ["../observability/src/index.ts"],
       "@address-radar/database": ["./src/index.ts"]
     }
   },

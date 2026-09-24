@@ -12,6 +12,11 @@ export interface TokenMarketSnapshot {
   readonly priceUsd: number | null;
   readonly marketCapUsd: number | null;
   readonly liquidityUsd: number | null;
+  readonly symbol?: string | null;
+  readonly name?: string | null;
+  readonly imageUrl?: string | null;
+  readonly createdAt?: number | null;
+  readonly launchedAt?: number | null;
   readonly observedAt: string;
 }
 

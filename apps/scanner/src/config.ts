@@ -14,6 +14,12 @@ export interface ScannerPolicyConfig {
 export interface ScannerConfig extends ScannerPolicyConfig {
   readonly databasePath: string;
   readonly pollIntervalMs: number;
+  readonly fomoFilePaths: readonly string[];
+  readonly onchainFilePath: string | null;
+  readonly onchainRpcEndpoint: string | null;
+  readonly onchainRpcMethod: string;
+  readonly fileStartAtEnd: boolean;
+  readonly marketBaseUrl: string | null;
 }
 
 const required = (env: Readonly<Record<string, string | undefined>>, key: string): string => {
@@ -51,11 +57,18 @@ export function parseScannerConfig(env: Readonly<Record<string, string | undefin
     allowedChains: csv(env.ADDRESS_RADAR_ALLOWED_CHAINS).map(chain => chain.toLowerCase()),
     excludedTokenIds: csv(env.ADDRESS_RADAR_EXCLUDED_TOKEN_IDS),
     pollIntervalMs,
+    fomoFilePaths: Object.freeze([env.ADDRESS_RADAR_FOMO_EVENT_LOG_PATH, env.ADDRESS_RADAR_FOMO_JOURNAL_PATH, env.ADDRESS_RADAR_FOMO_HISTORY_PATH].filter((value): value is string => Boolean(value?.trim())).map(value => value.trim())),
+    onchainFilePath: env.ADDRESS_RADAR_ONCHAIN_EVENT_LOG_PATH?.trim() || null,
+    onchainRpcEndpoint: env.ADDRESS_RADAR_ONCHAIN_RPC_ENDPOINT?.trim() || null,
+    onchainRpcMethod: env.ADDRESS_RADAR_ONCHAIN_RPC_METHOD?.trim() || "address_radar_walletEvents",
+    fileStartAtEnd: env.ADDRESS_RADAR_FILE_START_AT_END !== "false",
+    marketBaseUrl: env.ADDRESS_RADAR_MARKET_BASE_URL?.trim() || null,
   });
 }
 
 export interface ScannerPreflightFilesystem {
   writable(path: string): Promise<boolean>;
+  exists(path: string): Promise<boolean>;
 }
 
 export interface ScannerPreflightReport {
@@ -72,6 +85,9 @@ const localFilesystem: ScannerPreflightFilesystem = {
       return false;
     }
   },
+  async exists(path) {
+    try { await access(path, constants.F_OK); return true; } catch { return false; }
+  },
 };
 
 export async function runScannerPreflight(input: {
@@ -83,5 +99,8 @@ export async function runScannerPreflight(input: {
   if (!(await filesystem.writable(dirname(input.config.databasePath)))) {
     failures.push({ code: "address_database_unavailable", message: "Address database directory is not writable" });
   }
+  const files = [...input.config.fomoFilePaths, ...(input.config.onchainFilePath ? [input.config.onchainFilePath] : [])];
+  const usableFiles = (await Promise.all(files.map(path => filesystem.exists(path)))).filter(Boolean).length;
+  if (usableFiles === 0 && !input.config.onchainRpcEndpoint) failures.push({ code: "collector_unavailable", message: "At least one usable collector is required" });
   return Object.freeze({ ready: failures.length === 0, failures: Object.freeze(failures) });
 }

@@ -14,6 +14,7 @@ export interface AddressSignalEvidence {
   readonly lifecycleStage?: TokenLifecycleStage;
   readonly traderTags?: readonly string[];
   readonly dedupeKey?: string;
+  readonly traderLifecycle?: "active" | "elite" | "degraded";
 }
 
 export interface TokenAggregationPrevious {
@@ -25,6 +26,7 @@ export interface AggregatedTraderEvidence {
   readonly entityId: string;
   readonly contribution: number;
   readonly amountUsd: number;
+  readonly maxSingleBuyUsd: number;
   readonly traderTags: ReadonlySet<string>;
   readonly eventIds: readonly string[];
 }
@@ -81,30 +83,38 @@ export function aggregateEvidenceWindow(input: {
       && item.occurredAt >= windowStart
       && item.occurredAt <= latest.occurredAt
   );
-  const economicEvents = new Map<string, AddressSignalEvidence>();
+  const economicEvents = new Map<string, { selected: AddressSignalEvidence; eventIds: string[] }>();
   for (const item of inWindow) {
     const key = item.dedupeKey ?? item.eventId;
     const current = economicEvents.get(key);
-    if (!current || item.contribution > current.contribution) economicEvents.set(key, item);
+    if (!current) economicEvents.set(key, { selected: item, eventIds: [item.eventId] });
+    else {
+      current.eventIds.push(item.eventId);
+      if (item.contribution > current.selected.contribution) current.selected = item;
+    }
   }
 
   const byEntity = new Map<string, {
     contribution: number;
     amountUsd: number;
+    maxSingleBuyUsd: number;
     traderTags: Set<string>;
     eventIds: string[];
   }>();
-  for (const item of economicEvents.values()) {
+  for (const economic of economicEvents.values()) {
+    const item = economic.selected;
     const current = byEntity.get(item.entityId) ?? {
       contribution: 0,
       amountUsd: 0,
+      maxSingleBuyUsd: 0,
       traderTags: new Set<string>(),
       eventIds: [],
     };
     current.contribution = Math.max(current.contribution, clampProbability(item.contribution));
     current.amountUsd += Math.max(0, item.amountUsd ?? 0);
+    current.maxSingleBuyUsd = Math.max(current.maxSingleBuyUsd, Math.max(0, item.amountUsd ?? 0));
     for (const tag of item.traderTags ?? []) current.traderTags.add(tag);
-    current.eventIds.push(item.eventId);
+    current.eventIds.push(...economic.eventIds);
     byEntity.set(item.entityId, current);
   }
 
@@ -115,6 +125,7 @@ export function aggregateEvidenceWindow(input: {
       entityId,
       contribution: item.contribution,
       amountUsd: item.amountUsd,
+      maxSingleBuyUsd: item.maxSingleBuyUsd,
       traderTags: item.traderTags,
       eventIds: Object.freeze(item.eventIds),
     }))),

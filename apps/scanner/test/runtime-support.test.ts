@@ -37,13 +37,21 @@ describe("scanner runtime support", () => {
       ADDRESS_RADAR_MINIMUM_AGGREGATE_BUY_USD: "500",
       ADDRESS_RADAR_ALLOWED_CHAINS: "solana,base",
       ADDRESS_RADAR_EXCLUDED_TOKEN_IDS: "solana:Blocked",
+      ADDRESS_RADAR_FOMO_EVENT_LOG_PATH: "/data/fomo.jsonl",
     });
     const report = await runScannerPreflight({
       config,
-      filesystem: { writable: async path => path === "/data" },
+      filesystem: { writable: async path => path === "/data", exists: async path => path === "/data/fomo.jsonl" },
     });
 
     expect(config.allowedChains).toEqual(["solana", "base"]);
     expect(report).toEqual({ ready: true, failures: [] });
+  });
+
+  it("fails preflight without a usable collector", async () => {
+    const config = parseScannerConfig({ ADDRESS_RADAR_DATABASE_PATH: "/data/address.sqlite", ADDRESS_RADAR_STRATEGY_VERSION: "address-v1" });
+    const report = await runScannerPreflight({ config, filesystem: { writable: async () => true, exists: async () => false } });
+    expect(report.ready).toBe(false);
+    expect(report.failures).toContainEqual(expect.objectContaining({ code: "collector_unavailable" }));
   });
 });

@@ -15,6 +15,7 @@ describe("scanner runtime", () => {
       repository.upsertFomoAccount({ accountId, handle: `trader-${index}`, firstSeenAt: 1, lastSeenAt: 1 });
       repository.upsertTraderEntity({ entityId, lifecycle: "elite", manual: false, locked: false, createdAt: 1, updatedAt: 1 });
       repository.linkAccountToEntity({ accountId, entityId, confidence: "confirmed", source: "test", observedAt: 1 });
+      repository.upsertTraderSignalProfile({ entityId, monitoringEnabled: true, fomoMonitoringEnabled: true, onchainMonitoringEnabled: true, updatedAt: 1 });
       repository.insertTraderEvent({ eventId, accountId, entityId, chain: index === 3 ? "base" : "solana", tokenAddress: "TokenA", side: "buy", amountUsd: index === 2 ? 10 : 1_000, priceUsd: 0.01, marketCapUsd: 100_000, tokenAgeMs: 60_000, occurredAt: 1_000, collectedAt: 1_000, source: "fomo_stream" });
     }
     const accepted = vi.fn();
@@ -44,5 +45,35 @@ describe("scanner runtime", () => {
 
     expect(result).toMatchObject({ collected: 4, accepted: 2, rejected: 2, candidateCount: 1 });
     expect(accepted).toHaveBeenCalledWith([expect.objectContaining({ signalId: "solana:TokenA", broadcastSequence: 1 })]);
+  });
+
+  it("isolates failed providers and persists runtime quality", async () => {
+    repository = openAddressRadarRepository(":memory:");
+    const accountId = "account-active";
+    const entityId = "entity-active";
+    repository.upsertFomoAccount({ accountId, handle: "active", firstSeenAt: 1, lastSeenAt: 1 });
+    repository.upsertTraderEntity({ entityId, lifecycle: "active", manual: false, locked: false, createdAt: 1, updatedAt: 1 });
+    repository.linkAccountToEntity({ accountId, entityId, confidence: "confirmed", source: "test", observedAt: 1 });
+    repository.upsertTraderSignalProfile({ entityId, monitoringEnabled: true, fomoMonitoringEnabled: true, onchainMonitoringEnabled: true, updatedAt: 1 });
+    const runtime = createScannerRuntime({
+      repository,
+      collectors: [
+        { name: "fomo", collect: async () => ({ observations: [{ event: { eventId: "event-a", accountId, entityId, chain: "solana", tokenAddress: "TokenA", side: "buy", amountUsd: 1_000, priceUsd: 0.01, marketCapUsd: 100_000, tokenAgeMs: null, occurredAt: 1_000, collectedAt: 1_000, source: "fomo_stream" } }], status: "ready", queueOldestAt: 900, registryVersion: 4 }) },
+        { name: "onchain", collect: async () => { throw new Error("provider down"); } },
+      ],
+      signalSink: { accept: vi.fn() },
+      clock: { now: () => 3_000 },
+      lifecycleResolver: { resolve: async () => "launched_0_2h" },
+      marketProvider: { lookup: async () => ({ chain: "solana", tokenAddress: "TokenA", symbol: "TOK", name: "Token", imageUrl: null, priceUsd: 0.01, marketCapUsd: 100_000, liquidityUsd: 50_000, createdAt: 1, launchedAt: 1, observedAt: new Date(3_000).toISOString() }) },
+      config: { strategyVersion: "address-v1", signalThreshold: 0.7, minimumPurchaseUsd: 100, minimumAggregateBuyUsd: 100, allowedChains: ["solana"], excludedTokenIds: [] },
+    });
+    expect(await runtime.runOnce()).toMatchObject({ collected: 1, accepted: 1, collectorFailures: 1 });
+    expect(repository.latestRuntimeQualitySnapshot()).toMatchObject({
+      registryVersion: 4,
+      providerStatuses: { fomo: "ready", onchain: "unavailable", market: "ready" },
+      queueLagMs: 2_100,
+      aggregationLagMs: 0,
+      status: "unavailable",
+    });
   });
 });

@@ -18,12 +18,15 @@ import {
   type TraderAbilityWindow,
   type TraderBackfillJob,
   type TraderEntityInput,
+  type TraderLifecycle,
   type TraderEvent,
   type TraderScoreSnapshot,
   type TraderTokenOutcome,
   type TraderTokenSample,
   type WalletIdentityInput,
 } from "@address-radar/domain";
+import { matchCanonicalTraderEvent, type TokenAggregationRepository } from "@address-radar/aggregation";
+import type { RuntimeQualityRepository, RuntimeQualitySnapshot } from "@address-radar/observability";
 import { migrateAddressRadarDatabase } from "./migrations.js";
 
 export type AddressEvidenceSource = "fomo" | "onchain";
@@ -77,7 +80,7 @@ export type AutomaticIdentityResolutionCompletion =
   | { readonly kind: "completed"; readonly entityId: string | null }
   | { readonly kind: "conflict"; readonly conflicts: readonly AutomaticIdentityConflict[] };
 
-export interface AddressRadarRepository {
+export interface AddressRadarRepository extends TokenAggregationRepository, RuntimeQualityRepository {
   upsertFomoAccount(input: FomoAccountInput): void;
   attachWallet(input: WalletIdentityInput): void;
   account(accountId: string): FomoAccount | null;
@@ -495,8 +498,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
             AND occurred_at BETWEEN ? AND ?
           ORDER BY ABS(occurred_at - ?) ASC
         `).all(event.entityId, event.chain.toLowerCase(), normalizeAddressRadarTokenAddress(event.chain, event.tokenAddress), event.side, event.occurredAt - 30_000, event.occurredAt + 30_000, event.occurredAt) as Array<{ canonicalEventId: string; amountUsd: number | null; sourceStatus: "FOMO_ONLY" | "ONCHAIN_ONLY" | "FOMO_AND_ONCHAIN" }>;
-        const opposite = sourceFamily === "onchain" ? "FOMO_ONLY" : "ONCHAIN_ONLY";
-        const matched = candidates.find(candidate => candidate.sourceStatus === opposite && compatibleEconomicAmount(candidate.amountUsd, event.amountUsd));
+        const matched = matchCanonicalTraderEvent(candidates, sourceFamily, event.amountUsd);
         const canonicalEventId = matched?.canonicalEventId ?? `canonical:${event.eventId}`;
         if (matched) {
           database.prepare("UPDATE canonical_trader_events SET source_status = 'FOMO_AND_ONCHAIN', amount_usd = COALESCE(amount_usd, ?), updated_at = ? WHERE canonical_event_id = ?")
@@ -527,6 +529,30 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     traderEntity(entityId) {
       const row = database.prepare("SELECT * FROM trader_entities WHERE entity_id = ?").get(entityId) as TraderEntityRow | undefined;
       return row ? Object.freeze({ entityId: row.entity_id, lifecycle: row.lifecycle, manual: row.manual === 1, locked: row.locked === 1, createdAt: row.created_at, updatedAt: row.updated_at }) : null;
+    },
+
+    upsertTraderSignalProfile(input) {
+      database.prepare(`
+        INSERT INTO trader_profiles(entity_id, display_name, priority, notes, monitoring_enabled, fomo_monitoring_enabled, onchain_monitoring_enabled, created_at, updated_at)
+        VALUES (?, ?, 'normal', NULL, ?, ?, ?, ?, ?)
+        ON CONFLICT(entity_id) DO UPDATE SET monitoring_enabled = excluded.monitoring_enabled,
+          fomo_monitoring_enabled = excluded.fomo_monitoring_enabled,
+          onchain_monitoring_enabled = excluded.onchain_monitoring_enabled,
+          updated_at = MAX(trader_profiles.updated_at, excluded.updated_at)
+      `).run(input.entityId, input.entityId, Number(input.monitoringEnabled), Number(input.fomoMonitoringEnabled), Number(input.onchainMonitoringEnabled), input.updatedAt, input.updatedAt);
+      database.prepare("UPDATE monitoring_registry_state SET version = version + 1, updated_at = ? WHERE singleton = 1").run(input.updatedAt);
+    },
+
+    traderSignalProfile(entityId) {
+      const row = database.prepare(`
+        SELECT e.entity_id AS entityId, e.lifecycle,
+          EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id) AS mapped,
+          COALESCE(p.monitoring_enabled, 0) AS monitoringEnabled,
+          COALESCE(p.fomo_monitoring_enabled, 0) AS fomoMonitoringEnabled,
+          COALESCE(p.onchain_monitoring_enabled, 0) AS onchainMonitoringEnabled
+        FROM trader_entities e LEFT JOIN trader_profiles p ON p.entity_id = e.entity_id WHERE e.entity_id = ?
+      `).get(entityId) as { entityId: string; lifecycle: TraderLifecycle; mapped: number; monitoringEnabled: number; fomoMonitoringEnabled: number; onchainMonitoringEnabled: number } | undefined;
+      return row ? Object.freeze({ entityId: row.entityId, lifecycle: row.lifecycle, mapped: row.mapped === 1, monitoringEnabled: row.monitoringEnabled === 1, fomoMonitoringEnabled: row.fomoMonitoringEnabled === 1, onchainMonitoringEnabled: row.onchainMonitoringEnabled === 1 }) : null;
     },
 
     traderEntityIdsWithEvents() {
@@ -1036,6 +1062,15 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
       return Object.freeze(rows.map(row => Object.freeze({ ...row, payload: JSON.parse(row.payload) as unknown })));
     },
 
+    saveRuntimeQualitySnapshot(snapshot) {
+      database.prepare("INSERT INTO runtime_quality_snapshots(payload, recorded_at) VALUES (?, ?)").run(JSON.stringify(snapshot), snapshot.recordedAt);
+    },
+
+    latestRuntimeQualitySnapshot() {
+      const row = database.prepare("SELECT payload FROM runtime_quality_snapshots ORDER BY snapshot_id DESC LIMIT 1").get() as { payload: string } | undefined;
+      return row ? Object.freeze(JSON.parse(row.payload) as RuntimeQualitySnapshot) : null;
+    },
+
     saveOutcomeObservation(observation, observedAt) {
       database.prepare(`
         INSERT INTO outcome_observations(broadcast_id, horizon, payload, observed_at)
@@ -1374,12 +1409,6 @@ function assertId(value: string, field: string): void {
 
 function assertTimestamp(value: number, field: string): void {
   if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${field} must be a non-negative safe integer`);
-}
-
-function compatibleEconomicAmount(left: number | null, right: number | null): boolean {
-  if (left === null || right === null) return true;
-  const scale = Math.max(Math.abs(left), Math.abs(right), 1);
-  return Math.abs(left - right) / scale <= 0.05;
 }
 
 function toTraderEvent(row: TraderEventRow): TraderEvent {

@@ -18,8 +18,5 @@
   },
   "dependencies": {
     "@address-radar/domain": "workspace:*"
-  },
-  "devDependencies": {
-    "@address-radar/database": "workspace:*"
   }
 }

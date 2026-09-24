@@ -1,156 +1,73 @@
 import { addressRadarBroadcastId, addressRadarTokenId } from "@address-radar/domain";
-import type { AddressRadarRepository } from "@address-radar/database";
-import type { AddressSignalEvidence } from "@address-radar/aggregation";
+import {
+  createTokenAggregationService,
+  type AddressSignalEvidence,
+  type TokenAggregationRepository,
+  type AggregationDecision,
+} from "@address-radar/aggregation";
 import { evaluateTokenSignal, type TokenSignalDecision } from "./policy.js";
 
-export interface SignalCandidate {
+export interface RadarSignalV1 {
+  readonly schemaVersion: "1";
   readonly signalId: string;
   readonly idempotencyKey: string;
   readonly action: "new" | "update";
+  readonly token: { readonly chain: string; readonly contractAddress: string; readonly symbol: string | null; readonly name: string | null; readonly imageUrl: string | null };
   readonly category: "new_token_discovery" | "old_token_momentum";
-  readonly token: { readonly chain: string; readonly contractAddress: string };
   readonly broadcastSequence: number;
   readonly score: number;
   readonly confidence: number;
-  readonly triggeredAt: number;
-  readonly evidenceIds: readonly string[];
-  readonly reasonCodes: readonly string[];
+  readonly lifecycleStage: string;
+  readonly windowMs: number;
+  readonly marketCapUsd: number | null;
+  readonly priceUsd: number | null;
+  readonly triggeredAt: string;
+  readonly expiresAt: string;
+  readonly display: { readonly title: string; readonly summary: string; readonly reasonCodes: readonly string[] };
+  readonly evidenceSummary: { readonly participantCount: number; readonly totalBuyUsd: number; readonly maxSingleBuyUsd: number; readonly sourceState: string; readonly entityIds: readonly string[]; readonly evidenceIds: readonly string[] };
 }
+export type SignalCandidate = RadarSignalV1;
+export interface TokenSignalMetadata { readonly symbol: string | null; readonly name: string | null; readonly imageUrl: string | null; readonly marketCapUsd: number | null; readonly priceUsd: number | null }
+export interface TokenSignalEvaluation { readonly decision: TokenSignalDecision; readonly shadowDecision: null; readonly candidate: RadarSignalV1 | null }
+export interface TokenSignalServiceOptions { readonly repository: TokenAggregationRepository; readonly threshold: number; readonly minimumTotalBuyUsd?: number | undefined; readonly strategyVersion: string; readonly now?: () => number }
 
-export interface TraderAbilityProjection {
-  readonly adjustedQuality: number;
-  readonly styles: Readonly<Record<string, number>>;
-}
-
-export interface TokenSignalEvaluation {
-  readonly decision: TokenSignalDecision;
-  readonly shadowDecision: TokenSignalDecision | null;
-  readonly candidate: SignalCandidate | null;
-}
-
-export interface TokenSignalServiceOptions {
-  readonly repository: AddressRadarRepository;
-  readonly threshold: number;
-  readonly minimumTotalBuyUsd?: number | undefined;
-  readonly strategyVersion: string;
-  readonly now?: () => number;
-  readonly traderAbilityMode?: "disabled" | "shadow" | "active";
-  readonly traderAbility?: (entityId: string) => TraderAbilityProjection | null;
-}
-
-export class TokenSignalService {
-  private readonly now: () => number;
-
-  constructor(private readonly options: TokenSignalServiceOptions) {
-    this.now = options.now ?? Date.now;
-  }
-
-  evaluate(chain: string, tokenAddress: string, evidence: readonly AddressSignalEvidence[]): TokenSignalEvaluation {
-    const previous = this.options.repository.tokenAggregationState(chain, tokenAddress);
-    const previousDecision = previous && {
-      broadcastCount: previous.broadcastCount,
-      consumedEvidenceIds: previous.consumedEvidenceIds,
-    };
-    const abilityEvidence = enrichWithTraderAbility(evidence, this.options.traderAbility);
-    const mode = this.options.traderAbilityMode ?? "disabled";
-    const decision = evaluateTokenSignal({
-      previous: previousDecision,
-      threshold: this.options.threshold,
-      minimumTotalBuyUsd: this.options.minimumTotalBuyUsd,
-      evidence: mode === "active" ? abilityEvidence : evidence,
-    });
-    const shadowDecision = mode === "shadow" ? evaluateTokenSignal({
-      previous: previousDecision,
-      threshold: this.options.threshold,
-      minimumTotalBuyUsd: this.options.minimumTotalBuyUsd,
-      evidence: abilityEvidence,
-    }) : null;
-    const evaluatedAt = this.now();
-
-    if (decision.action === "observe") {
-      this.saveEvaluation(chain, tokenAddress, decision, evaluatedAt);
-      return Object.freeze({ decision, shadowDecision, candidate: null });
-    }
-
-    const tokenId = addressRadarTokenId(chain, tokenAddress);
-    const candidate: SignalCandidate = Object.freeze({
-      signalId: tokenId,
-      idempotencyKey: addressRadarBroadcastId(tokenId, decision.broadcastNumber),
-      action: decision.action === "broadcast" ? "new" : "update",
-      category: decision.signalFamily === "NEW_TOKEN_DISCOVERY" ? "new_token_discovery" : "old_token_momentum",
-      token: Object.freeze({ chain: chain.toLowerCase(), contractAddress: tokenAddress }),
-      broadcastSequence: decision.broadcastNumber,
-      score: decision.score,
-      confidence: decision.score,
-      triggeredAt: evaluatedAt,
-      evidenceIds: decision.consumeEvidenceIds,
-      reasonCodes: Object.freeze([
-        decision.signalFamily === "NEW_TOKEN_DISCOVERY" ? "concurrent_qualified_entries" : "qualified_old_token_anomaly",
-      ]),
-    });
-    const committed = this.options.repository.commitTokenBroadcast({
-      chain,
-      tokenAddress,
-      expectedPreviousBroadcastCount: previous?.broadcastCount ?? 0,
-      strategyVersion: this.options.strategyVersion,
-      score: decision.score,
-      triggeredAt: evaluatedAt,
-      evidenceIds: decision.consumeEvidenceIds,
-      payload: candidate,
-    });
-
-    if (!committed.inserted) {
-      const concurrentDecision: TokenSignalDecision = Object.freeze({
-        ...decision,
-        action: "observe",
-        broadcastNumber: committed.broadcastNumber,
-        consumeEvidenceIds: Object.freeze([]),
-        missingConditions: Object.freeze(["concurrent_evaluation"]),
+export function createTokenSignalService(options: TokenSignalServiceOptions) {
+  const service = createTokenAggregationService<RadarSignalV1>({
+    repository: options.repository,
+    threshold: options.threshold,
+    minimumTotalBuyUsd: options.minimumTotalBuyUsd,
+    strategyVersion: options.strategyVersion,
+    now: options.now ?? Date.now,
+    evaluate: evaluateTokenSignal as (input: Parameters<typeof evaluateTokenSignal>[0]) => AggregationDecision,
+    createCandidate({ chain, tokenAddress, decision, evidence, triggeredAt, metadata }) {
+      const facts = (metadata ?? {}) as Partial<TokenSignalMetadata>;
+      const tokenId = addressRadarTokenId(chain, tokenAddress);
+      const reasonCodes = [decision.signalFamily === "NEW_TOKEN_DISCOVERY" ? "concurrent_qualified_entries" : "qualified_old_token_anomaly"];
+      return Object.freeze({
+        schemaVersion: "1" as const,
+        signalId: tokenId,
+        idempotencyKey: addressRadarBroadcastId(tokenId, decision.broadcastNumber),
+        action: decision.action === "broadcast" ? "new" as const : "update" as const,
+        token: Object.freeze({ chain: chain.toLowerCase(), contractAddress: tokenAddress, symbol: facts.symbol ?? null, name: facts.name ?? null, imageUrl: facts.imageUrl ?? null }),
+        category: decision.signalFamily === "NEW_TOKEN_DISCOVERY" ? "new_token_discovery" as const : "old_token_momentum" as const,
+        broadcastSequence: decision.broadcastNumber,
+        score: decision.score,
+        confidence: decision.score,
+        lifecycleStage: decision.lifecycleStage,
+        windowMs: decision.windowMs,
+        marketCapUsd: facts.marketCapUsd ?? null,
+        priceUsd: facts.priceUsd ?? null,
+        triggeredAt: new Date(triggeredAt).toISOString(),
+        expiresAt: new Date(triggeredAt + decision.windowMs).toISOString(),
+        display: Object.freeze({ title: decision.signalFamily === "NEW_TOKEN_DISCOVERY" ? "New token discovery" : "Old token momentum", summary: `${decision.participantCount} qualified traders, $${decision.totalBuyUsd.toFixed(0)} buys`, reasonCodes: Object.freeze(reasonCodes) }),
+        evidenceSummary: Object.freeze({ participantCount: decision.participantCount, totalBuyUsd: decision.totalBuyUsd, maxSingleBuyUsd: decision.maxSingleBuyUsd, sourceState: decision.sourceState, entityIds: Object.freeze([...new Set(evidence.filter(item => decision.consumeEvidenceIds.includes(item.eventId)).map(item => item.entityId))]), evidenceIds: decision.consumeEvidenceIds }),
       });
-      this.saveEvaluation(chain, tokenAddress, concurrentDecision, evaluatedAt);
-      return Object.freeze({ decision: concurrentDecision, shadowDecision, candidate: null });
-    }
-
-    this.saveEvaluation(chain, tokenAddress, decision, evaluatedAt);
-    return Object.freeze({ decision, shadowDecision, candidate });
-  }
-
-  private saveEvaluation(chain: string, tokenAddress: string, decision: TokenSignalDecision, updatedAt: number): void {
-    this.options.repository.saveTokenEvaluation({
-      chain,
-      tokenAddress,
-      action: decision.action,
-      signalFamily: decision.signalFamily,
-      lifecycleStage: decision.lifecycleStage,
-      score: decision.score,
-      participantCount: decision.participantCount,
-      totalBuyUsd: decision.totalBuyUsd,
-      sourceState: decision.sourceState,
-      windowMs: decision.windowMs,
-      missingConditions: decision.missingConditions,
-      updatedAt,
-    });
-  }
-}
-
-export const createTokenSignalService = (options: TokenSignalServiceOptions): TokenSignalService =>
-  new TokenSignalService(options);
-
-function enrichWithTraderAbility(
-  evidence: readonly AddressSignalEvidence[],
-  resolveAbility: TokenSignalServiceOptions["traderAbility"],
-): readonly AddressSignalEvidence[] {
-  if (!resolveAbility) return evidence;
-  return Object.freeze(evidence.map(item => {
-    const ability = resolveAbility(item.entityId);
-    if (!ability) return item;
-    const abilityTags = Object.entries(ability.styles)
-      .filter(([, score]) => Number.isFinite(score) && score >= 0.6)
-      .map(([style]) => style);
-    return Object.freeze({
-      ...item,
-      contribution: Math.max(item.contribution, Math.max(0, Math.min(1, ability.adjustedQuality))),
-      traderTags: Object.freeze([...new Set([...(item.traderTags ?? []), ...abilityTags])]),
-    });
-  }));
+    },
+  });
+  return Object.freeze({
+    evaluate(chain: string, tokenAddress: string, evidence: readonly AddressSignalEvidence[], metadata?: TokenSignalMetadata): TokenSignalEvaluation {
+      const result = service.evaluate(chain, tokenAddress, evidence, metadata as unknown as Readonly<Record<string, unknown>> | undefined);
+      return Object.freeze({ decision: result.decision as TokenSignalDecision, shadowDecision: null, candidate: result.candidate });
+    },
+  });
 }

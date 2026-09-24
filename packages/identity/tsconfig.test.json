@@ -7,6 +7,8 @@
     "paths": {
       "@address-radar/domain": ["../domain/src/index.ts"],
       "@address-radar/database": ["../database/src/index.ts"],
+      "@address-radar/aggregation": ["../aggregation/src/index.ts"],
+      "@address-radar/observability": ["../observability/src/index.ts"],
       "@address-radar/scoring": ["../scoring/src/index.ts"],
       "@address-radar/identity": ["./src/index.ts"]
     }

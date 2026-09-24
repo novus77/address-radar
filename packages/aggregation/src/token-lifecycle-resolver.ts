@@ -3,12 +3,13 @@ import { classifyTokenLifecycle, type TokenLifecycleStage } from "@address-radar
 const supportedChains = new Set(["eth", "bnb", "bsc", "monad", "robinhood", "base", "solana", "sol"]);
 
 export interface TokenLifecycleMarketProvider {
-  marketsForToken(input: {
+  tokenFacts(input: {
     readonly chain: string;
     readonly tokenAddress: string;
     readonly signal: AbortSignal;
   }): Promise<{
     readonly status: "ready" | "rate_limited" | "unavailable";
+    readonly createdAt?: number;
     readonly markets: readonly { readonly launchedAt?: number }[];
   }>;
 }
@@ -39,7 +40,7 @@ export function createTokenLifecycleResolver(input: {
       if (cached && cached.expiresAt > now()) {
         return classifyTokenLifecycle({ observedAt: request.observedAt, launchedAt: cached.launchedAt });
       }
-      const result = await input.provider.marketsForToken({
+      const result = await input.provider.tokenFacts({
         chain,
         tokenAddress: request.tokenAddress,
         signal: new AbortController().signal,
@@ -48,7 +49,11 @@ export function createTokenLifecycleResolver(input: {
       const launchTimes = result.markets.flatMap(market => market.launchedAt === undefined ? [] : [market.launchedAt]);
       const launchedAt = launchTimes.length > 0 ? Math.min(...launchTimes) : null;
       cache.set(key, { launchedAt, expiresAt: now() + cacheTtlMs });
-      return classifyTokenLifecycle({ observedAt: request.observedAt, launchedAt });
+      return classifyTokenLifecycle({
+        observedAt: request.observedAt,
+        ...(result.createdAt !== undefined ? { createdAt: result.createdAt } : {}),
+        launchedAt,
+      });
     },
   });
 }

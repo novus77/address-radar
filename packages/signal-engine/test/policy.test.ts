@@ -105,4 +105,35 @@ describe("token signal policy", () => {
 
     expect(decision).toMatchObject({ action: "rebroadcast", broadcastNumber: 2, consumeEvidenceIds: ["c", "d"] });
   });
+
+  it("qualifies created tokens with three traders inside ten minutes", () => {
+    const decision = evaluateTokenSignal({ previous: null, threshold: 0.7, evidence: [
+      evidence("a", 0.8, "entity-a", { lifecycleStage: "created", occurredAt: 1_000_000 }),
+      evidence("b", 0.8, "entity-b", { lifecycleStage: "created", occurredAt: 700_001 }),
+      evidence("c", 0.8, "entity-c", { lifecycleStage: "created", occurredAt: 999_999 }),
+    ] });
+    expect(decision).toMatchObject({ action: "broadcast", signalFamily: "NEW_TOKEN_DISCOVERY", windowMs: 600_000, participantCount: 3 });
+  });
+
+  it("requires one actual ten-thousand-dollar buy", () => {
+    const split = evaluateTokenSignal({ previous: null, threshold: 0.7, evidence: [
+      evidence("a1", 0.8, "a", { lifecycleStage: "older_1_7d", amountUsd: 5_000 }),
+      evidence("a2", 0.8, "a", { lifecycleStage: "older_1_7d", amountUsd: 5_000 }),
+      evidence("b1", 0.8, "b", { lifecycleStage: "older_1_7d", amountUsd: 5_000 }),
+      evidence("b2", 0.8, "b", { lifecycleStage: "older_1_7d", amountUsd: 5_000 }),
+    ] });
+    const actual = evaluateTokenSignal({ previous: null, threshold: 0.7, evidence: [
+      evidence("a", 0.8, "a", { lifecycleStage: "older_1_7d", amountUsd: 10_000 }),
+      evidence("b", 0.8, "b", { lifecycleStage: "older_1_7d", amountUsd: 10_000 }),
+    ] });
+    expect(split.missingConditions).toContain("single_buy_usd:10000");
+    expect(actual.action).toBe("broadcast");
+  });
+
+  it("consumes only qualified evidence", () => {
+    const decision = evaluateTokenSignal({ previous: null, threshold: 0.7, evidence: [
+      evidence("qa", 0.8, "a"), evidence("qb", 0.8, "b"), evidence("low", 0.4, "c"),
+    ] });
+    expect(decision.consumeEvidenceIds).toEqual(["qa", "qb"]);
+  });
 });

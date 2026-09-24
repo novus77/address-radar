@@ -12,6 +12,7 @@ describe("runtime quality snapshot", () => {
       registryVersion: 7,
       providerStatuses: { fomo: "ready", onchain: "degraded" },
     })).toEqual({
+      recordedAt: 20_000,
       eventFreshnessMs: 2_000,
       queueLagMs: 5_000,
       aggregationLagMs: 1_000,
@@ -19,5 +20,12 @@ describe("runtime quality snapshot", () => {
       providerStatuses: { fomo: "ready", onchain: "degraded" },
       status: "degraded",
     });
+  });
+
+  it("marks stale inputs degraded even when providers are ready", () => {
+    expect(createRuntimeQualitySnapshot({
+      now: 100_000, lastEventAt: 1_000, oldestQueuedAt: null, latestAggregationAt: 1_000,
+      registryVersion: 8, providerStatuses: { fomo: "ready" }, staleAfterMs: 10_000,
+    }).status).toBe("degraded");
   });
 });

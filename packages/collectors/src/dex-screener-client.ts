@@ -3,12 +3,14 @@ import type { FetchLike, TokenMarketProvider, TokenMarketSnapshot } from "./type
 
 interface DexPair {
   readonly chainId?: unknown;
-  readonly baseToken?: { readonly address?: unknown };
-  readonly quoteToken?: { readonly address?: unknown };
+  readonly baseToken?: { readonly address?: unknown; readonly symbol?: unknown; readonly name?: unknown };
+  readonly quoteToken?: { readonly address?: unknown; readonly symbol?: unknown; readonly name?: unknown };
   readonly priceUsd?: unknown;
   readonly liquidity?: { readonly usd?: unknown };
   readonly marketCap?: unknown;
   readonly fdv?: unknown;
+  readonly pairCreatedAt?: unknown;
+  readonly info?: { readonly imageUrl?: unknown };
 }
 
 export class DexScreenerProviderError extends Error {
@@ -25,6 +27,7 @@ const finite = (value: unknown): number | null => {
   const parsed = typeof value === "string" && value.trim() ? Number(value) : value;
   return typeof parsed === "number" && Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 };
+const text = (value: unknown): string | null => typeof value === "string" && value.trim() ? value.trim() : null;
 
 export const DEX_SCREENER_CHAIN_IDS: Readonly<Record<string, string>> = Object.freeze({
   eth: "ethereum",
@@ -78,12 +81,19 @@ export function createDexScreenerClient(input: {
         });
         const selected = pairs.sort((left, right) => (finite(right.liquidity?.usd) ?? -1) - (finite(left.liquidity?.usd) ?? -1))[0];
         if (!selected) return null;
+        const selectedBase = typeof selected.baseToken?.address === "string" && normalizeAddress(providerChain, selected.baseToken.address) === normalizedAddress
+          ? selected.baseToken : selected.quoteToken;
+        const launchedAt = finite(selected.pairCreatedAt);
         return Object.freeze({
           chain: normalizedChain,
           tokenAddress: normalizedAddress,
           priceUsd: finite(selected.priceUsd),
           marketCapUsd: finite(selected.marketCap) ?? finite(selected.fdv),
           liquidityUsd: finite(selected.liquidity?.usd),
+          ...(text(selectedBase?.symbol) ? { symbol: text(selectedBase?.symbol) } : {}),
+          ...(text(selectedBase?.name) ? { name: text(selectedBase?.name) } : {}),
+          ...(text(selected.info?.imageUrl) ? { imageUrl: text(selected.info?.imageUrl) } : {}),
+          ...(launchedAt !== null ? { createdAt: launchedAt, launchedAt } : {}),
           observedAt: new Date(now()).toISOString(),
         });
       } finally {

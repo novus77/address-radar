@@ -5,6 +5,8 @@
     { "path": "../../packages/domain" },
     { "path": "../../packages/database" },
     { "path": "../../packages/aggregation" },
+    { "path": "../../packages/collectors" },
+    { "path": "../../packages/identity" },
     { "path": "../../packages/signal-engine" },
     { "path": "../../packages/observability" }
   ],

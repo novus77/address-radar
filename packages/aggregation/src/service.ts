@@ -1,0 +1,51 @@
+import type { AddressSignalEvidence } from "./evidence.js";
+import type { TokenAggregationRepository } from "./repository.js";
+
+export const DEGRADED_TRADER_DISCOUNT = 0.7;
+
+export interface AggregationDecision {
+  readonly action: "observe" | "broadcast" | "rebroadcast";
+  readonly score: number; readonly broadcastNumber: number; readonly consumeEvidenceIds: readonly string[];
+  readonly signalFamily: "NEW_TOKEN_DISCOVERY" | "OLD_TOKEN_MOVEMENT" | null;
+  readonly lifecycleStage: string; readonly windowMs: number; readonly participantCount: number;
+  readonly totalBuyUsd: number; readonly maxSingleBuyUsd: number; readonly sourceState: "FOMO_ONLY" | "ONCHAIN_ONLY" | "FOMO_AND_ONCHAIN" | "UNKNOWN";
+  readonly missingConditions: readonly string[];
+}
+
+export function createTokenAggregationService<TCandidate>(input: {
+  readonly repository: TokenAggregationRepository;
+  readonly threshold: number;
+  readonly minimumTotalBuyUsd?: number | undefined;
+  readonly strategyVersion: string;
+  readonly now: () => number;
+  readonly evaluate: (input: { previous: TokenAggregationStateLike | null; threshold: number; minimumTotalBuyUsd?: number | undefined; evidence: readonly AddressSignalEvidence[] }) => AggregationDecision;
+  readonly createCandidate: (input: { chain: string; tokenAddress: string; decision: AggregationDecision; evidence: readonly AddressSignalEvidence[]; triggeredAt: number; metadata?: Readonly<Record<string, unknown>> }) => TCandidate;
+}) {
+  return Object.freeze({
+    evaluate(chain: string, tokenAddress: string, evidence: readonly AddressSignalEvidence[], metadata?: Readonly<Record<string, unknown>>) {
+      const previous = input.repository.tokenAggregationState(chain, tokenAddress);
+      const eligible = evidence.flatMap(item => {
+        const profile = input.repository.traderSignalProfile(item.entityId);
+        const sourceEnabled = item.source === "onchain" ? profile?.onchainMonitoringEnabled : profile?.fomoMonitoringEnabled;
+        if (!profile?.mapped || !profile.monitoringEnabled || !sourceEnabled || !["active", "elite", "degraded"].includes(profile.lifecycle)) return [];
+        return [{ ...item, contribution: item.contribution * (profile.lifecycle === "degraded" ? DEGRADED_TRADER_DISCOUNT : 1), traderLifecycle: profile.lifecycle as "active" | "elite" | "degraded" }];
+      });
+      const decision = input.evaluate({ previous, threshold: input.threshold, minimumTotalBuyUsd: input.minimumTotalBuyUsd, evidence: eligible });
+      const at = input.now();
+      if (decision.action === "observe") {
+        save(input.repository, chain, tokenAddress, decision, at);
+        return Object.freeze({ decision, candidate: null });
+      }
+      const candidate = input.createCandidate({ chain, tokenAddress, decision, evidence: eligible, triggeredAt: at, ...(metadata ? { metadata } : {}) });
+      const committed = input.repository.commitTokenBroadcast({ chain, tokenAddress, expectedPreviousBroadcastCount: previous?.broadcastCount ?? 0, strategyVersion: input.strategyVersion, score: decision.score, triggeredAt: at, evidenceIds: decision.consumeEvidenceIds, payload: candidate });
+      if (!committed.inserted) return Object.freeze({ decision: { ...decision, action: "observe" as const, broadcastNumber: committed.broadcastNumber, consumeEvidenceIds: [] }, candidate: null });
+      save(input.repository, chain, tokenAddress, decision, at);
+      return Object.freeze({ decision, candidate });
+    },
+  });
+}
+
+interface TokenAggregationStateLike { readonly broadcastCount: number; readonly consumedEvidenceIds: readonly string[] }
+function save(repository: TokenAggregationRepository, chain: string, tokenAddress: string, decision: AggregationDecision, updatedAt: number): void {
+  repository.saveTokenEvaluation({ chain, tokenAddress, action: decision.action, signalFamily: decision.signalFamily, lifecycleStage: decision.lifecycleStage, score: decision.score, participantCount: decision.participantCount, totalBuyUsd: decision.totalBuyUsd, sourceState: decision.sourceState, windowMs: decision.windowMs, missingConditions: decision.missingConditions, updatedAt });
+}
