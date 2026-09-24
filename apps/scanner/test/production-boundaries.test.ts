@@ -30,6 +30,39 @@ describe("scanner production boundaries", () => {
     repository.close();
   });
 
+  it("quarantines a schema-invalid Fomo line and advances without duplicate DLQ entries", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "scanner-schema-dlq-"));
+    const path = join(directory, "fomo.jsonl");
+    await writeFile(path, `${line("event-a")}\n{}\n${line("event-b")}\n`);
+    const repository = openAddressRadarRepository(":memory:");
+    repository.upsertFomoAccount({ accountId: "account-a", handle: "alpha", firstSeenAt: 1, lastSeenAt: 1 });
+    repository.upsertTraderEntity({ entityId: "entity-a", lifecycle: "active", manual: false, locked: false, createdAt: 1, updatedAt: 1 });
+    repository.linkAccountToEntity({ accountId: "account-a", entityId: "entity-a", confidence: "confirmed", source: "test", observedAt: 1 });
+    const scannerConfig = config(path);
+    await createScannerRuntime({ repository, collectors: createConfiguredCollectors({ config: scannerConfig, repository, now: () => 2_000 }), clock: { now: () => 2_000 }, config: scannerConfig }).runOnce();
+    expect(repository.eventsForToken("solana", "TokenA").map(event => event.eventId)).toEqual(["event-a", "event-b"]);
+    expect(repository.collectorDeadLetters(path)).toEqual([expect.objectContaining({ error: "fomo_schema_invalid", rawPayload: "{}" })]);
+    const restarted = createConfiguredCollectors({ config: scannerConfig, repository, now: () => 3_000 });
+    expect((await restarted[0]!.collect() as { observations: readonly unknown[] }).observations).toEqual([]);
+    expect(repository.collectorDeadLetters(path)).toHaveLength(1);
+    repository.close();
+  });
+
+  it("quarantines a schema-invalid on-chain line and advances without duplicate DLQ entries", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "scanner-onchain-dlq-"));
+    const path = join(directory, "onchain.jsonl");
+    await writeFile(path, "{}\n");
+    const repository = openAddressRadarRepository(":memory:");
+    const scannerConfig = { ...config("unused"), fomoFilePaths: [], onchainFilePath: path };
+    const monitoringRegistry = { wallets: () => [], version: () => 1 } as never;
+    await createScannerRuntime({ repository, collectors: createConfiguredCollectors({ config: scannerConfig, repository, monitoringRegistry, now: () => 2_000 }), clock: { now: () => 2_000 }, config: scannerConfig }).runOnce();
+    expect(repository.collectorDeadLetters(path)).toEqual([expect.objectContaining({ error: "onchain_schema_invalid", rawPayload: "{}" })]);
+    const restarted = createConfiguredCollectors({ config: scannerConfig, repository, monitoringRegistry, now: () => 3_000 });
+    expect((await restarted[0]!.collect() as { observations: readonly unknown[] }).observations).toEqual([]);
+    expect(repository.collectorDeadLetters(path)).toHaveLength(1);
+    repository.close();
+  });
+
   it("uses one market lookup per token and isolates unavailable launch evidence", async () => {
     const repository = openAddressRadarRepository(":memory:");
     repository.upsertFomoAccount({ accountId: "a", handle: "a", firstSeenAt: 1, lastSeenAt: 1 });
@@ -42,6 +75,19 @@ describe("scanner production boundaries", () => {
     expect(lookup).toHaveBeenCalledTimes(2);
     expect(repository.addressSignalEvidenceForToken("solana", "Broken", 0)[0]?.lifecycleStage).toBe("unknown");
     expect(repository.addressSignalEvidenceForToken("solana", "Token", 0)[0]?.lifecycleStage).toBe("created");
+    repository.close();
+  });
+
+  it("passes ready market launch evidence into the production lifecycle resolver with one lookup", async () => {
+    const repository = openAddressRadarRepository(":memory:");
+    repository.upsertFomoAccount({ accountId: "a", handle: "a", firstSeenAt: 1, lastSeenAt: 1 });
+    repository.upsertTraderEntity({ entityId: "e", lifecycle: "active", manual: false, locked: false, createdAt: 1, updatedAt: 1 });
+    repository.linkAccountToEntity({ accountId: "a", entityId: "e", confidence: "confirmed", source: "test", observedAt: 1 });
+    const lookup = vi.fn(async () => ({ chain: "solana", tokenAddress: "Token", symbol: null, name: null, imageUrl: null, priceUsd: null, marketCapUsd: null, liquidityUsd: null, createdAt: null, launchedAt: 900, observedAt: new Date(2_000).toISOString() }));
+    const event = { eventId: "launched", accountId: "a", entityId: "e", chain: "solana", tokenAddress: "Token", side: "buy" as const, amountUsd: 1_000, priceUsd: null, marketCapUsd: null, tokenAgeMs: null, occurredAt: 1_000, collectedAt: 1_000, source: "fomo_stream" as const };
+    await createScannerRuntime({ repository, collectors: [{ collect: async () => ({ status: "ready" as const, observations: [{ event }] }) }], clock: { now: () => 2_000 }, config: config("unused"), marketProvider: { lookup }, lifecycleResolver: createTokenLifecycleResolver({}) }).runOnce();
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(repository.addressSignalEvidenceForToken("solana", "Token", 0)[0]?.lifecycleStage).toBe("launched_0_2h");
     repository.close();
   });
 });

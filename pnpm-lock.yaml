@@ -75,6 +75,9 @@ importers:
       '@address-radar/observability':
         specifier: workspace:*
         version: link:../observability
+      '@address-radar/signal-engine':
+        specifier: workspace:*
+        version: link:../signal-engine
 
   packages/domain: {}
 

@@ -102,11 +102,13 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
                 try { market = await options.marketProvider.lookup(chain, tokenAddress); observationLaunchStatus = "ready"; }
                 catch (error) { marketStatus = "degraded"; observationLaunchStatus = "unavailable"; batchFailed = true; options.onCollectorError?.(error, index); }
               }
+              const launchTimes = [market?.launchedAt, observation.launchedAt].filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0);
+              const launchedAt = launchTimes.length > 0 ? Math.min(...launchTimes) : undefined;
               let lifecycleStage: AddressSignalEvidence["lifecycleStage"] = "unknown";
               if (options.lifecycleResolver) {
                 try {
-                  const launchProviderStatus = observationLaunchStatus ?? (observation.launchedAt !== undefined ? "ready" as const : undefined);
-                  lifecycleStage = await options.lifecycleResolver.resolve({ chain, tokenAddress, observedAt: event.occurredAt, ...(observation.createdAt !== undefined ? { createdAt: observation.createdAt } : {}), ...(observation.launchedAt !== undefined ? { launchedAt: observation.launchedAt } : {}), ...(launchProviderStatus ? { launchProviderStatus } : {}) });
+                  const launchProviderStatus = launchedAt !== undefined ? "ready" as const : observationLaunchStatus;
+                  lifecycleStage = await options.lifecycleResolver.resolve({ chain, tokenAddress, observedAt: event.occurredAt, ...(observation.createdAt !== undefined ? { createdAt: observation.createdAt } : {}), ...(launchedAt !== undefined ? { launchedAt } : {}), ...(launchProviderStatus ? { launchProviderStatus } : {}) });
                 } catch (error) {
                   lifecycleStatus = "degraded";
                   batchFailed = true;

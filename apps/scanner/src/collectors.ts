@@ -1,4 +1,4 @@
-import { createJsonLineFileReader, createJsonRpcClient, normalizeFomoHistoryLine, normalizeOnchainWalletRecord, type JsonRpcClient, type OnchainWalletRecord } from "@address-radar/collectors";
+import { createJsonLineFileReader, createJsonRpcClient, normalizeFomoHistoryLine, normalizeOnchainWalletRecord, validateOnchainWalletRecord, type JsonLineRecord, type JsonRpcClient, type OnchainWalletRecord } from "@address-radar/collectors";
 import type { AddressRadarRepository } from "@address-radar/database";
 import type { MonitoringRegistry } from "@address-radar/identity";
 import type { ScannerConfig } from "./config.js";
@@ -18,35 +18,47 @@ const lifecycleEvidence = (value: unknown): Pick<ScannerObservation, "createdAt"
 
 export function createConfiguredCollectors(input: { readonly config: ScannerConfig; readonly repository: AddressRadarRepository; readonly monitoringRegistry?: MonitoringRegistry; readonly rpcClient?: JsonRpcClient; readonly now?: () => number }): readonly ScannerCollector[] {
   const now = input.now ?? Date.now;
+  const deadLetter = (path: string, record: JsonLineRecord, error: string): void => {
+    input.repository.recordCollectorDeadLetter({ deadLetterId: `jsonl:${path}:${record.byteOffset}:${record.hash}`, sourcePath: path, byteOffset: record.byteOffset, contentHash: record.hash, error, rawPayload: record.raw ?? "", recordedAt: now() });
+  };
   const collectors: ScannerCollector[] = input.config.fomoFilePaths.map((path, index) => {
     const reader = createJsonLineFileReader(path, { cursorPath: `${path}.scanner.cursor`, startAtEnd: input.config.fileStartAtEnd });
     return { name: `fomo-file-${index}`, async collect() {
       const batch = await reader.read();
       if (!batch) return { observations: [], status: "ready" as const, queueOldestAt: null, registryVersion: input.monitoringRegistry?.version() ?? 0 };
       for (const malformed of batch.records.filter(record => record.error)) {
-        input.repository.recordCollectorDeadLetter({ deadLetterId: `jsonl:${path}:${malformed.byteOffset}:${malformed.hash}`, sourcePath: path, byteOffset: malformed.byteOffset, contentHash: malformed.hash, error: malformed.error!, rawPayload: malformed.raw ?? "", recordedAt: now() });
+        deadLetter(path, malformed, malformed.error!);
       }
-      const observations = batch.values.flatMap(value => { const event = normalizeFomoHistoryLine(JSON.stringify(value), { collectedAt: now() }); return event ? [{ event, ...lifecycleEvidence(value) } satisfies ScannerObservation] : []; });
+      const observations = batch.records.flatMap(record => {
+        if (!Object.hasOwn(record, "value")) return [];
+        const event = normalizeFomoHistoryLine(JSON.stringify(record.value), { collectedAt: now() });
+        if (!event) { deadLetter(path, record, "fomo_schema_invalid"); return []; }
+        return [{ event, ...lifecycleEvidence(record.value) } satisfies ScannerObservation];
+      });
       return { observations, status: "ready" as const, queueOldestAt: observations[0]?.event?.occurredAt ?? null, registryVersion: input.monitoringRegistry?.version() ?? 0, commit: async () => { if (!(await reader.ack(batch))) throw new Error(`Unable to acknowledge ${path}`); } };
     } };
   });
-  const makeOnchain = (name: string, load: () => Promise<{ readonly records: readonly OnchainWalletRecord[]; readonly commit?: () => Promise<void> }>): ScannerCollector => ({ name, async collect() {
+  const makeOnchain = (name: string, load: () => Promise<{ readonly records: readonly OnchainWalletRecord[]; readonly commit?: () => Promise<void>; readonly lineRecords?: readonly JsonLineRecord[]; readonly sourcePath?: string }>): ScannerCollector => ({ name, async collect() {
     const registry = input.monitoringRegistry!;
     const identities = [...registry.wallets("evm"), ...registry.wallets("solana")];
     const byAddress = new Map(identities.map(identity => [identity.address.toLowerCase(), identity]));
     const loaded = await load();
-    const observations = loaded.records.flatMap(record => {
+    const observations = loaded.records.flatMap((record, index) => {
+      const lineRecord = loaded.lineRecords?.[index];
+      const schemaError = validateOnchainWalletRecord(record);
+      if (schemaError) { if (lineRecord && loaded.sourcePath) deadLetter(loaded.sourcePath, lineRecord, schemaError); return []; }
       const identity = record.walletAddress ? byAddress.get(record.walletAddress.toLowerCase()) : undefined;
       if (!identity) return [];
       const event = normalizeOnchainWalletRecord(record, { accountId: identity.accountId, entityId: identity.entityId, collectedAt: now() });
-      return event ? [{ event } satisfies ScannerObservation] : [];
+      if (!event) { if (lineRecord && loaded.sourcePath) deadLetter(loaded.sourcePath, lineRecord, "onchain_schema_invalid"); return []; }
+      return [{ event } satisfies ScannerObservation];
     });
     return { observations, status: "ready" as const, queueOldestAt: observations[0]?.event?.occurredAt ?? null, registryVersion: registry.version(), ...(loaded.commit ? { commit: loaded.commit } : {}) };
   } });
   if (input.config.onchainFilePath && input.monitoringRegistry) {
     const path = input.config.onchainFilePath;
     const reader = createJsonLineFileReader(path, { cursorPath: `${path}.scanner.cursor`, startAtEnd: input.config.fileStartAtEnd });
-    collectors.push(makeOnchain("onchain-file", async () => { const batch = await reader.read(); if (!batch) return { records: [] }; for (const malformed of batch.records.filter(record => record.error)) input.repository.recordCollectorDeadLetter({ deadLetterId: `jsonl:${path}:${malformed.byteOffset}:${malformed.hash}`, sourcePath: path, byteOffset: malformed.byteOffset, contentHash: malformed.hash, error: malformed.error!, rawPayload: malformed.raw ?? "", recordedAt: now() }); return { records: batch.values as OnchainWalletRecord[], commit: async () => { if (!(await reader.ack(batch))) throw new Error(`Unable to acknowledge ${path}`); } }; }));
+    collectors.push(makeOnchain("onchain-file", async () => { const batch = await reader.read(); if (!batch) return { records: [] }; for (const malformed of batch.records.filter(record => record.error)) deadLetter(path, malformed, malformed.error!); const lineRecords = batch.records.filter(record => Object.hasOwn(record, "value")); return { records: lineRecords.map(record => record.value as OnchainWalletRecord), lineRecords, sourcePath: path, commit: async () => { if (!(await reader.ack(batch))) throw new Error(`Unable to acknowledge ${path}`); } }; }));
   }
   if (input.config.onchainRpcEndpoint && input.monitoringRegistry) {
     const rpc = input.rpcClient ?? createJsonRpcClient({ endpoint: input.config.onchainRpcEndpoint });

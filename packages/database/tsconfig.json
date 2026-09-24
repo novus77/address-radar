@@ -1,6 +1,6 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "composite": true, "rootDir": ".", "outDir": "dist", "types": ["node"] },
-  "references": [{ "path": "../domain" }, { "path": "../aggregation" }, { "path": "../observability" }],
+  "references": [{ "path": "../domain" }, { "path": "../aggregation" }, { "path": "../observability" }, { "path": "../signal-engine" }],
   "include": ["src/**/*.ts"]
 }

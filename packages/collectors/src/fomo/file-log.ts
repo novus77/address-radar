@@ -88,7 +88,7 @@ export function createJsonLineFileReader(path: string, options: { readonly curso
         try {
           const value = JSON.parse(lineBytes) as unknown;
           values.push(value);
-          records.push(Object.freeze({ byteOffset: lineOffset, nextByteOffset: lineOffset + lineLength + 1, hash, value }));
+          records.push(Object.freeze({ byteOffset: lineOffset, nextByteOffset: lineOffset + lineLength + 1, hash, raw: lineBytes.slice(0, 4_096), value }));
         } catch (error) {
           malformedLines += 1;
           records.push(Object.freeze({ byteOffset: lineOffset, nextByteOffset: lineOffset + lineLength + 1, hash, raw: lineBytes.slice(0, 4_096), error: error instanceof Error ? error.message : String(error) }));

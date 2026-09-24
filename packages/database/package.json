@@ -19,6 +19,7 @@
   "dependencies": {
     "@address-radar/aggregation": "workspace:*",
     "@address-radar/observability": "workspace:*",
-    "@address-radar/domain": "workspace:*"
+    "@address-radar/domain": "workspace:*",
+    "@address-radar/signal-engine": "workspace:*"
   }
 }

@@ -9,3 +9,7 @@ export function normalizeOnchainWalletRecord(record: OnchainWalletRecord, identi
   if (record.chainFamily === "solana") return normalizeSolanaWalletRecord(record, identity);
   return null;
 }
+
+export function validateOnchainWalletRecord(record: OnchainWalletRecord): "onchain_schema_invalid" | null {
+  return normalizeOnchainWalletRecord(record, { accountId: "validation", entityId: "validation", collectedAt: 0 }) ? null : "onchain_schema_invalid";
+}

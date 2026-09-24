@@ -12,6 +12,7 @@ export type {
   CommitTokenBroadcastInput,
   CommitTokenBroadcastResult,
   SignalOutboxRecord,
+  LegacySignalOutboxReview,
   CollectorDeadLetter,
   IdentityConflictRecord,
   IdentityResolutionBatchRecord,

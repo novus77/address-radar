@@ -497,11 +497,27 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       last_error TEXT,
       claimed_by TEXT,
       claimed_at INTEGER,
+      claim_token TEXT,
+      claim_generation INTEGER NOT NULL DEFAULT 0,
+      lease_expires_at INTEGER,
       delivered_at INTEGER,
       created_at INTEGER NOT NULL,
       UNIQUE(token_id, broadcast_sequence)
     );
     CREATE INDEX IF NOT EXISTS signal_outbox_pending ON signal_outbox(status, next_retry_at, created_at, token_id, broadcast_sequence);
+    CREATE TABLE IF NOT EXISTS signal_outbox_migration_review (
+      review_id TEXT PRIMARY KEY,
+      broadcast_id TEXT NOT NULL UNIQUE REFERENCES broadcast_records(broadcast_id),
+      token_id TEXT NOT NULL,
+      broadcast_sequence INTEGER NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('legacy_review', 'approved', 'dead_letter')),
+      validation_status TEXT NOT NULL CHECK(validation_status IN ('valid', 'legacy_unreplayable', 'invalid')),
+      reason TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      reviewed_at INTEGER
+    );
     CREATE TABLE IF NOT EXISTS collector_dead_letters (
       dead_letter_id TEXT PRIMARY KEY,
       source_path TEXT NOT NULL,

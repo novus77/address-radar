@@ -21,11 +21,11 @@ export function createSignalOutboxPublisher(input: {
       try {
         const signal = replayRadarSignalV1(row.payload);
         await input.sink.accept(Object.freeze([signal]));
-        if (!input.repository.markSignalOutboxDelivered({ outboxId: row.outboxId, workerId: input.workerId, deliveredAt: now() })) throw new Error("Outbox delivery claim was lost");
+        if (!row.claimToken || !input.repository.markSignalOutboxDelivered({ outboxId: row.outboxId, claimToken: row.claimToken, deliveredAt: now() })) throw new Error("Outbox delivery claim was lost");
         return Object.freeze({ status: "delivered" as const, outboxId: row.outboxId });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        input.repository.failSignalOutbox({ outboxId: row.outboxId, workerId: input.workerId, nextRetryAt: now() + retryDelayMs(row.attemptCount), error: message });
+        if (row.claimToken) input.repository.failSignalOutbox({ outboxId: row.outboxId, claimToken: row.claimToken, nextRetryAt: now() + retryDelayMs(row.attemptCount), error: message });
         return Object.freeze({ status: "retry_scheduled" as const, outboxId: row.outboxId, error: message });
       }
     },

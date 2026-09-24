@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
 import {
@@ -69,7 +70,8 @@ export interface TokenEvaluationRecord { readonly tokenId: string; readonly chai
 export interface BroadcastRecord { readonly broadcastId: string; readonly tokenId: string; readonly broadcastNumber: number; readonly strategyVersion: string; readonly score: number; readonly triggeredAt: number; readonly payload: unknown }
 export interface CommitTokenBroadcastInput { readonly chain: string; readonly tokenAddress: string; readonly expectedPreviousBroadcastCount: number; readonly strategyVersion: string; readonly score: number; readonly triggeredAt: number; readonly evidenceIds: readonly string[]; readonly economicKeys: readonly string[]; readonly evaluation: Omit<TokenEvaluationRecord, "tokenId">; readonly payload: unknown; readonly publicSignal: unknown }
 export interface CommitTokenBroadcastResult { readonly inserted: boolean; readonly broadcastNumber: number }
-export interface SignalOutboxRecord { readonly outboxId: string; readonly broadcastId: string; readonly tokenId: string; readonly broadcastSequence: number; readonly payload: unknown; readonly status: "pending" | "processing" | "delivered"; readonly attemptCount: number; readonly nextRetryAt: number; readonly lastError: string | null; readonly claimedBy: string | null; readonly claimedAt: number | null; readonly deliveredAt: number | null; readonly createdAt: number }
+export interface SignalOutboxRecord { readonly outboxId: string; readonly broadcastId: string; readonly tokenId: string; readonly broadcastSequence: number; readonly payload: unknown; readonly status: "pending" | "processing" | "delivered"; readonly attemptCount: number; readonly nextRetryAt: number; readonly lastError: string | null; readonly claimedBy: string | null; readonly claimedAt: number | null; readonly claimToken: string | null; readonly claimGeneration: number; readonly leaseExpiresAt: number | null; readonly deliveredAt: number | null; readonly createdAt: number }
+export interface LegacySignalOutboxReview { readonly reviewId: string; readonly broadcastId: string; readonly tokenId: string; readonly broadcastSequence: number; readonly idempotencyKey: string; readonly payload: unknown; readonly status: "legacy_review" | "approved" | "dead_letter"; readonly validationStatus: "valid" | "legacy_unreplayable" | "invalid"; readonly reason: string; readonly createdAt: number; readonly reviewedAt: number | null }
 export interface CollectorDeadLetter { readonly deadLetterId: string; readonly sourcePath: string; readonly byteOffset: number; readonly contentHash: string; readonly error: string; readonly rawPayload: string; readonly recordedAt: number }
 export interface IdentityResolutionQueueInput { readonly handle: string; readonly accountId: string; readonly priority: number; readonly reason: string; readonly observedAt: number }
 export interface IdentityResolutionQueueRecord { readonly handle: string; readonly accountId: string; readonly priority: number; readonly reasons: readonly string[]; readonly status: "pending" | "exported" | "resolved" | "not_found" | "conflict"; readonly firstSeenAt: number; readonly lastSeenAt: number; readonly nextExportAt: number; readonly lastBatchId: string | null; readonly resolvedAt: number | null }
@@ -145,8 +147,10 @@ export interface AddressRadarRepository extends TokenAggregationRepository, Runt
   broadcasts(tokenId: string): readonly BroadcastRecord[];
   pendingSignalOutbox(): readonly SignalOutboxRecord[];
   claimSignalOutbox(input: { readonly workerId: string; readonly now: number; readonly leaseMs: number }): SignalOutboxRecord | null;
-  markSignalOutboxDelivered(input: { readonly outboxId: string; readonly workerId: string; readonly deliveredAt: number }): boolean;
-  failSignalOutbox(input: { readonly outboxId: string; readonly workerId: string; readonly nextRetryAt: number; readonly error: string }): boolean;
+  markSignalOutboxDelivered(input: { readonly outboxId: string; readonly claimToken: string; readonly deliveredAt: number }): boolean;
+  failSignalOutbox(input: { readonly outboxId: string; readonly claimToken: string; readonly nextRetryAt: number; readonly error: string }): boolean;
+  legacySignalOutboxReviews(): readonly LegacySignalOutboxReview[];
+  approveLegacySignalOutbox(reviewId: string, approvedAt: number): boolean;
   recordCollectorDeadLetter(input: CollectorDeadLetter): boolean;
   collectorDeadLetters(sourcePath: string): readonly CollectorDeadLetter[];
   saveOutcomeObservation(observation: OutcomeObservation, observedAt: number): void;
@@ -173,6 +177,29 @@ export interface AddressRadarRepository extends TokenAggregationRepository, Runt
   runInTransaction<T>(operation: () => T): T;
   close(): void;
 }
+
+const parseStoredPayload = (payload: string): unknown => {
+  try { return JSON.parse(payload) as unknown; } catch { return payload; }
+};
+
+const toSignalOutboxRecord = (row: Record<string, unknown>): SignalOutboxRecord => Object.freeze({
+  outboxId: row.outbox_id as string,
+  broadcastId: row.broadcast_id as string,
+  tokenId: row.token_id as string,
+  broadcastSequence: row.broadcast_sequence as number,
+  payload: parseStoredPayload(row.payload as string),
+  status: row.status as SignalOutboxRecord["status"],
+  attemptCount: row.attempt_count as number,
+  nextRetryAt: row.next_retry_at as number,
+  lastError: row.last_error as string | null,
+  claimedBy: row.claimed_by as string | null,
+  claimedAt: row.claimed_at as number | null,
+  claimToken: row.claim_token as string | null,
+  claimGeneration: row.claim_generation as number,
+  leaseExpiresAt: row.lease_expires_at as number | null,
+  deliveredAt: row.delivered_at as number | null,
+  createdAt: row.created_at as number,
+});
 
 export function openAddressRadarRepository(databasePath: string): AddressRadarRepository {
   const database = new DatabaseSync(databasePath);
@@ -1115,12 +1142,12 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
 
     pendingSignalOutbox() {
       const rows = database.prepare("SELECT * FROM signal_outbox WHERE status = 'pending' ORDER BY created_at, token_id, broadcast_sequence").all() as Array<Record<string, unknown>>;
-      return Object.freeze(rows.map(row => Object.freeze({ outboxId: row.outbox_id as string, broadcastId: row.broadcast_id as string, tokenId: row.token_id as string, broadcastSequence: row.broadcast_sequence as number, payload: JSON.parse(row.payload as string) as unknown, status: row.status as SignalOutboxRecord["status"], attemptCount: row.attempt_count as number, nextRetryAt: row.next_retry_at as number, lastError: row.last_error as string | null, claimedBy: row.claimed_by as string | null, claimedAt: row.claimed_at as number | null, deliveredAt: row.delivered_at as number | null, createdAt: row.created_at as number })));
+      return Object.freeze(rows.map(toSignalOutboxRecord));
     },
 
     claimSignalOutbox(input) {
       return transaction(() => {
-        database.prepare("UPDATE signal_outbox SET status = 'pending', claimed_by = NULL, claimed_at = NULL WHERE status = 'processing' AND claimed_at <= ?").run(input.now - input.leaseMs);
+        database.prepare("UPDATE signal_outbox SET status = 'pending', claimed_by = NULL, claimed_at = NULL, claim_token = NULL, lease_expires_at = NULL WHERE status = 'processing' AND COALESCE(lease_expires_at, 0) <= ?").run(input.now);
         const candidate = database.prepare(`
           SELECT candidate.outbox_id AS outboxId FROM signal_outbox candidate
           WHERE candidate.status = 'pending' AND candidate.next_retry_at <= ?
@@ -1128,19 +1155,39 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
           ORDER BY candidate.created_at, candidate.token_id, candidate.broadcast_sequence LIMIT 1
         `).get(input.now) as { outboxId: string } | undefined;
         if (!candidate) return null;
-        const changed = database.prepare("UPDATE signal_outbox SET status = 'processing', claimed_by = ?, claimed_at = ?, attempt_count = attempt_count + 1 WHERE outbox_id = ? AND status = 'pending'").run(input.workerId, input.now, candidate.outboxId);
+        const claimToken = randomUUID();
+        const changed = database.prepare("UPDATE signal_outbox SET status = 'processing', claimed_by = ?, claimed_at = ?, claim_token = ?, claim_generation = claim_generation + 1, lease_expires_at = ?, attempt_count = attempt_count + 1 WHERE outbox_id = ? AND status = 'pending'").run(input.workerId, input.now, claimToken, input.now + input.leaseMs, candidate.outboxId);
         if (changed.changes !== 1) return null;
         const row = database.prepare("SELECT * FROM signal_outbox WHERE outbox_id = ?").get(candidate.outboxId) as Record<string, unknown>;
-        return Object.freeze({ outboxId: row.outbox_id as string, broadcastId: row.broadcast_id as string, tokenId: row.token_id as string, broadcastSequence: row.broadcast_sequence as number, payload: JSON.parse(row.payload as string) as unknown, status: row.status as SignalOutboxRecord["status"], attemptCount: row.attempt_count as number, nextRetryAt: row.next_retry_at as number, lastError: row.last_error as string | null, claimedBy: row.claimed_by as string | null, claimedAt: row.claimed_at as number | null, deliveredAt: row.delivered_at as number | null, createdAt: row.created_at as number });
+        return toSignalOutboxRecord(row);
       });
     },
 
     markSignalOutboxDelivered(input) {
-      return database.prepare("UPDATE signal_outbox SET status = 'delivered', delivered_at = ?, claimed_by = NULL, claimed_at = NULL, last_error = NULL WHERE outbox_id = ? AND status = 'processing' AND claimed_by = ?").run(input.deliveredAt, input.outboxId, input.workerId).changes === 1;
+      return database.prepare("UPDATE signal_outbox SET status = 'delivered', delivered_at = ?, claimed_by = NULL, claimed_at = NULL, claim_token = NULL, lease_expires_at = NULL, last_error = NULL WHERE outbox_id = ? AND status = 'processing' AND claim_token = ?").run(input.deliveredAt, input.outboxId, input.claimToken).changes === 1;
     },
 
     failSignalOutbox(input) {
-      return database.prepare("UPDATE signal_outbox SET status = 'pending', next_retry_at = ?, last_error = ?, claimed_by = NULL, claimed_at = NULL WHERE outbox_id = ? AND status = 'processing' AND claimed_by = ?").run(input.nextRetryAt, input.error.slice(0, 2_048), input.outboxId, input.workerId).changes === 1;
+      return database.prepare("UPDATE signal_outbox SET status = 'pending', next_retry_at = ?, last_error = ?, claimed_by = NULL, claimed_at = NULL, claim_token = NULL, lease_expires_at = NULL WHERE outbox_id = ? AND status = 'processing' AND claim_token = ?").run(input.nextRetryAt, input.error.slice(0, 2_048), input.outboxId, input.claimToken).changes === 1;
+    },
+
+    legacySignalOutboxReviews() {
+      const rows = database.prepare("SELECT review_id AS reviewId, broadcast_id AS broadcastId, token_id AS tokenId, broadcast_sequence AS broadcastSequence, idempotency_key AS idempotencyKey, payload, status, validation_status AS validationStatus, reason, created_at AS createdAt, reviewed_at AS reviewedAt FROM signal_outbox_migration_review ORDER BY review_id").all() as Array<Record<string, unknown>>;
+      return Object.freeze(rows.map(row => Object.freeze({ ...row, payload: parseStoredPayload(row.payload as string) })) as unknown as LegacySignalOutboxReview[]);
+    },
+
+    approveLegacySignalOutbox(reviewId, approvedAt) {
+      return transaction(() => {
+        const row = database.prepare("SELECT * FROM signal_outbox_migration_review WHERE review_id = ? AND status = 'legacy_review' AND validation_status = 'valid'").get(reviewId) as { broadcast_id: string; token_id: string; broadcast_sequence: number; payload: string } | undefined;
+        if (!row) return false;
+        const inserted = database.prepare(`
+          INSERT OR IGNORE INTO signal_outbox(outbox_id, broadcast_id, token_id, broadcast_sequence, payload, status, attempt_count, next_retry_at, last_error, claimed_by, claimed_at, claim_token, claim_generation, lease_expires_at, delivered_at, created_at)
+          VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, NULL, NULL, NULL, NULL, 0, NULL, NULL, ?)
+        `).run(`outbox:${row.broadcast_id}`, row.broadcast_id, row.token_id, row.broadcast_sequence, row.payload, approvedAt, approvedAt);
+        if (inserted.changes !== 1) return false;
+        database.prepare("UPDATE signal_outbox_migration_review SET status = 'approved', reviewed_at = ? WHERE review_id = ?").run(approvedAt, reviewId);
+        return true;
+      });
     },
 
     recordCollectorDeadLetter(input) {
