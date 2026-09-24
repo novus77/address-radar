@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "rootDir": "../..",
+    "paths": {
+      "@address-radar/domain": ["../../packages/domain/src/index.ts"],
+      "@address-radar/database": ["../../packages/database/src/index.ts"],
+      "@address-radar/identity": ["../../packages/identity/src/index.ts"]
+    }
+  },
+  "references": [],
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

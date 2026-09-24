@@ -13,6 +13,7 @@
     ,{ "path": "./packages/signal-engine" }
     ,{ "path": "./packages/observability" }
     ,{ "path": "./apps/scanner" }
+    ,{ "path": "./apps/console" }
   ],
   "include": [
     "vitest.config.ts"

@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>地址雷达工作台</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="grain"></div>
+  <header class="masthead">
+    <div>
+      <p class="eyebrow">FOMO RADAR / ADDRESS INTELLIGENCE</p>
+      <h1>地址雷达工作台</h1>
+    </div>
+    <div class="connection"><span class="pulse"></span><span id="connection-label">等待连接</span></div>
+  </header>
+  <main>
+    <section id="workspace">
+      <section class="overview" aria-label="运行概览">
+        <article><span>交易员实体</span><strong id="metric-traders">0</strong></article>
+        <article><span>候选地址</span><strong id="metric-candidates">0</strong></article>
+        <article><span>代币聚合</span><strong id="metric-aggregations">0</strong></article>
+        <article class="accent"><span>已投递用户</span><strong id="metric-broadcasts">0</strong></article>
+      </section>
+
+      <nav class="module-nav" aria-label="控制台模块">
+        <button class="active" data-module="traders">地址库</button>
+        <button data-module="candidates">候选队列</button>
+        <button data-module="backtests">回测与淘汰</button>
+        <button data-module="aggregations">代币聚合</button>
+        <button data-module="outcomes">信号结果</button>
+        <button data-module="milestones">历史覆盖与重评估</button>
+        <button data-module="identity">身份解析</button>
+        <button data-module="wallet-analysis">地址分析</button>
+      </nav>
+
+      <section class="module active" data-panel="traders">
+        <header><p class="eyebrow">LIBRARY</p><h2>地址库</h2><span>Fomo 用户、双链地址、标签与长期能力</span></header>
+        <div class="filter-bar">
+          <input id="trader-search" type="search" placeholder="搜索用户名或地址">
+          <select id="trader-lifecycle"><option value="">全部生命周期</option><option value="candidate">候选</option><option value="probation">观察</option><option value="active">活跃</option><option value="elite">精英</option><option value="degraded">降级</option><option value="suspended">淘汰</option></select>
+          <select id="trader-wallet-filter"><option value="">全部地址状态</option><option value="resolved">已有地址</option><option value="unresolved">地址待解析</option><option value="solana">已有 Solana</option><option value="evm">已有 EVM</option></select>
+          <select id="trader-label-filter"><option value="">全部标签</option><option value="source.manual">手动添加</option><option value="source.30d_top100">30d Top100</option><option value="ability.500k_10x">50万市值 / 10倍</option><option value="ability.1m_10x">100万市值 / 10倍</option></select>
+        </div>
+        <div class="table-shell" id="traders-grid"></div>
+      </section>
+      <section class="module" data-panel="detail"><header><p class="eyebrow">PROFILE</p><h2>交易员详情</h2><span>账户、钱包、排行榜、评分与交易履历</span></header><div id="trader-detail" class="empty">从地址库选择一个交易员查看完整履历。</div></section>
+      <section class="module" data-panel="candidates">
+        <header><p class="eyebrow">DISCOVERY</p><h2>候选队列</h2><span>分层发现早期高倍交易员，同一代币只计一个独立样本</span></header>
+        <div class="filter-bar">
+          <input id="candidate-search" type="search" placeholder="搜索候选用户名或地址">
+          <select id="candidate-source" aria-label="候选来源"><option value="">全部证据等级</option><option value="market_cap_100k_3x">10万市值/3倍</option><option value="market_cap_100k_5x">10万市值/5倍</option><option value="market_cap_200k_3x">20万市值/3倍</option><option value="market_cap_200k_5x">20万市值/5倍</option><option value="market_cap_300k_5x">30万市值/5倍</option><option value="market_cap_500k_5x">50万市值/5倍</option><option value="market_cap_500k_10x">50万市值/10倍</option><option value="market_cap_1m_10x">100万市值/10倍</option><option value="market_cap_1m_20x">100万市值/20倍</option></select>
+          <select id="candidate-chain" aria-label="候选链"><option value="">全部链</option><option value="solana">Solana</option><option value="bsc">BSC</option><option value="ethereum">Ethereum</option><option value="base">Base</option><option value="robinhood">Robinhood</option></select>
+          <select id="candidate-identity" aria-label="身份状态"><option value="">全部身份状态</option><option value="resolved">已有地址</option><option value="unresolved">地址待解析</option><option value="solana">已有 Solana</option><option value="evm">已有 EVM</option></select>
+        </div>
+        <div class="table-shell" id="candidates-grid"></div>
+      </section>
+      <section class="module" data-panel="backtests"><header><p class="eyebrow">SURVIVAL</p><h2>回测与淘汰</h2><span>滚动胜率、样本强度与降级记录</span></header><div class="data-grid" id="backtests-grid"></div></section>
+      <section class="module" data-panel="aggregations"><header><p class="eyebrow">CONVERGENCE</p><h2>代币聚合</h2><span>同币主信号、证据消费与重复播报</span></header><div class="filter-bar compact"><label>最低聚合买入金额（USD）<input id="aggregation-minimum" type="number" min="0" step="10" value="100"></label><span id="aggregation-filter-summary"></span></div><div class="data-grid" id="aggregations-grid"></div></section>
+      <section class="module" data-panel="outcomes"><header><p class="eyebrow">DELIVERY</p><h2>信号结果</h2><span>只展示已经写入用户投递日志的真实信号</span></header><div class="filter-bar compact"><input id="signal-search" type="search" placeholder="搜索代币或信号"><select id="signal-action"><option value="">全部类型</option><option value="new">首次播报</option><option value="update">再次播报</option></select></div><div class="data-grid" id="outcomes-grid"></div></section>
+      <section class="module" data-panel="milestones">
+        <header><p class="eyebrow">HISTORY RECOVERY</p><h2>历史覆盖与重评估</h2><span>查看里程碑历史证据覆盖、候选发现与降级原因</span></header>
+        <div class="coverage-summary" id="milestone-summary"></div>
+        <div class="filter-bar compact"><input id="milestone-search" type="search" placeholder="搜索链、代币或任务"><select id="milestone-status"><option value="">全部回补状态</option><option value="pending">待处理</option><option value="running">处理中</option><option value="completed">已完成</option><option value="partial">部分覆盖</option><option value="failed">失败</option><option value="unavailable">来源不可用</option></select></div>
+        <div class="table-shell" id="milestone-grid"></div>
+      </section>
+      <section class="module identity-module" data-panel="identity">
+        <header><p class="eyebrow">IDENTITY RESOLUTION</p><h2>身份解析</h2><span>处理待解析 Fomo 用户，或手动新增可监控交易员</span></header>
+        <div class="identity-toolbar">
+          <span id="identity-summary">等待队列加载</span>
+          <div class="inline-filters"><input id="identity-search" type="search" placeholder="搜索 Fomo 用户名"><select id="identity-status"><option value="">全部待解析状态</option><option value="pending">待查询</option><option value="exported">曾导出</option><option value="not_found">上次未找到</option><option value="conflict">存在冲突</option></select></div>
+        </div>
+        <div class="identity-workbench">
+          <section><div class="section-heading"><div><h3>待解析用户名</h3><p>按优先级排列。点击“回填地址”将用户名加入右侧表单。</p></div></div><div id="identity-queue-list" class="identity-list"></div></section>
+          <section><div class="section-heading"><div><h3>钱包地址回填</h3><p>每个用户填写 EVM、Solana 中至少一个地址，可一次提交多人。</p></div><button id="add-identity-form" type="button">新增表单</button></div><form id="identity-import-form"><div id="identity-form-list" class="identity-form-list"></div><div class="form-footer"><button type="submit">提交全部回填</button><span id="identity-feedback"></span></div></form></section>
+        </div>
+        <section class="manual-trader-panel">
+          <div class="section-heading"><div><h3>手动新增交易员</h3><p>Fomo 用户名可选，EVM 与 Solana 地址至少填写一个。保存后进入观察期，并在下一轮自动加入钱包监控。</p></div></div>
+          <form id="manual-trader-form" class="manual-trader-form">
+            <label>显示名称<input id="manual-display-name" required placeholder="例如：Early Alpha"></label>
+            <label>Fomo 用户名<input id="manual-fomo-handle" placeholder="可选"></label>
+            <label>EVM 地址<input id="manual-evm-address" placeholder="0x... 可选"></label>
+            <label>Solana 地址<input id="manual-solana-address" placeholder="Solana address 可选"></label>
+            <label>能力标签<select id="manual-ability-tag"><option value="">暂不设置</option><option value="ability.100k_3x">10万市值 / 3倍</option><option value="ability.100k_5x">10万市值 / 5倍</option><option value="ability.300k_5x">30万市值 / 5倍</option><option value="ability.500k_10x">50万市值 / 10倍</option><option value="ability.1m_10x">100万市值 / 10倍</option></select></label>
+            <label>风格标签<select id="manual-style-tag"><option value="">暂不设置</option><option value="style.early_launch">新币早期</option><option value="style.old_token_momentum">老币异动</option><option value="style.low_cap_high_multiple">低市值高倍</option><option value="style.high_cap_large_position">高市值重仓</option></select></label>
+            <label>优先级<select id="manual-priority"><option value="normal">普通观察</option><option value="important">重点监控</option></select></label>
+            <label class="wide">备注<input id="manual-notes" placeholder="可选"></label>
+            <button type="submit">加入地址库并监控</button><span id="manual-trader-feedback"></span>
+          </form>
+        </section>
+        <h3 class="section-title">身份冲突</h3><div class="data-grid" id="identity-conflicts-grid"></div>
+      </section>
+      <section class="module" data-panel="wallet-analysis">
+        <header><p class="eyebrow">WALLET ANALYSIS</p><h2>地址分析</h2><span>提交任意钱包，回补最近 60 天、最多 300 个代币并进行人工准入</span></header>
+        <form id="wallet-analysis-form" class="wallet-analysis-form">
+          <label>链类型<select id="wallet-analysis-chain"><option value="solana">Solana</option><option value="evm">EVM</option></select></label>
+          <label>钱包地址<input id="wallet-analysis-address" required placeholder="输入钱包地址"></label>
+          <label>显示名称<input id="wallet-analysis-name" placeholder="可选"></label>
+          <label>Fomo 用户名<input id="wallet-analysis-handle" placeholder="可选"></label>
+          <label>样本上限<input id="wallet-analysis-limit" type="number" min="1" max="300" value="300"></label>
+          <button type="submit">开始历史分析</button><span id="wallet-analysis-feedback"></span>
+        </form>
+        <div class="table-shell" id="wallet-analysis-grid"></div>
+      </section>
+    </section>
+  </main>
+  <script type="module" src="/app.ts"></script>
+</body>
+</html>
