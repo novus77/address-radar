@@ -642,6 +642,17 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       next_retry_at INTEGER,
       updated_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS wallet_analysis_progress (
+      analysis_id TEXT PRIMARY KEY REFERENCES wallet_analysis_jobs(analysis_id),
+      phase TEXT NOT NULL,
+      processed_transactions INTEGER NOT NULL DEFAULT 0,
+      discovered_tokens INTEGER NOT NULL DEFAULT 0,
+      progress_percent REAL NOT NULL DEFAULT 0,
+      heartbeat_at INTEGER NOT NULL,
+      next_retry_at INTEGER,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS wallet_analysis_progress_phase ON wallet_analysis_progress(phase, heartbeat_at);
 
     INSERT INTO workbench_schema_versions(version, applied_at)
     VALUES (2, CAST(strftime('%s', 'now') AS INTEGER) * 1000)

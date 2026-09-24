@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 
 import { migrateAddressRadarDatabase } from "@address-radar/database";
-import type { ChainFamily, WalletAnalysisMetrics, WalletAnalysisPosition } from "@address-radar/domain";
+import type { ChainFamily, WalletAnalysisMetrics, WalletAnalysisPhase, WalletAnalysisPosition } from "@address-radar/domain";
 
 export interface WalletAnalysisJob {
   readonly analysisId: string;
@@ -16,6 +16,12 @@ export interface WalletAnalysisJob {
   readonly metrics: WalletAnalysisMetrics | null;
   readonly lastError: string | null;
   readonly provenance: readonly string[];
+  readonly phase: WalletAnalysisPhase;
+  readonly processedTransactions: number;
+  readonly discoveredTokens: number;
+  readonly progressPercent: number;
+  readonly heartbeatAt: number;
+  readonly nextRetryAt: number | null;
 }
 
 export interface WalletAnalysisStore {
@@ -27,6 +33,9 @@ export interface WalletAnalysisStore {
   complete(analysisId: string, metrics: WalletAnalysisMetrics, updatedAt: number): WalletAnalysisJob["status"];
   review(analysisId: string, status: "accepted" | "rejected", reviewedAt: number): void;
   fail(analysisId: string, error: string, updatedAt: number): void;
+  heartbeat(analysisId: string, phase: WalletAnalysisPhase, updatedAt: number): void;
+  blockStale(now: number, timeoutMs: number): number;
+  retry(analysisId: string, updatedAt: number): void;
   close(): void;
 }
 
@@ -88,6 +97,12 @@ export function openWalletAnalysisStore(databasePath: string): WalletAnalysisSto
     `).run(analysisId, nextCursor, updatedAt);
     database.prepare("INSERT OR IGNORE INTO wallet_analysis_provenance(analysis_id, source, observed_at) VALUES (?, ?, ?)").run(analysisId, provenance, updatedAt);
     database.prepare("UPDATE wallet_analysis_jobs SET last_error = NULL, updated_at = ? WHERE analysis_id = ?").run(updatedAt, analysisId);
+    const count = database.prepare("SELECT COUNT(*) AS count FROM wallet_analysis_positions WHERE analysis_id = ?").get(analysisId) as { count: number };
+    database.prepare(`
+      UPDATE wallet_analysis_progress SET phase = 'collecting', discovered_tokens = ?,
+        progress_percent = MIN(99, ? * 100.0 / MAX(1, (SELECT requested_sample_count FROM wallet_analysis_jobs WHERE analysis_id = ?))),
+        heartbeat_at = ?, next_retry_at = NULL, updated_at = ? WHERE analysis_id = ?
+    `).run(count.count, count.count, analysisId, updatedAt, updatedAt, analysisId);
       database.exec("COMMIT");
       return saved;
     } catch (error) {
@@ -99,12 +114,20 @@ export function openWalletAnalysisStore(databasePath: string): WalletAnalysisSto
   const readJob = (analysisId?: string): WalletAnalysisJob | null => {
     const sql = analysisId
       ? "SELECT * FROM wallet_analysis_jobs WHERE analysis_id = ?"
-      : "SELECT * FROM wallet_analysis_jobs WHERE status = 'collecting' ORDER BY updated_at, created_at, analysis_id LIMIT 1";
+      : `SELECT j.* FROM wallet_analysis_jobs j
+         LEFT JOIN wallet_analysis_progress p ON p.analysis_id = j.analysis_id
+         WHERE j.status = 'collecting' AND COALESCE(p.phase, 'queued') NOT IN ('blocked', 'cancelled')
+         ORDER BY j.updated_at, j.created_at, j.analysis_id LIMIT 1`;
     const row = (analysisId ? database.prepare(sql).get(analysisId) : database.prepare(sql).get()) as Record<string, unknown> | undefined;
     if (!row) return null;
     const checkpoint = database.prepare("SELECT cursor FROM wallet_analysis_checkpoints WHERE analysis_id = ? AND scope = 'history'").get(row.analysis_id as string) as { cursor: string } | undefined;
     const sources = database.prepare("SELECT source FROM wallet_analysis_provenance WHERE analysis_id = ? ORDER BY source").all(row.analysis_id as string) as { source: string }[];
     const bounds = database.prepare("SELECT from_at AS fromAt, to_at AS toAt, max_tokens AS maxTokens FROM wallet_analysis_job_bounds WHERE analysis_id = ?").get(row.analysis_id as string) as { fromAt: number; toAt: number; maxTokens: number } | undefined;
+    const progress = database.prepare(`
+      SELECT phase, processed_transactions AS processedTransactions, discovered_tokens AS discoveredTokens,
+        progress_percent AS progressPercent, heartbeat_at AS heartbeatAt, next_retry_at AS nextRetryAt
+      FROM wallet_analysis_progress WHERE analysis_id = ?
+    `).get(row.analysis_id as string) as { phase: WalletAnalysisPhase; processedTransactions: number; discoveredTokens: number; progressPercent: number; heartbeatAt: number; nextRetryAt: number | null } | undefined;
     if (!bounds) throw new Error(`Wallet analysis bounds are missing: ${String(row.analysis_id)}`);
     return Object.freeze({
       analysisId: row.analysis_id as string,
@@ -119,6 +142,12 @@ export function openWalletAnalysisStore(databasePath: string): WalletAnalysisSto
       metrics: row.metrics ? Object.freeze(JSON.parse(row.metrics as string) as WalletAnalysisMetrics) : null,
       lastError: row.last_error as string | null,
       provenance: Object.freeze(sources.map(item => item.source)),
+      phase: progress?.phase ?? "collecting",
+      processedTransactions: progress?.processedTransactions ?? 0,
+      discoveredTokens: progress?.discoveredTokens ?? 0,
+      progressPercent: progress?.progressPercent ?? 0,
+      heartbeatAt: progress?.heartbeatAt ?? Number(row.updated_at),
+      nextRetryAt: progress?.nextRetryAt ?? null,
     });
   };
 
@@ -134,6 +163,10 @@ export function openWalletAnalysisStore(databasePath: string): WalletAnalysisSto
           ) VALUES (?, ?, ?, 'collecting', ?, 0, 0, ?, ?)
         `).run(input.analysisId, input.chainFamily, input.address, requestedSamples, input.createdAt, input.createdAt);
         database.prepare("INSERT OR IGNORE INTO wallet_analysis_job_bounds(analysis_id, from_at, to_at, max_tokens) VALUES (?, ?, ?, 300)").run(input.analysisId, input.createdAt - 60 * 24 * 60 * 60_000, input.createdAt);
+        database.prepare(`
+          INSERT OR IGNORE INTO wallet_analysis_progress(analysis_id, phase, processed_transactions, discovered_tokens, progress_percent, heartbeat_at, next_retry_at, updated_at)
+          VALUES (?, 'queued', 0, 0, 0, ?, NULL, ?)
+        `).run(input.analysisId, input.createdAt, input.createdAt);
         database.exec("COMMIT");
       } catch (error) { database.exec("ROLLBACK"); throw error; }
     },
@@ -151,6 +184,8 @@ export function openWalletAnalysisStore(databasePath: string): WalletAnalysisSto
           last_error = NULL, updated_at = ? WHERE analysis_id = ?
       `).run(status, metrics.validSamples, metrics.coverageRate, JSON.stringify(metrics), updatedAt, analysisId);
       database.prepare("DELETE FROM wallet_analysis_checkpoints WHERE analysis_id = ?").run(analysisId);
+      database.prepare("UPDATE wallet_analysis_progress SET phase = 'completed', discovered_tokens = ?, progress_percent = 100, heartbeat_at = ?, next_retry_at = NULL, updated_at = ? WHERE analysis_id = ?")
+        .run(metrics.validSamples, updatedAt, updatedAt, analysisId);
       return status;
     },
     review(analysisId, status, reviewedAt) {
@@ -159,6 +194,27 @@ export function openWalletAnalysisStore(databasePath: string): WalletAnalysisSto
     },
     fail(analysisId, error, updatedAt) {
       database.prepare("UPDATE wallet_analysis_jobs SET last_error = ?, updated_at = ? WHERE analysis_id = ?").run(error, updatedAt, analysisId);
+      database.prepare("UPDATE wallet_analysis_progress SET phase = 'retrying', heartbeat_at = ?, next_retry_at = ?, updated_at = ? WHERE analysis_id = ?")
+        .run(updatedAt, updatedAt + 60_000, updatedAt, analysisId);
+    },
+    heartbeat(analysisId, phase, updatedAt) {
+      database.prepare("UPDATE wallet_analysis_progress SET phase = ?, heartbeat_at = ?, updated_at = ? WHERE analysis_id = ?")
+        .run(phase, updatedAt, updatedAt, analysisId);
+    },
+    blockStale(now, timeoutMs) {
+      if (!Number.isSafeInteger(now) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("Invalid stale-job boundary");
+      return Number(database.prepare(`
+        UPDATE wallet_analysis_progress SET phase = 'blocked', updated_at = ?
+        WHERE phase IN ('queued', 'collecting', 'normalizing', 'pricing', 'evaluating', 'retrying') AND heartbeat_at < ?
+      `).run(now, now - timeoutMs).changes);
+    },
+    retry(analysisId, updatedAt) {
+      const changed = database.prepare(`
+        UPDATE wallet_analysis_progress SET phase = 'queued', heartbeat_at = ?, next_retry_at = NULL, updated_at = ?
+        WHERE analysis_id = ? AND phase IN ('blocked', 'retrying', 'failed', 'partial')
+      `).run(updatedAt, updatedAt, analysisId).changes;
+      if (Number(changed) !== 1) throw new Error("Wallet analysis is not retryable");
+      database.prepare("UPDATE wallet_analysis_jobs SET last_error = NULL, updated_at = ? WHERE analysis_id = ?").run(updatedAt, analysisId);
     },
     close() { database.close(); },
   };
