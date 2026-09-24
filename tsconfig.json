@@ -36,6 +36,9 @@
     },
     {
       "path": "./apps/console"
+    },
+    {
+      "path": "packages/delivery"
     }
   ],
   "include": [

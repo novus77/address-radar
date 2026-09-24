@@ -130,6 +130,15 @@ importers:
         specifier: workspace:*
         version: link:../signal-engine
 
+  packages/delivery:
+    dependencies:
+      '@address-radar/database':
+        specifier: workspace:*
+        version: link:../database
+      '@address-radar/radar-signal':
+        specifier: workspace:*
+        version: link:../../contracts/radar-signal
+
   packages/domain: {}
 
   packages/identity:

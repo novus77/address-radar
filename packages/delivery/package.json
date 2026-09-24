@@ -1,0 +1,13 @@
+{
+  "name": "@address-radar/delivery",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "types": "./dist/src/index.d.ts",
+  "exports": { ".": { "types": "./dist/src/index.d.ts", "import": "./dist/src/index.js", "default": "./dist/src/index.js" } },
+  "scripts": { "build": "tsc -b", "typecheck": "tsc -p tsconfig.test.json --pretty false", "test": "vitest run" },
+  "dependencies": {
+    "@address-radar/database": "workspace:*",
+    "@address-radar/radar-signal": "workspace:*"
+  }
+}
