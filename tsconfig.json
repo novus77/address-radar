@@ -5,7 +5,9 @@
   },
   "references": [
     { "path": "./packages/domain" },
-    { "path": "./packages/scoring" }
+    { "path": "./packages/scoring" },
+    { "path": "./packages/database" },
+    { "path": "./packages/identity" }
   ],
   "include": [
     "vitest.config.ts"
