@@ -22,6 +22,7 @@ export type {
   MilestoneBackfillStatus,
   MilestoneCoverageStatus,
   MilestoneEvaluation,
+  SuccessfulAutomaticIdentityResolutionInput,
   TokenAggregationStateRecord,
   TokenEvaluationRecord,
   TokenMilestoneInput,

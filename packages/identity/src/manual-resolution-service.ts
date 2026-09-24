@@ -47,6 +47,12 @@ export const createManualResolutionService = (input: {
     const batch = input.repository.identityResolutionBatch(request.batchId);
     if (!batch) throw new Error("Identity resolution batch not found");
     const batchItems = new Map(batch.items.map(item => [item.handle, item]));
+    for (const item of request.items) {
+      const handle = normalizeManualResolutionHandle(item.handle);
+      if (!batchItems.has(handle)) throw new Error(`Handle ${handle} is not part of batch ${request.batchId}`);
+      item.wallets.map(normalizeManualWalletMapping);
+    }
+    return input.repository.runInTransaction(() => {
     let resolved = 0;
     let conflicts = 0;
     let observations = 0;
@@ -80,6 +86,7 @@ export const createManualResolutionService = (input: {
     input.repository.markIdentityResolutionBatch(request.batchId, complete ? "imported" : "partially_imported", request.importedAt);
     input.repository.recordOperatorAudit({ auditId: `identity-import:${request.importId}`, action: "identity.batch_import", actor: "developer", payload: { importId: request.importId, batchId: request.batchId, resolved, conflicts, observations }, occurredAt: request.importedAt });
     return Object.freeze({ resolved, conflicts, observations });
+    });
   },
 
   importDirectMappings(request: {
@@ -88,6 +95,13 @@ export const createManualResolutionService = (input: {
     readonly items: readonly { readonly handle: string; readonly observedAt: number; readonly source: "fomolens_manual"; readonly wallets: readonly ManualWalletMapping[] }[];
   }) {
     const queue = new Map(input.repository.identityResolutionQueue(500).map(item => [item.handle, item]));
+    for (const item of request.items) {
+      const handle = normalizeManualResolutionHandle(item.handle);
+      const wallets = item.wallets.map(normalizeManualWalletMapping);
+      if (wallets.length === 0) throw new Error(`Handle ${handle} requires at least one wallet`);
+      if (!queue.has(handle) && !input.repository.accountByHandle(handle)) throw new Error(`Unknown Fomo handle ${handle}`);
+    }
+    return input.repository.runInTransaction(() => {
     let resolved = 0;
     let conflicts = 0;
     let observations = 0;
@@ -128,5 +142,6 @@ export const createManualResolutionService = (input: {
 
     input.repository.recordOperatorAudit({ auditId: `identity-direct-import:${request.importId}`, action: "identity.direct_import", actor: "developer", payload: { importId: request.importId, handles: request.items.map(item => item.handle), resolved, conflicts, observations }, occurredAt: request.importedAt });
     return Object.freeze({ resolved, conflicts, observations });
+    });
   },
 });

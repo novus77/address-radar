@@ -33,7 +33,9 @@ export function createIdentityResolutionService(input: {
       const clock = now();
       const cached = input.repository.identityResolution(handle);
       if (cached && cached.status === "resolved" && cached.expiresAt > clock && cached.payload) {
-        return Object.freeze(JSON.parse(cached.payload) as Extract<FomoScanLookupResult, { kind: "resolved" }>);
+        const result = Object.freeze(JSON.parse(cached.payload) as Extract<FomoScanLookupResult, { kind: "resolved" }>);
+        input.repository.reconcileIdentityResolution(handle, result.accountId, clock);
+        return result;
       }
       if (cached && cached.status === "not_observed" && cached.expiresAt > clock) {
         return Object.freeze({ kind: "deferred", reason: "negative_cache", retryAt: cached.expiresAt });
@@ -44,10 +46,12 @@ export function createIdentityResolutionService(input: {
 
       const result = await input.client.byHandle(handle);
       if (result.kind === "resolved") {
-        input.repository.upsertFomoAccount({ accountId: result.accountId, handle: result.handle, firstSeenAt: clock, lastSeenAt: clock });
-        for (const wallet of result.wallets) input.repository.attachWallet({ accountId: result.accountId, ...wallet, confidence: "confirmed", source: "fomoscan", observedAt: result.asOf });
-        input.repository.saveIdentityResolution({ handle, status: "resolved", accountId: result.accountId, expiresAt: clock + IDENTITY_CACHE_MS, nextAttemptAt: clock + IDENTITY_CACHE_MS, attemptCount: 0, payload: JSON.stringify(result), updatedAt: clock });
-        input.repository.completeIdentityResolution(handle, result.accountId, clock);
+        input.repository.completeAutomaticIdentityResolution({
+          account: { accountId: result.accountId, handle: result.handle, firstSeenAt: clock, lastSeenAt: clock },
+          wallets: result.wallets.map((wallet) => ({ accountId: result.accountId, ...wallet, confidence: "confirmed", source: "fomoscan", observedAt: result.asOf })),
+          cache: { handle, status: "resolved", accountId: result.accountId, expiresAt: clock + IDENTITY_CACHE_MS, nextAttemptAt: clock + IDENTITY_CACHE_MS, attemptCount: 0, payload: JSON.stringify(result), updatedAt: clock },
+          occurredAt: clock,
+        });
         return result;
       }
       if (result.kind === "not_observed") {

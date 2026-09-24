@@ -71,6 +71,7 @@ export interface IdentityResolutionQueueRecord { readonly handle: string; readon
 export interface IdentityResolutionBatchRecord { readonly batchId: string; readonly createdAt: number; readonly maxSize: number; readonly status: "exported" | "partially_imported" | "imported"; readonly importedAt: number | null; readonly items: readonly IdentityResolutionQueueRecord[] }
 export interface WalletMappingObservationInput { readonly observationId: string; readonly importId: string; readonly batchId: string | null; readonly handle: string; readonly accountId: string; readonly chainFamily: "solana" | "evm"; readonly address: string; readonly provider: string; readonly observedAt: number; readonly importedAt: number }
 export interface IdentityConflictRecord { readonly conflictId: string; readonly handle: string; readonly accountId: string; readonly chainFamily: "solana" | "evm"; readonly address: string; readonly conflictingAccountId: string; readonly status: "pending" | "accepted" | "rejected"; readonly payload: unknown; readonly createdAt: number; readonly resolvedAt: number | null; readonly resolution: string | null }
+export interface SuccessfulAutomaticIdentityResolutionInput { readonly account: FomoAccountInput; readonly wallets: readonly WalletIdentityInput[]; readonly cache: IdentityResolutionCache; readonly occurredAt: number }
 
 export interface AddressRadarRepository {
   upsertFomoAccount(input: FomoAccountInput): void;
@@ -146,12 +147,15 @@ export interface AddressRadarRepository {
   saveWalletMappingObservation(input: WalletMappingObservationInput): void;
   markIdentityResolution(handle: string, status: "resolved" | "not_found" | "conflict", occurredAt: number): void;
   completeIdentityResolution(handle: string, accountId: string, occurredAt: number): string | null;
+  completeAutomaticIdentityResolution(input: SuccessfulAutomaticIdentityResolutionInput): string | null;
+  reconcileIdentityResolution(handle: string, accountId: string, occurredAt: number): string | null;
   completeIdentityAdmission(accountId: string, occurredAt: number): string | null;
   markIdentityResolutionBatch(batchId: string, status: "partially_imported" | "imported", importedAt: number): void;
   createIdentityConflict(input: IdentityConflictRecord): void;
   identityConflicts(status?: IdentityConflictRecord["status"]): readonly IdentityConflictRecord[];
   resolveIdentityConflict(input: { readonly conflictId: string; readonly decision: "accepted" | "rejected"; readonly resolution: string; readonly occurredAt: number }): IdentityConflictRecord | null;
   recordOperatorAudit(input: { readonly auditId: string; readonly action: string; readonly actor: string; readonly payload: unknown; readonly occurredAt: number }): void;
+  runInTransaction<T>(operation: () => T): T;
   close(): void;
 }
 
@@ -160,6 +164,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
   migrateAddressRadarDatabase(database);
 
   const transaction = <T>(operation: () => T): T => {
+    if (database.isTransaction) return operation();
     database.exec("BEGIN IMMEDIATE");
     try {
       const result = operation();
@@ -208,6 +213,44 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     `).run(`identity-registry:${entity.entityId}:${occurredAt}`, entity.entityId, JSON.stringify({ entityId: entity.entityId, accountId, lifecycle: nextLifecycle }), occurredAt, occurredAt);
     database.prepare("UPDATE monitoring_registry_state SET version = version + 1, updated_at = ? WHERE singleton = 1").run(occurredAt);
     return entity.entityId;
+  };
+
+  const completeIdentityResolutionInTransaction = (handle: string, accountId: string, occurredAt: number): string | null => {
+    const normalizedHandle = normalizeFomoHandle(handle);
+    const queued = database.prepare(`
+      SELECT account_id AS accountId, status
+      FROM identity_resolution_queue
+      WHERE handle = ?
+    `).get(normalizedHandle) as { accountId: string; status: IdentityResolutionQueueRecord["status"] } | undefined;
+    if (!queued) throw new Error(`Identity resolution queue entry not found for ${normalizedHandle}`);
+    if (queued.accountId !== accountId) throw new Error(`Identity resolution account mismatch for ${normalizedHandle}`);
+
+    const updated = database.prepare(`
+      UPDATE identity_resolution_queue
+      SET status = 'resolved', resolved_at = ?, next_export_at = ?
+      WHERE handle = ? AND account_id = ?
+    `).run(occurredAt, occurredAt, normalizedHandle, accountId);
+    if (updated.changes !== 1) throw new Error(`Identity resolution queue update failed for ${normalizedHandle}`);
+
+    if (queued.status === "resolved") {
+      const admitted = database.prepare(`
+        SELECT e.entity_id AS entityId, e.lifecycle,
+          EXISTS(
+            SELECT 1 FROM monitoring_registry_outbox m
+            WHERE m.entity_id = e.entity_id AND m.event_type = 'identity.updated'
+          ) AS registered
+        FROM trader_entities e
+        JOIN entity_accounts ea ON ea.entity_id = e.entity_id
+        WHERE ea.account_id = ?
+        ORDER BY ea.last_observed_at DESC
+        LIMIT 1
+      `).get(accountId) as { entityId: string; lifecycle: TraderEntityInput["lifecycle"]; registered: number } | undefined;
+      if (admitted && admitted.lifecycle !== "candidate" && admitted.lifecycle !== "suspended" && admitted.registered === 1) {
+        return admitted.entityId;
+      }
+    }
+
+    return completeIdentityAdmissionInTransaction(accountId, occurredAt);
   };
 
   const repository: AddressRadarRepository = {
@@ -1144,10 +1187,25 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     completeIdentityResolution(handle, accountId, occurredAt) {
       assertId(accountId, "accountId");
       assertTimestamp(occurredAt, "occurredAt");
+      return transaction(() => completeIdentityResolutionInTransaction(handle, accountId, occurredAt));
+    },
+
+    completeAutomaticIdentityResolution(input) {
+      assertTimestamp(input.occurredAt, "occurredAt");
       return transaction(() => {
-        markIdentityResolutionInTransaction(handle, "resolved", occurredAt);
-        return completeIdentityAdmissionInTransaction(accountId, occurredAt);
+        repository.upsertFomoAccount(input.account);
+        for (const wallet of input.wallets) repository.attachWallet(wallet);
+        repository.saveIdentityResolution(input.cache);
+        return completeIdentityResolutionInTransaction(input.cache.handle, input.account.accountId, input.occurredAt);
       });
+    },
+
+    reconcileIdentityResolution(handle, accountId, occurredAt) {
+      assertId(accountId, "accountId");
+      assertTimestamp(occurredAt, "occurredAt");
+      const queued = database.prepare("SELECT 1 AS found FROM identity_resolution_queue WHERE handle = ?").get(normalizeFomoHandle(handle));
+      if (!queued) return null;
+      return transaction(() => completeIdentityResolutionInTransaction(handle, accountId, occurredAt));
     },
 
     completeIdentityAdmission(accountId, occurredAt) {
@@ -1182,9 +1240,13 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
       if (conflict.status !== "pending") return toIdentityConflictRecord(conflict);
       transaction(() => {
         if (input.decision === "accepted") {
-          repository.attachWallet({ accountId: conflict.account_id, chainFamily: conflict.chain_family, address: conflict.address, confidence: "confirmed", source: "fomolens_manual_review", observedAt: input.occurredAt });
-          markIdentityResolutionInTransaction(conflict.handle, "resolved", input.occurredAt);
-          completeIdentityAdmissionInTransaction(conflict.account_id, input.occurredAt);
+          const address = normalizeWalletAddress(conflict.chain_family, conflict.address);
+          database.prepare(`
+            DELETE FROM wallet_identities
+            WHERE chain_family = ? AND address = ? AND account_id <> ?
+          `).run(conflict.chain_family, address, conflict.account_id);
+          repository.attachWallet({ accountId: conflict.account_id, chainFamily: conflict.chain_family, address, confidence: "confirmed", source: "fomolens_manual_review", observedAt: input.occurredAt });
+          completeIdentityResolutionInTransaction(conflict.handle, conflict.account_id, input.occurredAt);
         } else {
           markIdentityResolutionInTransaction(conflict.handle, "not_found", input.occurredAt);
         }
@@ -1196,6 +1258,10 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
 
     recordOperatorAudit(input) {
       database.prepare("INSERT INTO operator_audit_log(audit_id, action, actor, payload, occurred_at) VALUES (?, ?, ?, ?, ?)").run(input.auditId, input.action, input.actor, JSON.stringify(input.payload), input.occurredAt);
+    },
+
+    runInTransaction(operation) {
+      return transaction(operation);
     },
 
     close() {
