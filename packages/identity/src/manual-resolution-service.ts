@@ -4,6 +4,7 @@ import {
   normalizeManualResolutionHandle,
   normalizeManualWalletMapping,
   type ManualWalletMapping,
+  type TraderAbility,
 } from "@address-radar/domain";
 import type { AddressRadarRepository, IdentityResolutionBatchRecord } from "@address-radar/database";
 
@@ -29,6 +30,24 @@ export const createManualResolutionService = (input: {
   readonly repository: AddressRadarRepository;
   readonly now?: () => number;
 }) => ({
+  createManualTrader(request: {
+    readonly entityId: string;
+    readonly displayName: string;
+    readonly observedAt: number;
+    readonly wallets: readonly ManualWalletMapping[];
+    readonly abilities?: readonly TraderAbility[];
+  }) {
+    const wallets = request.wallets.map(normalizeManualWalletMapping);
+    input.repository.admitManualTrader({
+      entityId: request.entityId,
+      displayName: request.displayName,
+      wallets,
+      abilities: request.abilities ?? [],
+      observedAt: request.observedAt,
+    });
+    return Object.freeze({ entityId: request.entityId, lifecycle: "observing" as const });
+  },
+
   createBatch(options: { readonly batchId: string; readonly maxSize?: number }) {
     const batch = input.repository.createIdentityResolutionBatch({ batchId: options.batchId, createdAt: input.now?.() ?? Date.now(), maxSize: options.maxSize ?? 25, cooldownMs: TWELVE_HOURS_MS });
     const items = exportedItems(batch);

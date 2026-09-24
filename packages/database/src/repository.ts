@@ -16,6 +16,7 @@ import {
   type OutcomeObservation,
   type TokenLifecycleStage,
   type TraderAbilitySnapshot,
+  type TraderAbility,
   type TraderAbilityWindow,
   type TraderBackfillJob,
   type TraderEntityInput,
@@ -99,6 +100,13 @@ export interface AddressRadarRepository extends TokenAggregationRepository, Runt
   entityForAccount(accountId: string): string | null;
   upsertTraderEntity(input: TraderEntityInput): void;
   ensureTraderEntity(input: TraderEntityInput): void;
+  admitManualTrader(input: {
+    readonly entityId: string;
+    readonly displayName: string;
+    readonly wallets: readonly { readonly family: "solana" | "evm"; readonly address: string }[];
+    readonly abilities: readonly TraderAbility[];
+    readonly observedAt: number;
+  }): void;
   admitLeaderboardTrader(input: { readonly entityId: string; readonly accountId: string; readonly observedAt: number }): void;
   traderPopulationAudit(): TraderPopulationAuditRecord;
   reconcileLeaderboardPopulation(input: { readonly current30dAccountIds: readonly string[]; readonly observedAt: number }): { readonly admitted: number; readonly suspended: number };
@@ -460,6 +468,64 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         INSERT OR IGNORE INTO trader_entities(entity_id, lifecycle, manual, locked, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(input.entityId, input.lifecycle, Number(input.manual), Number(input.locked), input.createdAt, input.updatedAt);
+    },
+
+    admitManualTrader(input) {
+      assertId(input.entityId, "entityId");
+      assertTimestamp(input.observedAt, "observedAt");
+      const displayName = input.displayName.trim();
+      if (!displayName || displayName.length > 128) throw new Error("displayName must be non-empty and at most 128 characters");
+      if (input.wallets.length === 0) throw new Error("At least one wallet is required");
+      transaction(() => {
+        database.prepare(`
+          INSERT INTO trader_entities(entity_id, lifecycle, manual, locked, created_at, updated_at)
+          VALUES (?, 'probation', 1, 1, ?, ?)
+          ON CONFLICT(entity_id) DO UPDATE SET
+            lifecycle = CASE WHEN trader_entities.lifecycle IN ('candidate', 'suspended') THEN 'probation' ELSE trader_entities.lifecycle END,
+            manual = 1,
+            locked = 1,
+            updated_at = MAX(trader_entities.updated_at, excluded.updated_at)
+        `).run(input.entityId, input.observedAt, input.observedAt);
+        database.prepare(`
+          INSERT INTO trader_profiles(entity_id, display_name, priority, notes, monitoring_enabled, fomo_monitoring_enabled, onchain_monitoring_enabled, created_at, updated_at)
+          VALUES (?, ?, 'important', NULL, 1, 0, 1, ?, ?)
+          ON CONFLICT(entity_id) DO UPDATE SET
+            display_name = excluded.display_name,
+            priority = 'important',
+            monitoring_enabled = 1,
+            onchain_monitoring_enabled = 1,
+            updated_at = MAX(trader_profiles.updated_at, excluded.updated_at)
+        `).run(input.entityId, displayName, input.observedAt, input.observedAt);
+        database.prepare(`
+          INSERT INTO trader_sources(entity_id, source_key, first_observed_at, last_observed_at, payload)
+          VALUES (?, 'manual', ?, ?, '{}')
+          ON CONFLICT(entity_id, source_key) DO UPDATE SET
+            last_observed_at = MAX(trader_sources.last_observed_at, excluded.last_observed_at)
+        `).run(input.entityId, input.observedAt, input.observedAt);
+        database.prepare("INSERT OR IGNORE INTO trader_tags(entity_id, category, tag, created_at) VALUES (?, 'source', 'source.manual', ?)")
+          .run(input.entityId, input.observedAt);
+        for (const ability of new Set(input.abilities)) {
+          database.prepare(`
+            INSERT INTO trader_abilities(entity_id, ability_key, confidence, sample_count, evidence_window, assigned_at, last_evaluated_at)
+            VALUES (?, ?, 1, 0, 'manual', ?, ?)
+            ON CONFLICT(entity_id, ability_key, evidence_window) DO UPDATE SET
+              confidence = 1,
+              last_evaluated_at = MAX(trader_abilities.last_evaluated_at, excluded.last_evaluated_at)
+          `).run(input.entityId, ability, input.observedAt, input.observedAt);
+        }
+        for (const wallet of input.wallets) admitDirectEntityWalletInTransaction(input.entityId, wallet.family, wallet.address, input.observedAt);
+        database.prepare(`
+          INSERT OR IGNORE INTO trader_lifecycle_audit(audit_id, entity_id, from_state, to_state, reason_code, reason_text, actor, occurred_at)
+          VALUES (?, ?, 'unresolved', 'observing', 'manual_wallet_added', '手动添加的钱包已进入观察', 'developer', ?)
+        `).run(`manual-admission:${input.entityId}:${input.observedAt}`, input.entityId, input.observedAt);
+        repository.recordOperatorAudit({
+          auditId: `manual-trader:${input.entityId}:${input.observedAt}`,
+          action: "identity.manual_trader_created",
+          actor: "developer",
+          payload: { entityId: input.entityId, walletCount: input.wallets.length, abilities: input.abilities },
+          occurredAt: input.observedAt,
+        });
+      });
     },
 
     admitLeaderboardTrader(input) {

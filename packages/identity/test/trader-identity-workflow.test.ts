@@ -1,6 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { describe, expect, it } from "vitest";
 
@@ -77,6 +78,42 @@ describe("trader identity workflow", () => {
     repository.saveTraderAbilitySnapshot(ability(confidence));
     expect(repository.traderSignalProfile(confidence)).toMatchObject({ mapped: false, monitoringEnabled: false });
     repository.close();
+  });
+
+  it("creates a manually trusted wallet identity without requiring a Fomo handle", () => {
+    const databasePath = join(mkdtempSync(join(tmpdir(), "address-manual-wallet-")), "address.sqlite");
+    const repository = openAddressRadarRepository(databasePath);
+    const service = createManualResolutionService({ repository, now: () => 10 });
+
+    expect(service.createManualTrader({
+      entityId: "manual-wallet-trader",
+      displayName: "手动重点一号",
+      observedAt: 10,
+      wallets: [{ family: "evm", address: "0xABCDEFabcdefABCDEFabcdefABCDEFabcdefABCD" }],
+      abilities: ["early_multiplier"],
+    })).toEqual({ entityId: "manual-wallet-trader", lifecycle: "observing" });
+
+    expect(repository.traderEntity("manual-wallet-trader")).toMatchObject({
+      lifecycle: "probation",
+      manual: true,
+    });
+    repository.close();
+
+    const registry = openMonitoringRegistry(databasePath);
+    expect(registry.wallets("evm")).toEqual([{
+      address: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+      accountId: "manual-wallet-trader",
+      entityId: "manual-wallet-trader",
+      lifecycle: "probation",
+    }]);
+    registry.close();
+
+    const database = new DatabaseSync(databasePath);
+    expect(database.prepare("SELECT source_key FROM trader_sources WHERE entity_id = ?").all("manual-wallet-trader"))
+      .toEqual([{ source_key: "manual" }]);
+    expect(database.prepare("SELECT ability_key FROM trader_abilities WHERE entity_id = ?").all("manual-wallet-trader"))
+      .toEqual([{ ability_key: "early_multiplier" }]);
+    database.close();
   });
 });
 
