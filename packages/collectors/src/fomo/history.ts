@@ -3,6 +3,10 @@ import type { TraderEvent } from "@address-radar/domain";
 const object = (value: unknown): Record<string, unknown> | null => typeof value === "object" && value !== null ? value as Record<string, unknown> : null;
 const text = (value: unknown): string | null => typeof value === "string" && value.trim() ? value.trim() : null;
 const finite = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? value : null;
+const finiteNonNegative = (value: unknown): number | null => {
+  const parsed = finite(value);
+  return parsed !== null && parsed >= 0 ? parsed : null;
+};
 
 export interface FomoHistoryObservation {
   readonly event: TraderEvent;
@@ -47,7 +51,7 @@ export function parseFomoHistoryEvent(line: string): FomoHistoryEvent | null {
   const rawTokenAddress = text(asset?.tokenAddress);
   const side = payload?.action;
   const occurredAt = finite(payload?.occurredAt) ?? finite(value?.occurredAt);
-  if (root?.kind !== "event" || !eventType?.startsWith("fomo.activity.") || !eventId || !accountId || !handle || !chain || !rawTokenAddress || (side !== "buy" && side !== "sell") || occurredAt === null || !Number.isSafeInteger(occurredAt) || occurredAt < 0) return null;
+  if (root?.kind !== "event" || !eventId || !accountId || !handle || !chain || !rawTokenAddress || (side !== "buy" && side !== "sell") || eventType !== `fomo.activity.${side}` || occurredAt === null || !Number.isSafeInteger(occurredAt) || occurredAt < 0) return null;
   return Object.freeze({
     eventId,
     accountId,
@@ -55,9 +59,9 @@ export function parseFomoHistoryEvent(line: string): FomoHistoryEvent | null {
     chain,
     tokenAddress: chain === "solana" ? rawTokenAddress : rawTokenAddress.toLowerCase(),
     side,
-    amountUsd: finite(payload?.usdAmount),
-    priceUsd: finite(payload?.price),
-    marketCapUsd: finite(payload?.marketCap),
+    amountUsd: finiteNonNegative(payload?.usdAmount),
+    priceUsd: finiteNonNegative(payload?.price),
+    marketCapUsd: finiteNonNegative(payload?.marketCap),
     occurredAt,
     sourceTradeId: text(payload?.sourceTradeId),
   });
@@ -70,9 +74,9 @@ const traderEvent = (event: FomoHistoryEvent, accountId: string, collectedAt: nu
   chain: event.chain,
   tokenAddress: event.tokenAddress,
   side: event.side,
-  amountUsd: event.amountUsd,
-  priceUsd: event.priceUsd,
-  marketCapUsd: event.marketCapUsd,
+  amountUsd: finiteNonNegative(event.amountUsd),
+  priceUsd: finiteNonNegative(event.priceUsd),
+  marketCapUsd: finiteNonNegative(event.marketCapUsd),
   tokenAgeMs: null,
   occurredAt: event.occurredAt,
   collectedAt,

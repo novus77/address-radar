@@ -11,6 +11,16 @@ interface DexPair {
   readonly fdv?: unknown;
 }
 
+export class DexScreenerProviderError extends Error {
+  readonly retryable: boolean;
+
+  constructor(message: string, readonly status: number, retryable: boolean) {
+    super(message);
+    this.name = "DexScreenerProviderError";
+    this.retryable = retryable;
+  }
+}
+
 const finite = (value: unknown): number | null => {
   const parsed = typeof value === "string" && value.trim() ? Number(value) : value;
   return typeof parsed === "number" && Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
@@ -54,7 +64,8 @@ export function createDexScreenerClient(input: {
       try {
         const response = await fetcher(endpoint, { signal: controller.signal });
         if (response.status === 429) throw new JsonRpcRateLimitError(endpoint);
-        if (response.status === 404 || response.status >= 500) return null;
+        if (response.status === 404) return null;
+        if (response.status >= 500) throw new DexScreenerProviderError(`Dex Screener returned HTTP ${response.status}`, response.status, true);
         if (!response.ok) throw new Error(`Dex Screener returned HTTP ${response.status}`);
         const body = await response.json() as { readonly pairs?: unknown };
         if (body.pairs === null) return null;

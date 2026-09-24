@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -21,6 +21,31 @@ describe("Fomo lookup queue", () => {
     expect((await readFile(filePath, "utf8")).trim().split("\n")).toHaveLength(1);
   });
 
+  it("deduplicates concurrent producers across instances", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "lookup-queue-"));
+    const filePath = join(directory, "lookups.jsonl");
+    const input = { chainId: "base", tokenAddress: "0xAbC", requestedAt: 1 };
+    const [first, second] = await Promise.all([
+      new FomoTokenLookupProducer({ filePath }).enqueue(input),
+      new FomoTokenLookupProducer({ filePath }).enqueue(input),
+    ]);
+
+    expect([first.enqueued, second.enqueued].sort()).toEqual([false, true]);
+    expect((await readFile(filePath, "utf8")).trim().split("\n")).toHaveLength(1);
+  });
+
+  it("recovers a stale producer lock without waiting indefinitely", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "lookup-queue-"));
+    const filePath = join(directory, "lookups.jsonl");
+    await writeFile(`${filePath}.lock`, JSON.stringify({ token: "dead" }));
+    const blocked = new FomoTokenLookupProducer({ filePath, lockTimeoutMs: 20, staleLockMs: 10_000 });
+    await expect(blocked.enqueue({ chainId: "base", tokenAddress: "0x1", requestedAt: 1 })).rejects.toThrow("Timed out acquiring lock");
+    await utimes(`${filePath}.lock`, new Date(0), new Date(0));
+    const producer = new FomoTokenLookupProducer({ filePath, lockTimeoutMs: 200, staleLockMs: 10 });
+
+    await expect(producer.enqueue({ chainId: "base", tokenAddress: "0x1", requestedAt: 1 })).resolves.toMatchObject({ enqueued: true });
+  });
+
   it("persists retry attempts and advances after the bounded retry count", async () => {
     const directory = await mkdtemp(join(tmpdir(), "lookup-queue-"));
     const filePath = join(directory, "lookups.jsonl");
@@ -37,6 +62,25 @@ describe("Fomo lookup queue", () => {
     expect(retriedLease.request.lookupId).toBe(firstLease.request.lookupId);
     expect(await restarted.fail(retriedLease)).toEqual({ discarded: true, attempts: 2 });
     expect((await restarted.next())?.request.tokenAddress).toBe("0x2");
+  });
+
+  it("claims a queue lease across consumer instances and prevents stale commit regression", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "lookup-queue-"));
+    const filePath = join(directory, "lookups.jsonl");
+    const cursorPath = join(directory, "cursor.json");
+    await new FomoTokenLookupProducer({ filePath }).enqueue({ chainId: "base", tokenAddress: "0x1", requestedAt: 1 });
+    let now = 0;
+    const first = new FomoTokenLookupConsumer({ filePath, cursorPath, claimTtlMs: 50, now: () => now });
+    const second = new FomoTokenLookupConsumer({ filePath, cursorPath, claimTtlMs: 50, now: () => now });
+    const firstLease = (await first.next())!;
+    expect(await second.next()).toBeNull();
+
+    now = 100;
+    const recoveredLease = (await second.next())!;
+    expect(recoveredLease.request.lookupId).toBe(firstLease.request.lookupId);
+    await second.complete(recoveredLease);
+    await first.complete(firstLease);
+    expect(await new FomoTokenLookupConsumer({ filePath, cursorPath }).next()).toBeNull();
   });
 
   it("preserves milestone pagination fields and rejects contradictory requests", async () => {
@@ -63,5 +107,38 @@ describe("Fomo lookup result journal", () => {
     const restarted = new FomoTokenLookupResultConsumer({ filePath, cursorPath });
     expect(await restarted.next()).toBeNull();
     expect(JSON.parse(await readFile(cursorPath, "utf8"))).toMatchObject({ version: 1, byteOffset: lease.nextByteOffset });
+  });
+
+  it("claims result leases across instances", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "lookup-results-"));
+    const filePath = join(directory, "results.jsonl");
+    const cursorPath = join(directory, "cursor.json");
+    await new FomoTokenLookupResultProducer({ filePath }).append({ version: 1, lookupId: "one", chainId: "base", tokenAddress: "0x1", completedAt: 1, holderCount: 1, queriedTraderCount: 1, observationCount: 0 });
+    const first = new FomoTokenLookupResultConsumer({ filePath, cursorPath });
+    const second = new FomoTokenLookupResultConsumer({ filePath, cursorPath });
+    const lease = await first.next();
+
+    expect(lease).not.toBeNull();
+    expect(await second.next()).toBeNull();
+    await first.complete(lease!);
+    expect(await second.next()).toBeNull();
+  });
+
+  it("resets safely when the result journal is replaced by a shorter generation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "lookup-results-"));
+    const filePath = join(directory, "results.jsonl");
+    const cursorPath = join(directory, "cursor.json");
+    const producer = new FomoTokenLookupResultProducer({ filePath });
+    await producer.append({ version: 1, lookupId: "long-old-lookup-id", chainId: "base", tokenAddress: "0x111111", completedAt: 1, holderCount: 1, queriedTraderCount: 1, observationCount: 0 });
+    const first = new FomoTokenLookupResultConsumer({ filePath, cursorPath });
+    const oldLease = (await first.next())!;
+    await first.complete(oldLease);
+
+    const replacement = join(directory, "replacement.jsonl");
+    await new FomoTokenLookupResultProducer({ filePath: replacement }).append({ version: 1, lookupId: "new", chainId: "base", tokenAddress: "0x2", completedAt: 2, holderCount: 1, queriedTraderCount: 1, observationCount: 0 });
+    await rename(replacement, filePath);
+
+    const restarted = new FomoTokenLookupResultConsumer({ filePath, cursorPath });
+    expect((await restarted.next())?.result.lookupId).toBe("new");
   });
 });

@@ -53,9 +53,36 @@ export function createRadarRpcDiscoveryProvider(input: {
       if (!RADAR_DISCOVERY_CHAINS.includes(request.chain as DiscoveryChain)) return Object.freeze([]);
       if (!validBlock(request.fromBlock) || !validBlock(request.toBlock) || request.fromBlock > request.toBlock) throw new Error("Invalid RPC backfill range");
       const events = await input.backfill.loadTrades(request);
-      return Object.freeze([...new Map(events.filter((event) => event.chain === request.chain && event.blockNumber >= request.fromBlock && event.blockNumber <= request.toBlock).map((event) => [event.eventId, event])).values()]);
+      return Object.freeze([...new Map(events.flatMap((event) => {
+        const normalized = normalizeTradeEvent(event, request);
+        return normalized ? [[normalized.eventId, normalized] as const] : [];
+      })).values()]);
     },
   });
 }
 
 const validBlock = (value: number): boolean => Number.isSafeInteger(value) && value >= 0;
+
+function normalizeTradeEvent(event: RadarRpcTradeEvent, request: Parameters<RadarRpcDiscoveryProvider["tradesInBlockRange"]>[0]): RadarRpcTradeEvent | null {
+  const solana = request.chain === "solana";
+  const address = (value: string): string => solana ? value.trim() : value.trim().toLowerCase();
+  const contracts = new Set(request.contractAddresses.map(address).filter(Boolean));
+  const marketAddress = address(event.marketAddress);
+  if (
+    event.chain !== request.chain || !event.eventId.trim() || !event.tokenAddress.trim() || !marketAddress ||
+    !event.venueId.trim() || !event.buyerAddress.trim() || !contracts.has(marketAddress) ||
+    !validBlock(event.blockNumber) || event.blockNumber < request.fromBlock || event.blockNumber > request.toBlock ||
+    !finiteNonNegative(event.priceUsd) || !finiteNonNegative(event.amountUsd) || !finiteNonNegative(event.liquidityUsd) ||
+    !Number.isSafeInteger(event.occurredAt) || event.occurredAt < 0
+  ) return null;
+  return Object.freeze({
+    ...event,
+    eventId: event.eventId.trim(),
+    tokenAddress: address(event.tokenAddress),
+    marketAddress,
+    venueId: event.venueId.trim(),
+    buyerAddress: address(event.buyerAddress),
+  });
+}
+
+const finiteNonNegative = (value: number): boolean => Number.isFinite(value) && value >= 0;

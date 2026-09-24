@@ -1,4 +1,4 @@
-export { createDexScreenerClient, DEX_SCREENER_CHAIN_IDS, dexScreenerChainId } from "./dex-screener-client.js";
+export { createDexScreenerClient, DexScreenerProviderError, DEX_SCREENER_CHAIN_IDS, dexScreenerChainId } from "./dex-screener-client.js";
 export * from "./evm/index.js";
 export * from "./fomo/index.js";
 export { createTradeEventIngestor } from "./ingestion.js";

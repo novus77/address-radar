@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   JsonRpcRateLimitError,
+  DexScreenerProviderError,
   RADAR_DISCOVERY_CHAINS,
   createRadarChainDiscoveryConfiguration,
   createRadarRpcDiscoveryProvider,
@@ -81,6 +82,17 @@ describe("Dex Screener client", () => {
     });
 
     await expect(provider.lookup("solana", "CaseSensitiveMint")).resolves.toBeNull();
+  });
+
+  it("returns null for a definitive not-found response", async () => {
+    const provider = createDexScreenerClient({ fetch: async () => new Response(null, { status: 404 }) });
+    await expect(provider.lookup("base", "0xabc")).resolves.toBeNull();
+  });
+
+  it("throws a typed retryable error for server failures", async () => {
+    const provider = createDexScreenerClient({ fetch: async () => new Response("unavailable", { status: 503 }) });
+    await expect(provider.lookup("base", "0xabc")).rejects.toMatchObject({ name: "DexScreenerProviderError", retryable: true, status: 503 });
+    await expect(provider.lookup("base", "0xabc")).rejects.toBeInstanceOf(DexScreenerProviderError);
   });
 
   it("selects the deepest matching market and normalizes numeric fields", async () => {
@@ -163,5 +175,22 @@ describe("RPC discovery contract", () => {
     expect(added).toEqual([["Pool2"]]);
     expect(closed).toBe(true);
     await expect(provider.tradesInBlockRange({ chain: "base", contractAddresses: ["0xmarket"], fromBlock: 10, toBlock: 12, signal })).resolves.toEqual([expect.objectContaining({ eventId: "event-1" })]);
+  });
+
+  it("drops invalid and out-of-scope backfill trades with chain-aware address matching", async () => {
+    const base = { eventId: "valid", chain: "base" as const, tokenAddress: " 0xToken ", marketAddress: " 0xAaA ", venueId: "dex", buyerAddress: " 0xBuyer ", priceUsd: 1, amountUsd: 2, liquidityUsd: 3, blockNumber: 11, occurredAt: 4 };
+    const provider = createRadarRpcDiscoveryProvider({
+      live: { async subscribe() { return { async close() {} }; } },
+      backfill: { async loadTrades() { return [base, { ...base, eventId: "outside", marketAddress: "0xbbb" }, { ...base, eventId: "invalid", priceUsd: Number.NaN }]; } },
+    });
+    await expect(provider.tradesInBlockRange({ chain: "base", contractAddresses: ["0xaaa"], fromBlock: 10, toBlock: 12, signal: new AbortController().signal })).resolves.toEqual([
+      expect.objectContaining({ eventId: "valid", tokenAddress: "0xtoken", marketAddress: "0xaaa", buyerAddress: "0xbuyer" }),
+    ]);
+
+    const solana = createRadarRpcDiscoveryProvider({
+      live: { async subscribe() { return { async close() {} }; } },
+      backfill: { async loadTrades() { return [{ ...base, eventId: "sol", chain: "solana" as const, tokenAddress: " Mint ", marketAddress: " PoolCase ", buyerAddress: " Buyer " }]; } },
+    });
+    await expect(solana.tradesInBlockRange({ chain: "solana", contractAddresses: ["poolcase"], fromBlock: 10, toBlock: 12, signal: new AbortController().signal })).resolves.toEqual([]);
   });
 });

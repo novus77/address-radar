@@ -113,6 +113,22 @@ describe("trade event normalization", () => {
       collectedAt: 1,
     })).toBeNull();
   });
+
+  it("requires the Fomo event type to match its action exactly", () => {
+    const mismatched = fomoLine.replace("fomo.activity.buy", "fomo.activity.sell");
+    const suffixed = fomoLine.replace("fomo.activity.buy", "fomo.activity.buy.extra");
+    expect(parseFomoHistoryEvent(mismatched)).toBeNull();
+    expect(parseFomoHistoryEvent(suffixed)).toBeNull();
+  });
+
+  it("normalizes negative Fomo financial values to null", () => {
+    const value = JSON.parse(fomoLine) as { value: { payload: { usdAmount: number; price: number; marketCap: number } } };
+    value.value.payload.usdAmount = -1;
+    value.value.payload.price = -2;
+    value.value.payload.marketCap = -3;
+
+    expect(parseFomoHistoryEvent(JSON.stringify(value))).toMatchObject({ amountUsd: null, priceUsd: null, marketCapUsd: null });
+  });
 });
 
 describe("trade event ingestion", () => {
