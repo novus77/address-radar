@@ -72,8 +72,7 @@ export const createManualResolutionService = (input: {
       if (itemConflicts > 0) input.repository.markIdentityResolution(handle, "conflict", request.importedAt);
       else if (wallets.length === 0) input.repository.markIdentityResolution(handle, "not_found", request.importedAt);
       else {
-        input.repository.markIdentityResolution(handle, "resolved", request.importedAt);
-        input.repository.completeIdentityAdmission(queued.accountId, request.importedAt);
+        input.repository.completeIdentityResolution(handle, queued.accountId, request.importedAt);
         resolved += 1;
       }
     }
@@ -122,8 +121,7 @@ export const createManualResolutionService = (input: {
 
       if (itemConflicts > 0) input.repository.markIdentityResolution(handle, "conflict", request.importedAt);
       else {
-        input.repository.markIdentityResolution(handle, "resolved", request.importedAt);
-        input.repository.completeIdentityAdmission(queued.accountId, request.importedAt);
+        input.repository.completeIdentityResolution(handle, queued.accountId, request.importedAt);
         resolved += 1;
       }
     }

@@ -47,6 +47,7 @@ export function createIdentityResolutionService(input: {
         input.repository.upsertFomoAccount({ accountId: result.accountId, handle: result.handle, firstSeenAt: clock, lastSeenAt: clock });
         for (const wallet of result.wallets) input.repository.attachWallet({ accountId: result.accountId, ...wallet, confidence: "confirmed", source: "fomoscan", observedAt: result.asOf });
         input.repository.saveIdentityResolution({ handle, status: "resolved", accountId: result.accountId, expiresAt: clock + IDENTITY_CACHE_MS, nextAttemptAt: clock + IDENTITY_CACHE_MS, attemptCount: 0, payload: JSON.stringify(result), updatedAt: clock });
+        input.repository.completeIdentityResolution(handle, result.accountId, clock);
         return result;
       }
       if (result.kind === "not_observed") {

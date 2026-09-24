@@ -145,6 +145,7 @@ export interface AddressRadarRepository {
   walletOwner(chainFamily: "solana" | "evm", address: string): string | null;
   saveWalletMappingObservation(input: WalletMappingObservationInput): void;
   markIdentityResolution(handle: string, status: "resolved" | "not_found" | "conflict", occurredAt: number): void;
+  completeIdentityResolution(handle: string, accountId: string, occurredAt: number): string | null;
   completeIdentityAdmission(accountId: string, occurredAt: number): string | null;
   markIdentityResolutionBatch(batchId: string, status: "partially_imported" | "imported", importedAt: number): void;
   createIdentityConflict(input: IdentityConflictRecord): void;
@@ -168,6 +169,45 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
       database.exec("ROLLBACK");
       throw error;
     }
+  };
+
+  const markIdentityResolutionInTransaction = (
+    handle: string,
+    status: "resolved" | "not_found" | "conflict",
+    occurredAt: number,
+  ): void => {
+    database.prepare(`
+      UPDATE identity_resolution_queue SET status = ?, resolved_at = ?, next_export_at = ? WHERE handle = ?
+    `).run(status, status === "resolved" ? occurredAt : null, status === "resolved" ? occurredAt : occurredAt + 12 * 60 * 60_000, normalizeFomoHandle(handle));
+  };
+
+  const completeIdentityAdmissionInTransaction = (accountId: string, occurredAt: number): string | null => {
+    const entity = database.prepare(`
+      SELECT e.entity_id AS entityId, e.lifecycle
+      FROM trader_entities e
+      JOIN entity_accounts ea ON ea.entity_id = e.entity_id
+      WHERE ea.account_id = ?
+      ORDER BY ea.last_observed_at DESC
+      LIMIT 1
+    `).get(accountId) as { entityId: string; lifecycle: TraderEntityInput["lifecycle"] } | undefined;
+    if (!entity) return null;
+    const walletCount = Number((database.prepare("SELECT COUNT(*) AS count FROM wallet_identities WHERE account_id = ?").get(accountId) as { count: number }).count);
+    if (walletCount === 0) return null;
+    const nextLifecycle = entity.lifecycle === "candidate" || entity.lifecycle === "suspended" ? "probation" : entity.lifecycle;
+    if (nextLifecycle !== entity.lifecycle) {
+      database.prepare("UPDATE trader_entities SET lifecycle = ?, updated_at = ? WHERE entity_id = ?").run(nextLifecycle, occurredAt, entity.entityId);
+      database.prepare(`
+        INSERT OR IGNORE INTO trader_lifecycle_events(
+          lifecycle_event_id, entity_id, previous_state, next_state, reasons, strategy_version, occurred_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(`identity-admission:${entity.entityId}:${occurredAt}`, entity.entityId, entity.lifecycle, nextLifecycle, JSON.stringify(["identity_resolved"]), "identity-admission-v1", occurredAt);
+    }
+    database.prepare(`
+      INSERT OR IGNORE INTO monitoring_registry_outbox(event_id, entity_id, event_type, payload, status, created_at, published_at)
+      VALUES (?, ?, 'identity.updated', ?, 'published', ?, ?)
+    `).run(`identity-registry:${entity.entityId}:${occurredAt}`, entity.entityId, JSON.stringify({ entityId: entity.entityId, accountId, lifecycle: nextLifecycle }), occurredAt, occurredAt);
+    database.prepare("UPDATE monitoring_registry_state SET version = version + 1, updated_at = ? WHERE singleton = 1").run(occurredAt);
+    return entity.entityId;
   };
 
   const repository: AddressRadarRepository = {
@@ -1098,42 +1138,22 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     },
 
     markIdentityResolution(handle, status, occurredAt) {
-      database.prepare(`
-        UPDATE identity_resolution_queue SET status = ?, resolved_at = ?, next_export_at = ? WHERE handle = ?
-      `).run(status, status === "resolved" ? occurredAt : null, status === "resolved" ? occurredAt : occurredAt + 12 * 60 * 60_000, normalizeFomoHandle(handle));
+      markIdentityResolutionInTransaction(handle, status, occurredAt);
+    },
+
+    completeIdentityResolution(handle, accountId, occurredAt) {
+      assertId(accountId, "accountId");
+      assertTimestamp(occurredAt, "occurredAt");
+      return transaction(() => {
+        markIdentityResolutionInTransaction(handle, "resolved", occurredAt);
+        return completeIdentityAdmissionInTransaction(accountId, occurredAt);
+      });
     },
 
     completeIdentityAdmission(accountId, occurredAt) {
       assertId(accountId, "accountId");
       assertTimestamp(occurredAt, "occurredAt");
-      return transaction(() => {
-        const entity = database.prepare(`
-          SELECT e.entity_id AS entityId, e.lifecycle
-          FROM trader_entities e
-          JOIN entity_accounts ea ON ea.entity_id = e.entity_id
-          WHERE ea.account_id = ?
-          ORDER BY ea.last_observed_at DESC
-          LIMIT 1
-        `).get(accountId) as { entityId: string; lifecycle: TraderEntityInput["lifecycle"] } | undefined;
-        if (!entity) return null;
-        const walletCount = Number((database.prepare("SELECT COUNT(*) AS count FROM wallet_identities WHERE account_id = ?").get(accountId) as { count: number }).count);
-        if (walletCount === 0) return null;
-        const nextLifecycle = entity.lifecycle === "candidate" || entity.lifecycle === "suspended" ? "probation" : entity.lifecycle;
-        if (nextLifecycle !== entity.lifecycle) {
-          database.prepare("UPDATE trader_entities SET lifecycle = ?, updated_at = ? WHERE entity_id = ?").run(nextLifecycle, occurredAt, entity.entityId);
-          database.prepare(`
-            INSERT OR IGNORE INTO trader_lifecycle_events(
-              lifecycle_event_id, entity_id, previous_state, next_state, reasons, strategy_version, occurred_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-          `).run(`identity-admission:${entity.entityId}:${occurredAt}`, entity.entityId, entity.lifecycle, nextLifecycle, JSON.stringify(["identity_resolved"]), "identity-admission-v1", occurredAt);
-        }
-        database.prepare(`
-          INSERT OR IGNORE INTO monitoring_registry_outbox(event_id, entity_id, event_type, payload, status, created_at, published_at)
-          VALUES (?, ?, 'identity.updated', ?, 'published', ?, ?)
-        `).run(`identity-registry:${entity.entityId}:${occurredAt}`, entity.entityId, JSON.stringify({ entityId: entity.entityId, accountId, lifecycle: nextLifecycle }), occurredAt, occurredAt);
-        database.prepare("UPDATE monitoring_registry_state SET version = version + 1, updated_at = ? WHERE singleton = 1").run(occurredAt);
-        return entity.entityId;
-      });
+      return transaction(() => completeIdentityAdmissionInTransaction(accountId, occurredAt));
     },
 
     markIdentityResolutionBatch(batchId, status, importedAt) {
@@ -1163,9 +1183,10 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
       transaction(() => {
         if (input.decision === "accepted") {
           repository.attachWallet({ accountId: conflict.account_id, chainFamily: conflict.chain_family, address: conflict.address, confidence: "confirmed", source: "fomolens_manual_review", observedAt: input.occurredAt });
-          repository.markIdentityResolution(conflict.handle, "resolved", input.occurredAt);
+          markIdentityResolutionInTransaction(conflict.handle, "resolved", input.occurredAt);
+          completeIdentityAdmissionInTransaction(conflict.account_id, input.occurredAt);
         } else {
-          repository.markIdentityResolution(conflict.handle, "not_found", input.occurredAt);
+          markIdentityResolutionInTransaction(conflict.handle, "not_found", input.occurredAt);
         }
         database.prepare("UPDATE identity_conflicts SET status = ?, resolved_at = ?, resolution = ? WHERE conflict_id = ?")
           .run(input.decision, input.occurredAt, input.resolution, input.conflictId);
