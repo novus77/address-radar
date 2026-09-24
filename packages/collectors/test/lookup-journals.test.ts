@@ -1,6 +1,7 @@
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, utimes, writeFile } from "node:fs/promises";
-import { hostname, tmpdir } from "node:os";
+import { mkdir, mkdtemp, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -9,140 +10,106 @@ import {
   FomoTokenLookupResultConsumer,
   FomoTokenLookupResultProducer,
 } from "@address-radar/collectors";
-import { atomicWrite, withExclusiveFileLock, type FileLockOwnerIdentityProvider } from "../src/fomo/durable-file.js";
+import { atomicWrite, fileLockCoordinationPath, FileLockTimeoutError, withExclusiveFileLock } from "../src/fomo/durable-file.js";
 
 const delay = (milliseconds: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-const testOwnerIdentityProvider = (status: FileLockOwnerIdentityProvider["status"]): FileLockOwnerIdentityProvider => ({
-  current: async () => ({ pid: process.pid, hostname: hostname(), processStartIdentity: "test:current" }),
-  status,
-});
-
-const staleLockMetadata = (processStartIdentity = "test:dead") => ({
-  version: 1,
-  token: "stale-owner",
-  pid: process.pid,
-  hostname: hostname(),
-  processStartIdentity,
-  createdAt: 0,
-  heartbeatAt: 0,
-});
-
 describe("durable file coordination", () => {
-  it("keeps a live long-running owner beyond staleMs and serializes reacquisition", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "durable-lock-"));
+  it("never overlaps two lock instances", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sqlite-lock-"));
     const lockPath = join(directory, "resource.lock");
     let active = 0;
     let maximumActive = 0;
-    let entered!: () => void;
-    const firstEntered = new Promise<void>((resolve) => { entered = resolve; });
-    const operation = async (holdMs: number) => {
+    let releaseFirst!: () => void;
+    let enteredFirst!: () => void;
+    const firstRelease = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const firstEntered = new Promise<void>((resolve) => { enteredFirst = resolve; });
+    const operation = async (wait: boolean) => {
       active += 1;
       maximumActive = Math.max(maximumActive, active);
-      if (holdMs > 0) entered();
-      await delay(holdMs);
+      if (wait) {
+        enteredFirst();
+        await firstRelease;
+      }
       active -= 1;
     };
 
-    const first = withExclusiveFileLock(lockPath, () => operation(80), { staleMs: 15, timeoutMs: 300, retryDelayMs: 2 });
+    const first = withExclusiveFileLock(lockPath, () => operation(true), { timeoutMs: 500, retryDelayMs: 2 });
     await firstEntered;
-    const metadata = JSON.parse(await readFile(lockPath, "utf8"));
-    expect(metadata).toMatchObject({ version: 1, pid: process.pid, hostname: hostname() });
-    const second = withExclusiveFileLock(lockPath, () => operation(0), { staleMs: 15, timeoutMs: 300, retryDelayMs: 2 });
-
+    const second = withExclusiveFileLock(lockPath, () => operation(false), { timeoutMs: 500, retryDelayMs: 2 });
+    await delay(20);
+    expect(maximumActive).toBe(1);
+    releaseFirst();
     await Promise.all([first, second]);
     expect(maximumActive).toBe(1);
   });
 
-  it("serializes concurrent reclaimers of the same stale owner", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "durable-lock-"));
-    const lockPath = join(directory, "resource.lock");
-    await writeFile(lockPath, `${JSON.stringify(staleLockMetadata())}\n`);
-    await utimes(lockPath, new Date(0), new Date(0));
-    const ownerIdentityProvider = testOwnerIdentityProvider(async (owner) => owner.processStartIdentity === "test:dead" ? "dead" : "alive");
-    let active = 0;
-    let maximumActive = 0;
-    const operation = async () => {
-      active += 1;
-      maximumActive = Math.max(maximumActive, active);
-      await delay(20);
-      active -= 1;
-    };
-
-    await Promise.all([
-      withExclusiveFileLock(lockPath, operation, { staleMs: 1, timeoutMs: 500, retryDelayMs: 1, ownerIdentityProvider }),
-      withExclusiveFileLock(lockPath, operation, { staleMs: 1, timeoutMs: 500, retryDelayMs: 1, ownerIdentityProvider }),
-    ]);
-    expect(maximumActive).toBe(1);
-  });
-
-  it("blocks fresh acquisition while stale recovery owns the pathname guard", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "durable-lock-"));
-    const lockPath = join(directory, "resource.lock");
-    await writeFile(lockPath, `${JSON.stringify(staleLockMetadata())}\n`);
-    await utimes(lockPath, new Date(0), new Date(0));
-    let enteredStatus!: () => void;
-    let releaseStatus!: () => void;
-    const statusEntered = new Promise<void>((resolve) => { enteredStatus = resolve; });
-    const statusRelease = new Promise<void>((resolve) => { releaseStatus = resolve; });
-    let statusCalls = 0;
-    const ownerIdentityProvider = testOwnerIdentityProvider(async (owner) => {
-      if (owner.processStartIdentity === "test:dead" && statusCalls++ === 0) {
-        enteredStatus();
-        await statusRelease;
-        return "dead";
-      }
-      return owner.processStartIdentity === "test:dead" ? "dead" : "alive";
-    });
-    const order: string[] = [];
-    const recovering = withExclusiveFileLock(lockPath, async () => {
-      order.push("recovering-start");
-      await delay(20);
-      order.push("recovering-end");
-    }, { staleMs: 1, timeoutMs: 500, retryDelayMs: 1, ownerIdentityProvider });
-    await statusEntered;
-    const fresh = withExclusiveFileLock(lockPath, async () => { order.push("fresh"); }, { staleMs: 1, timeoutMs: 500, retryDelayMs: 1, ownerIdentityProvider });
-    await delay(10);
-    expect(order).toEqual([]);
-    releaseStatus();
-
-    await Promise.all([recovering, fresh]);
-    expect(order).toEqual(["recovering-start", "recovering-end", "fresh"]);
-  });
-
-  it("recovers a stale lock when a live PID has a different process-start identity", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "durable-lock-"));
-    const lockPath = join(directory, "resource.lock");
-    await writeFile(lockPath, `${JSON.stringify(staleLockMetadata("test:previous-process"))}\n`);
-    await utimes(lockPath, new Date(0), new Date(0));
-    const ownerIdentityProvider = testOwnerIdentityProvider(async (owner) => owner.processStartIdentity === "test:previous-process" ? "reused" : "alive");
-
-    await expect(withExclusiveFileLock(lockPath, async () => 42, { staleMs: 1, timeoutMs: 200, retryDelayMs: 1, ownerIdentityProvider })).resolves.toBe(42);
-  });
-
-  it("rejects ownership replacement during the critical section without deleting the replacement", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "durable-lock-"));
-    const lockPath = join(directory, "resource.lock");
-    const displacedPath = join(directory, "displaced.lock");
-
-    await expect(withExclusiveFileLock(lockPath, async () => {
-      await rename(lockPath, displacedPath);
-      await writeFile(lockPath, `${JSON.stringify({ ...staleLockMetadata("test:replacement"), token: "replacement" })}\n`);
-      return 42;
-    })).rejects.toThrow("Lock ownership lost");
-
-    expect(JSON.parse(await readFile(lockPath, "utf8"))).toMatchObject({ token: "replacement" });
-  });
-
-  it("surfaces release failure when the owned lock metadata is corrupted", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "durable-lock-"));
+  it("releases normally after an operation longer than its acquisition timeout", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sqlite-lock-"));
     const lockPath = join(directory, "resource.lock");
 
     await expect(withExclusiveFileLock(lockPath, async () => {
-      await writeFile(lockPath, "corrupted");
+      await delay(40);
       return 42;
-    })).rejects.toThrow("Owned lock metadata changed");
-    await rm(lockPath, { force: true });
+    }, { timeoutMs: 5, staleMs: 1 })).resolves.toBe(42);
+    await expect(withExclusiveFileLock(lockPath, async () => 43, { timeoutMs: 50 })).resolves.toBe(43);
+  });
+
+  it("maps bounded contention to a typed timeout error", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sqlite-lock-"));
+    const lockPath = join(directory, "resource.lock");
+    let releaseOwner!: () => void;
+    let enteredOwner!: () => void;
+    const ownerRelease = new Promise<void>((resolve) => { releaseOwner = resolve; });
+    const ownerEntered = new Promise<void>((resolve) => { enteredOwner = resolve; });
+    const owner = withExclusiveFileLock(lockPath, async () => {
+      enteredOwner();
+      await ownerRelease;
+    }, { timeoutMs: 500 });
+    await ownerEntered;
+
+    const startedAt = Date.now();
+    await expect(withExclusiveFileLock(lockPath, async () => undefined, { timeoutMs: 25, retryDelayMs: 2 })).rejects.toBeInstanceOf(FileLockTimeoutError);
+    expect(Date.now() - startedAt).toBeLessThan(250);
+    releaseOwner();
+    await owner;
+  });
+
+  it("rolls back and releases after callback failure", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sqlite-lock-"));
+    const lockPath = join(directory, "resource.lock");
+
+    await expect(withExclusiveFileLock(lockPath, async () => { throw new Error("callback failed"); })).rejects.toThrow("callback failed");
+    await expect(withExclusiveFileLock(lockPath, async () => 42)).resolves.toBe(42);
+  });
+
+  it("acquires after a prior connection closes without commit or rollback", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sqlite-lock-"));
+    const lockPath = join(directory, "resource.lock");
+    const abandoned = new DatabaseSync(fileLockCoordinationPath(lockPath));
+    abandoned.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
+    abandoned.close();
+
+    await expect(withExclusiveFileLock(lockPath, async () => 42)).resolves.toBe(42);
+  });
+
+  it("ignores legacy lock and guard artifacts without deleting them", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sqlite-lock-"));
+    const lockPath = join(directory, "resource.lock");
+    await writeFile(lockPath, "unknown legacy contents");
+    await mkdir(lockPath + ".guard");
+
+    await expect(withExclusiveFileLock(lockPath, async () => 42, { timeoutMs: 50 })).resolves.toBe(42);
+    expect(await readFile(lockPath, "utf8")).toBe("unknown legacy contents");
+    expect(await readdir(lockPath + ".guard")).toEqual([]);
+  });
+
+  it("unconditionally releases after the acquisition deadline has expired", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sqlite-lock-"));
+    const lockPath = join(directory, "resource.lock");
+
+    await withExclusiveFileLock(lockPath, async () => { await delay(30); }, { timeoutMs: 5 });
+    await expect(withExclusiveFileLock(lockPath, async () => "released", { timeoutMs: 20 })).resolves.toBe("released");
   });
 
   it("removes its unique temporary file when atomic rename fails", async () => {
@@ -179,16 +146,14 @@ describe("Fomo lookup queue", () => {
     expect((await readFile(filePath, "utf8")).trim().split("\n")).toHaveLength(1);
   });
 
-  it("recovers a stale producer lock without waiting indefinitely", async () => {
+  it("does not let a legacy producer lock artifact block enqueue", async () => {
     const directory = await mkdtemp(join(tmpdir(), "lookup-queue-"));
     const filePath = join(directory, "lookups.jsonl");
-    await writeFile(`${filePath}.lock`, `${JSON.stringify({ ...staleLockMetadata("linux:0"), pid: 2_147_483_647 })}\n`);
-    const blocked = new FomoTokenLookupProducer({ filePath, lockTimeoutMs: 20, staleLockMs: 10_000 });
-    await expect(blocked.enqueue({ chainId: "base", tokenAddress: "0x1", requestedAt: 1 })).rejects.toThrow("Timed out acquiring lock");
-    await utimes(`${filePath}.lock`, new Date(0), new Date(0));
-    const producer = new FomoTokenLookupProducer({ filePath, lockTimeoutMs: 200, staleLockMs: 10 });
+    await writeFile(filePath + ".lock", "unknown legacy contents");
+    const producer = new FomoTokenLookupProducer({ filePath, lockTimeoutMs: 50 });
 
     await expect(producer.enqueue({ chainId: "base", tokenAddress: "0x1", requestedAt: 1 })).resolves.toMatchObject({ enqueued: true });
+    expect(await readFile(filePath + ".lock", "utf8")).toBe("unknown legacy contents");
   });
 
   it("persists retry attempts and advances after the bounded retry count", async () => {
