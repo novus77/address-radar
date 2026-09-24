@@ -28,6 +28,14 @@ importers:
         specifier: 4.1.11
         version: 4.1.11(@types/node@24.13.6)(vite@8.3.0(@types/node@24.13.6)(esbuild@0.28.2)(tsx@4.23.15))
 
+  packages/domain: {}
+
+  packages/scoring:
+    dependencies:
+      '@address-radar/domain':
+        specifier: workspace:*
+        version: link:../domain
+
 packages:
 
   '@esbuild/aix-ppc64@0.28.2':

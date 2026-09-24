@@ -1,0 +1,13 @@
+{
+  "name": "@address-radar/scoring",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run"
+  },
+  "dependencies": { "@address-radar/domain": "workspace:*" }
+}

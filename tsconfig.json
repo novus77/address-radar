@@ -3,6 +3,10 @@
   "compilerOptions": {
     "noEmit": true
   },
+  "references": [
+    { "path": "./packages/domain" },
+    { "path": "./packages/scoring" }
+  ],
   "include": [
     "vitest.config.ts"
   ]
