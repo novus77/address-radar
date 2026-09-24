@@ -53,6 +53,16 @@ export function openWalletAnalysisStore(databasePath: string): WalletAnalysisSto
       to_at INTEGER NOT NULL,
       max_tokens INTEGER NOT NULL CHECK(max_tokens BETWEEN 1 AND 300)
     );
+    INSERT OR IGNORE INTO wallet_analysis_job_bounds(analysis_id, from_at, to_at, max_tokens)
+    SELECT analysis_id,
+      created_at - 60 * 24 * 60 * 60 * 1000,
+      created_at,
+      CASE
+        WHEN requested_sample_count < 1 THEN 1
+        WHEN requested_sample_count > 300 THEN 300
+        ELSE requested_sample_count
+      END
+    FROM wallet_analysis_jobs;
   `);
 
   const savePage = (analysisId: string, positions: readonly WalletAnalysisPosition[], nextCursor: string | null, provenance: string, updatedAt: number): number => {

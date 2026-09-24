@@ -57,6 +57,31 @@ describe("wallet analysis review", () => {
 });
 
 describe("wallet analysis production wiring", () => {
+  it("backfills bounded history for jobs created before bounds were introduced", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "wallet-analysis-legacy-"));
+    const path = join(directory, "radar.sqlite");
+    const repository = openAddressRadarRepository(path);
+    repository.close();
+    const createdAt = 100 * 24 * 60 * 60_000;
+    const database = new DatabaseSync(path);
+    database.prepare(`
+      INSERT INTO wallet_analysis_jobs(
+        analysis_id, chain_family, address, status, requested_sample_count,
+        valid_sample_count, coverage_rate, created_at, updated_at
+      ) VALUES (?, 'evm', ?, 'collecting', 300, 0, 0, ?, ?)
+    `).run("legacy-analysis", "0x1111111111111111111111111111111111111111", createdAt, createdAt);
+    database.close();
+
+    const store = openWalletAnalysisStore(path);
+    expect(store.next()).toMatchObject({
+      analysisId: "legacy-analysis",
+      from: createdAt - 60 * 24 * 60 * 60_000,
+      to: createdAt,
+      maxTokens: 300,
+    });
+    store.close();
+  });
+
   it("fails preflight without usable history providers", () => {
     expect(() => loadWalletAnalysisConfig({})).toThrow("At least one wallet-analysis RPC endpoint is required");
   });
