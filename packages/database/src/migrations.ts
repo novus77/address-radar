@@ -11,6 +11,15 @@ export function migrateAddressRadarDatabase(database: DatabaseSync): void {
     ensureColumn(database, "signal_outbox", "claim_token", "TEXT");
     ensureColumn(database, "signal_outbox", "claim_generation", "INTEGER NOT NULL DEFAULT 0");
     ensureColumn(database, "signal_outbox", "lease_expires_at", "INTEGER");
+    ensureColumn(database, "signal_outbox_migration_review", "decision", "TEXT CHECK(decision IN ('approved', 'skipped'))");
+    ensureColumn(database, "signal_outbox_migration_review", "decided_by", "TEXT");
+    ensureColumn(database, "signal_outbox_migration_review", "decision_reason", "TEXT");
+    ensureColumn(database, "signal_outbox_migration_review", "decided_at", "INTEGER");
+    database.exec(`
+      UPDATE signal_outbox_migration_review
+      SET decision = 'approved', decided_by = 'legacy_migration', decision_reason = 'previously approved', decided_at = reviewed_at
+      WHERE status = 'approved' AND decision IS NULL;
+    `);
     database.exec(`
       INSERT OR IGNORE INTO economic_evidence_consumption(dedupe_key, broadcast_id, consumed_at)
       SELECT COALESCE(e.dedupe_key, ec.event_id), ec.broadcast_id, ec.consumed_at

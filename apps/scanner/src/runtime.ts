@@ -85,36 +85,61 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
 
         let batchFailed = false;
         const groups = new Map<string, { chain: string; tokenAddress: string; evidence: AddressSignalEvidence[]; market: TokenMarketSnapshot | null }>();
+        const tokenFacts = new Map<string, { chain: string; tokenAddress: string; observedAt: number; createdAt?: number | null; launchedAt?: number | null }>();
+        for (const observation of batch.observations) {
+          if (!observation.event) continue;
+          const chain = observation.event.chain.toLowerCase();
+          const tokenAddress = observation.event.tokenAddress;
+          const tokenId = addressRadarTokenId(chain, tokenAddress);
+          const current = tokenFacts.get(tokenId);
+          const createdTimes = [current?.createdAt, observation.createdAt].filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0);
+          const launchTimes = [current?.launchedAt, observation.launchedAt].filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0);
+          tokenFacts.set(tokenId, { chain, tokenAddress, observedAt: Math.max(current?.observedAt ?? 0, observation.event.occurredAt), ...(createdTimes.length ? { createdAt: Math.min(...createdTimes) } : {}), ...(launchTimes.length ? { launchedAt: Math.min(...launchTimes) } : {}) });
+        }
+        const tokenResolutionCache = new Map<string, Promise<{ market: TokenMarketSnapshot | null; lifecycleStage: NonNullable<AddressSignalEvidence["lifecycleStage"]>; failed: boolean }>>();
+        const resolveToken = (chain: string, tokenAddress: string) => {
+          const tokenId = addressRadarTokenId(chain, tokenAddress);
+          const cached = tokenResolutionCache.get(tokenId);
+          if (cached) return cached;
+          const facts = tokenFacts.get(tokenId)!;
+          const resolution = (async () => {
+            let market: TokenMarketSnapshot | null = null;
+            let launchStatus: "ready" | "unavailable" | undefined;
+            let lifecycleStage: NonNullable<AddressSignalEvidence["lifecycleStage"]> = "unknown";
+            let failed = false;
+            if (options.marketProvider) {
+              try { market = await options.marketProvider.lookup(chain, tokenAddress); launchStatus = "ready"; }
+              catch (error) { marketStatus = "degraded"; launchStatus = "unavailable"; failed = true; options.onCollectorError?.(error, index); }
+            }
+            const launchTimes = [market?.launchedAt, facts.launchedAt].filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0);
+            const launchedAt = launchTimes.length > 0 ? Math.min(...launchTimes) : undefined;
+            if (options.lifecycleResolver) {
+              try {
+                const launchProviderStatus = launchedAt !== undefined ? "ready" as const : launchStatus;
+                lifecycleStage = await options.lifecycleResolver.resolve({ chain, tokenAddress, observedAt: facts.observedAt, ...(facts.createdAt !== undefined ? { createdAt: facts.createdAt } : {}), ...(launchedAt !== undefined ? { launchedAt } : {}), ...(launchProviderStatus ? { launchProviderStatus } : {}) });
+              } catch (error) { lifecycleStatus = "degraded"; failed = true; options.onCollectorError?.(error, index); }
+            }
+            return Object.freeze({ market, lifecycleStage, failed });
+          })();
+          tokenResolutionCache.set(tokenId, resolution);
+          return resolution;
+        };
         for (const observation of batch.observations) {
           try {
             let chain: string;
             let tokenAddress: string;
             let evidence: AddressSignalEvidence;
             let market: TokenMarketSnapshot | null = null;
-            let observationLaunchStatus: "ready" | "unavailable" | undefined;
             if (observation.event) {
               const mappedEntity = options.repository.entityForAccount(observation.event.accountId);
               const event = mappedEntity ? { ...observation.event, entityId: mappedEntity } : observation.event;
               options.repository.insertTraderEvent(event);
               chain = event.chain.toLowerCase();
               tokenAddress = event.tokenAddress;
-              if (options.marketProvider) {
-                try { market = await options.marketProvider.lookup(chain, tokenAddress); observationLaunchStatus = "ready"; }
-                catch (error) { marketStatus = "degraded"; observationLaunchStatus = "unavailable"; batchFailed = true; options.onCollectorError?.(error, index); }
-              }
-              const launchTimes = [market?.launchedAt, observation.launchedAt].filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0);
-              const launchedAt = launchTimes.length > 0 ? Math.min(...launchTimes) : undefined;
-              let lifecycleStage: AddressSignalEvidence["lifecycleStage"] = "unknown";
-              if (options.lifecycleResolver) {
-                try {
-                  const launchProviderStatus = launchedAt !== undefined ? "ready" as const : observationLaunchStatus;
-                  lifecycleStage = await options.lifecycleResolver.resolve({ chain, tokenAddress, observedAt: event.occurredAt, ...(observation.createdAt !== undefined ? { createdAt: observation.createdAt } : {}), ...(launchedAt !== undefined ? { launchedAt } : {}), ...(launchProviderStatus ? { launchProviderStatus } : {}) });
-                } catch (error) {
-                  lifecycleStatus = "degraded";
-                  batchFailed = true;
-                  options.onCollectorError?.(error, index);
-                }
-              }
+              const resolved = await resolveToken(chain, tokenAddress);
+              market = resolved.market;
+              batchFailed ||= resolved.failed;
+              const lifecycleStage = resolved.lifecycleStage;
               const ability = options.repository.latestTraderAbility(event.entityId, "30d") ?? options.repository.latestTraderAbility(event.entityId, "90d") ?? options.repository.latestTraderAbility(event.entityId, "lifetime");
               evidence = {
                 eventId: event.eventId,

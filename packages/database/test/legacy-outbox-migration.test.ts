@@ -29,11 +29,47 @@ describe("pre-outbox broadcast migration", () => {
       expect.objectContaining({ reviewId: "legacy-review:legacy-valid", status: "legacy_review", validationStatus: "valid", idempotencyKey: signal.idempotencyKey }),
     ]);
     expect(repository.pendingSignalOutbox()).toEqual([]);
-    expect(repository.approveLegacySignalOutbox("legacy-review:legacy-unreplayable", 2_000)).toBe(false);
-    expect(repository.approveLegacySignalOutbox("legacy-review:legacy-valid", 2_000)).toBe(true);
+    expect(repository.approveLegacySignalOutbox({ reviewId: "legacy-review:legacy-unreplayable", operator: "tester", reason: "approved after review", decidedAt: 2_000 })).toBe(false);
+    expect(repository.approveLegacySignalOutbox({ reviewId: "legacy-review:legacy-valid", operator: "tester", reason: "approved after review", decidedAt: 2_000 })).toBe(true);
     expect(repository.pendingSignalOutbox()).toEqual([expect.objectContaining({ broadcastId: "legacy-valid", status: "pending", broadcastSequence: 1 })]);
-    expect(repository.approveLegacySignalOutbox("legacy-review:legacy-valid", 2_001)).toBe(false);
+    expect(repository.approveLegacySignalOutbox({ reviewId: "legacy-review:legacy-valid", operator: "tester", reason: "duplicate", decidedAt: 2_001 })).toBe(false);
     expect(repository.legacySignalOutboxReviews()).toHaveLength(3);
+    repository.close();
+  });
+
+  it("blocks later sequences until earlier reviews are approved or explicitly skipped", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "legacy-order-")), "address.sqlite");
+    const database = new DatabaseSync(path);
+    migrateAddressRadarDatabase(database);
+    const addToken = (token: string, withSecondOutbox: boolean) => {
+      const tokenId = `solana:${token}`;
+      database.prepare("INSERT INTO token_aggregation_state(token_id, chain, token_address, current_score, peak_score, broadcast_count, updated_at) VALUES (?, 'solana', ?, 0.9, 0.9, 2, 2000)").run(tokenId, token);
+      for (const sequence of [1, 2]) {
+        const payload = { ...signal, signalId: tokenId, idempotencyKey: `${tokenId}:broadcast:${sequence}`, token: { ...signal.token, contractAddress: token }, broadcastSequence: sequence, triggeredAt: new Date(sequence * 1_000).toISOString(), expiresAt: new Date(sequence * 1_000 + 300_000).toISOString() };
+        database.prepare("INSERT INTO broadcast_records(broadcast_id, token_id, broadcast_number, strategy_version, score, triggered_at, payload) VALUES (?, ?, ?, 'legacy', 0.9, ?, ?)").run(`${token}-broadcast-${sequence}`, tokenId, sequence, sequence * 1_000, JSON.stringify(payload));
+        if (sequence === 2 && withSecondOutbox) database.prepare("INSERT INTO signal_outbox(outbox_id, broadcast_id, token_id, broadcast_sequence, payload, status, attempt_count, next_retry_at, created_at) VALUES (?, ?, ?, 2, ?, 'pending', 0, 2000, 2000)").run(`outbox:${token}-broadcast-2`, `${token}-broadcast-2`, tokenId, JSON.stringify(payload));
+      }
+    };
+    addToken("Approve", true);
+    addToken("Skip", true);
+    addToken("Review", false);
+    migrateAddressRadarDatabase(database);
+    database.close();
+
+    const repository = openAddressRadarRepository(path);
+    expect(repository.claimSignalOutbox({ workerId: "worker", now: 3_000, leaseMs: 1_000 })).toBeNull();
+    expect(repository.approveLegacySignalOutbox({ reviewId: "legacy-review:Approve-broadcast-1", operator: "alice", reason: "safe to replay", decidedAt: 3_000 })).toBe(true);
+    const first = repository.claimSignalOutbox({ workerId: "worker", now: 3_001, leaseMs: 1_000 })!;
+    expect(first).toMatchObject({ tokenId: "solana:Approve", broadcastSequence: 1 });
+    expect(repository.markSignalOutboxDelivered({ outboxId: first.outboxId, claimToken: first.claimToken!, deliveredAt: 3_002 })).toBe(true);
+    expect(repository.claimSignalOutbox({ workerId: "worker", now: 3_003, leaseMs: 1_000 })).toMatchObject({ tokenId: "solana:Approve", broadcastSequence: 2 });
+
+    expect(repository.skipLegacySignalOutbox({ reviewId: "legacy-review:Skip-broadcast-1", operator: "bob", reason: "known historical delivery", decidedAt: 3_010 })).toBe(true);
+    expect(repository.claimSignalOutbox({ workerId: "worker-2", now: 3_011, leaseMs: 1_000 })).toMatchObject({ tokenId: "solana:Skip", broadcastSequence: 2 });
+    expect(repository.legacySignalOutboxReviews().find(row => row.reviewId === "legacy-review:Skip-broadcast-1")).toMatchObject({ decision: "skipped", decidedBy: "bob", decisionReason: "known historical delivery", decidedAt: 3_010 });
+
+    expect(repository.approveLegacySignalOutbox({ reviewId: "legacy-review:Review-broadcast-2", operator: "alice", reason: "out of order", decidedAt: 3_020 })).toBe(false);
+    expect(repository.skipLegacySignalOutbox({ reviewId: "legacy-review:Review-broadcast-2", operator: "alice", reason: "out of order", decidedAt: 3_020 })).toBe(false);
     repository.close();
   });
 });

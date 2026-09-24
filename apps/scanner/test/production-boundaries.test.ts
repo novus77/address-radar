@@ -70,10 +70,10 @@ describe("scanner production boundaries", () => {
     repository.linkAccountToEntity({ accountId: "a", entityId: "e", confidence: "confirmed", source: "test", observedAt: 1 });
     const lookup = vi.fn(async (_chain: string, tokenAddress: string) => { if (tokenAddress === "Broken") throw new Error("unavailable"); return null; });
     const event = (eventId: string, tokenAddress: string) => ({ eventId, accountId: "a", entityId: "e", chain: "solana", tokenAddress, side: "buy" as const, amountUsd: 1_000, priceUsd: null, marketCapUsd: null, tokenAgeMs: null, occurredAt: 1_000, collectedAt: 1_000, source: "fomo_stream" as const });
-    const runtime = createScannerRuntime({ repository, collectors: [{ collect: async () => ({ status: "ready" as const, observations: [{ createdAt: 500, event: event("broken", "Broken") }, { createdAt: 500, event: event("created", "Token") }] }) }], clock: { now: () => 2_000 }, config: config("unused"), marketProvider: { lookup }, lifecycleResolver: createTokenLifecycleResolver({}) });
+    const runtime = createScannerRuntime({ repository, collectors: [{ collect: async () => ({ status: "ready" as const, observations: [{ createdAt: 500, event: event("broken-a", "Broken") }, { createdAt: 500, event: event("broken-b", "Broken") }, { createdAt: 500, event: event("created", "Token") }] }) }], clock: { now: () => 2_000 }, config: config("unused"), marketProvider: { lookup }, lifecycleResolver: createTokenLifecycleResolver({}) });
     await runtime.runOnce();
     expect(lookup).toHaveBeenCalledTimes(2);
-    expect(repository.addressSignalEvidenceForToken("solana", "Broken", 0)[0]?.lifecycleStage).toBe("unknown");
+    expect(repository.addressSignalEvidenceForToken("solana", "Broken", 0).map(item => item.lifecycleStage)).toEqual(["unknown", "unknown"]);
     expect(repository.addressSignalEvidenceForToken("solana", "Token", 0)[0]?.lifecycleStage).toBe("created");
     repository.close();
   });
@@ -84,10 +84,10 @@ describe("scanner production boundaries", () => {
     repository.upsertTraderEntity({ entityId: "e", lifecycle: "active", manual: false, locked: false, createdAt: 1, updatedAt: 1 });
     repository.linkAccountToEntity({ accountId: "a", entityId: "e", confidence: "confirmed", source: "test", observedAt: 1 });
     const lookup = vi.fn(async () => ({ chain: "solana", tokenAddress: "Token", symbol: null, name: null, imageUrl: null, priceUsd: null, marketCapUsd: null, liquidityUsd: null, createdAt: null, launchedAt: 900, observedAt: new Date(2_000).toISOString() }));
-    const event = { eventId: "launched", accountId: "a", entityId: "e", chain: "solana", tokenAddress: "Token", side: "buy" as const, amountUsd: 1_000, priceUsd: null, marketCapUsd: null, tokenAgeMs: null, occurredAt: 1_000, collectedAt: 1_000, source: "fomo_stream" as const };
-    await createScannerRuntime({ repository, collectors: [{ collect: async () => ({ status: "ready" as const, observations: [{ event }] }) }], clock: { now: () => 2_000 }, config: config("unused"), marketProvider: { lookup }, lifecycleResolver: createTokenLifecycleResolver({}) }).runOnce();
+    const event = (eventId: string) => ({ eventId, accountId: "a", entityId: "e", chain: "solana", tokenAddress: "Token", side: "buy" as const, amountUsd: 1_000, priceUsd: null, marketCapUsd: null, tokenAgeMs: null, occurredAt: 1_000, collectedAt: 1_000, source: "fomo_stream" as const });
+    await createScannerRuntime({ repository, collectors: [{ collect: async () => ({ status: "ready" as const, observations: [{ event: event("launched-a") }, { event: event("launched-b") }] }) }], clock: { now: () => 2_000 }, config: config("unused"), marketProvider: { lookup }, lifecycleResolver: createTokenLifecycleResolver({}) }).runOnce();
     expect(lookup).toHaveBeenCalledTimes(1);
-    expect(repository.addressSignalEvidenceForToken("solana", "Token", 0)[0]?.lifecycleStage).toBe("launched_0_2h");
+    expect(repository.addressSignalEvidenceForToken("solana", "Token", 0).map(item => item.lifecycleStage)).toEqual(["launched_0_2h", "launched_0_2h"]);
     repository.close();
   });
 });

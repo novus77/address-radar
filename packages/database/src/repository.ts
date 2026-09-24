@@ -71,7 +71,7 @@ export interface BroadcastRecord { readonly broadcastId: string; readonly tokenI
 export interface CommitTokenBroadcastInput { readonly chain: string; readonly tokenAddress: string; readonly expectedPreviousBroadcastCount: number; readonly strategyVersion: string; readonly score: number; readonly triggeredAt: number; readonly evidenceIds: readonly string[]; readonly economicKeys: readonly string[]; readonly evaluation: Omit<TokenEvaluationRecord, "tokenId">; readonly payload: unknown; readonly publicSignal: unknown }
 export interface CommitTokenBroadcastResult { readonly inserted: boolean; readonly broadcastNumber: number }
 export interface SignalOutboxRecord { readonly outboxId: string; readonly broadcastId: string; readonly tokenId: string; readonly broadcastSequence: number; readonly payload: unknown; readonly status: "pending" | "processing" | "delivered"; readonly attemptCount: number; readonly nextRetryAt: number; readonly lastError: string | null; readonly claimedBy: string | null; readonly claimedAt: number | null; readonly claimToken: string | null; readonly claimGeneration: number; readonly leaseExpiresAt: number | null; readonly deliveredAt: number | null; readonly createdAt: number }
-export interface LegacySignalOutboxReview { readonly reviewId: string; readonly broadcastId: string; readonly tokenId: string; readonly broadcastSequence: number; readonly idempotencyKey: string; readonly payload: unknown; readonly status: "legacy_review" | "approved" | "dead_letter"; readonly validationStatus: "valid" | "legacy_unreplayable" | "invalid"; readonly reason: string; readonly createdAt: number; readonly reviewedAt: number | null }
+export interface LegacySignalOutboxReview { readonly reviewId: string; readonly broadcastId: string; readonly tokenId: string; readonly broadcastSequence: number; readonly idempotencyKey: string; readonly payload: unknown; readonly status: "legacy_review" | "approved" | "dead_letter"; readonly validationStatus: "valid" | "legacy_unreplayable" | "invalid"; readonly reason: string; readonly createdAt: number; readonly reviewedAt: number | null; readonly decision: "approved" | "skipped" | null; readonly decidedBy: string | null; readonly decisionReason: string | null; readonly decidedAt: number | null }
 export interface CollectorDeadLetter { readonly deadLetterId: string; readonly sourcePath: string; readonly byteOffset: number; readonly contentHash: string; readonly error: string; readonly rawPayload: string; readonly recordedAt: number }
 export interface IdentityResolutionQueueInput { readonly handle: string; readonly accountId: string; readonly priority: number; readonly reason: string; readonly observedAt: number }
 export interface IdentityResolutionQueueRecord { readonly handle: string; readonly accountId: string; readonly priority: number; readonly reasons: readonly string[]; readonly status: "pending" | "exported" | "resolved" | "not_found" | "conflict"; readonly firstSeenAt: number; readonly lastSeenAt: number; readonly nextExportAt: number; readonly lastBatchId: string | null; readonly resolvedAt: number | null }
@@ -150,7 +150,8 @@ export interface AddressRadarRepository extends TokenAggregationRepository, Runt
   markSignalOutboxDelivered(input: { readonly outboxId: string; readonly claimToken: string; readonly deliveredAt: number }): boolean;
   failSignalOutbox(input: { readonly outboxId: string; readonly claimToken: string; readonly nextRetryAt: number; readonly error: string }): boolean;
   legacySignalOutboxReviews(): readonly LegacySignalOutboxReview[];
-  approveLegacySignalOutbox(reviewId: string, approvedAt: number): boolean;
+  approveLegacySignalOutbox(input: { readonly reviewId: string; readonly operator: string; readonly reason: string; readonly decidedAt: number }): boolean;
+  skipLegacySignalOutbox(input: { readonly reviewId: string; readonly operator: string; readonly reason: string; readonly decidedAt: number }): boolean;
   recordCollectorDeadLetter(input: CollectorDeadLetter): boolean;
   collectorDeadLetters(sourcePath: string): readonly CollectorDeadLetter[];
   saveOutcomeObservation(observation: OutcomeObservation, observedAt: number): void;
@@ -181,6 +182,10 @@ export interface AddressRadarRepository extends TokenAggregationRepository, Runt
 const parseStoredPayload = (payload: string): unknown => {
   try { return JSON.parse(payload) as unknown; } catch { return payload; }
 };
+
+const hasUndecidedEarlierReview = (database: DatabaseSync, tokenId: string, broadcastSequence: number): boolean => Boolean(
+  database.prepare("SELECT 1 FROM signal_outbox_migration_review WHERE token_id = ? AND broadcast_sequence < ? AND decision IS NULL LIMIT 1").get(tokenId, broadcastSequence),
+);
 
 const toSignalOutboxRecord = (row: Record<string, unknown>): SignalOutboxRecord => Object.freeze({
   outboxId: row.outbox_id as string,
@@ -1152,6 +1157,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
           SELECT candidate.outbox_id AS outboxId FROM signal_outbox candidate
           WHERE candidate.status = 'pending' AND candidate.next_retry_at <= ?
             AND NOT EXISTS (SELECT 1 FROM signal_outbox earlier WHERE earlier.token_id = candidate.token_id AND earlier.broadcast_sequence < candidate.broadcast_sequence AND earlier.status != 'delivered')
+            AND NOT EXISTS (SELECT 1 FROM signal_outbox_migration_review review WHERE review.token_id = candidate.token_id AND review.broadcast_sequence < candidate.broadcast_sequence AND review.decision IS NULL)
           ORDER BY candidate.created_at, candidate.token_id, candidate.broadcast_sequence LIMIT 1
         `).get(input.now) as { outboxId: string } | undefined;
         if (!candidate) return null;
@@ -1172,21 +1178,31 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     },
 
     legacySignalOutboxReviews() {
-      const rows = database.prepare("SELECT review_id AS reviewId, broadcast_id AS broadcastId, token_id AS tokenId, broadcast_sequence AS broadcastSequence, idempotency_key AS idempotencyKey, payload, status, validation_status AS validationStatus, reason, created_at AS createdAt, reviewed_at AS reviewedAt FROM signal_outbox_migration_review ORDER BY review_id").all() as Array<Record<string, unknown>>;
+      const rows = database.prepare("SELECT review_id AS reviewId, broadcast_id AS broadcastId, token_id AS tokenId, broadcast_sequence AS broadcastSequence, idempotency_key AS idempotencyKey, payload, status, validation_status AS validationStatus, reason, created_at AS createdAt, reviewed_at AS reviewedAt, decision, decided_by AS decidedBy, decision_reason AS decisionReason, decided_at AS decidedAt FROM signal_outbox_migration_review ORDER BY review_id").all() as Array<Record<string, unknown>>;
       return Object.freeze(rows.map(row => Object.freeze({ ...row, payload: parseStoredPayload(row.payload as string) })) as unknown as LegacySignalOutboxReview[]);
     },
 
-    approveLegacySignalOutbox(reviewId, approvedAt) {
+    approveLegacySignalOutbox(input) {
       return transaction(() => {
-        const row = database.prepare("SELECT * FROM signal_outbox_migration_review WHERE review_id = ? AND status = 'legacy_review' AND validation_status = 'valid'").get(reviewId) as { broadcast_id: string; token_id: string; broadcast_sequence: number; payload: string } | undefined;
-        if (!row) return false;
+        if (!input.operator.trim() || !input.reason.trim()) return false;
+        const row = database.prepare("SELECT * FROM signal_outbox_migration_review WHERE review_id = ? AND status = 'legacy_review' AND validation_status = 'valid' AND decision IS NULL").get(input.reviewId) as { broadcast_id: string; token_id: string; broadcast_sequence: number; payload: string } | undefined;
+        if (!row || hasUndecidedEarlierReview(database, row.token_id, row.broadcast_sequence)) return false;
         const inserted = database.prepare(`
           INSERT OR IGNORE INTO signal_outbox(outbox_id, broadcast_id, token_id, broadcast_sequence, payload, status, attempt_count, next_retry_at, last_error, claimed_by, claimed_at, claim_token, claim_generation, lease_expires_at, delivered_at, created_at)
           VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, NULL, NULL, NULL, NULL, 0, NULL, NULL, ?)
-        `).run(`outbox:${row.broadcast_id}`, row.broadcast_id, row.token_id, row.broadcast_sequence, row.payload, approvedAt, approvedAt);
+        `).run(`outbox:${row.broadcast_id}`, row.broadcast_id, row.token_id, row.broadcast_sequence, row.payload, input.decidedAt, input.decidedAt);
         if (inserted.changes !== 1) return false;
-        database.prepare("UPDATE signal_outbox_migration_review SET status = 'approved', reviewed_at = ? WHERE review_id = ?").run(approvedAt, reviewId);
+        database.prepare("UPDATE signal_outbox_migration_review SET status = 'approved', reviewed_at = ?, decision = 'approved', decided_by = ?, decision_reason = ?, decided_at = ? WHERE review_id = ?").run(input.decidedAt, input.operator.trim(), input.reason.trim(), input.decidedAt, input.reviewId);
         return true;
+      });
+    },
+
+    skipLegacySignalOutbox(input) {
+      return transaction(() => {
+        if (!input.operator.trim() || !input.reason.trim()) return false;
+        const row = database.prepare("SELECT token_id AS tokenId, broadcast_sequence AS broadcastSequence FROM signal_outbox_migration_review WHERE review_id = ? AND decision IS NULL").get(input.reviewId) as { tokenId: string; broadcastSequence: number } | undefined;
+        if (!row || hasUndecidedEarlierReview(database, row.tokenId, row.broadcastSequence)) return false;
+        return database.prepare("UPDATE signal_outbox_migration_review SET reviewed_at = ?, decision = 'skipped', decided_by = ?, decision_reason = ?, decided_at = ? WHERE review_id = ? AND decision IS NULL").run(input.decidedAt, input.operator.trim(), input.reason.trim(), input.decidedAt, input.reviewId).changes === 1;
       });
     },
 

@@ -516,7 +516,11 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       validation_status TEXT NOT NULL CHECK(validation_status IN ('valid', 'legacy_unreplayable', 'invalid')),
       reason TEXT NOT NULL,
       created_at INTEGER NOT NULL,
-      reviewed_at INTEGER
+      reviewed_at INTEGER,
+      decision TEXT CHECK(decision IN ('approved', 'skipped')),
+      decided_by TEXT,
+      decision_reason TEXT,
+      decided_at INTEGER
     );
     CREATE TABLE IF NOT EXISTS collector_dead_letters (
       dead_letter_id TEXT PRIMARY KEY,
