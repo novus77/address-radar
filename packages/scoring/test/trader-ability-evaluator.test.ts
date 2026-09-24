@@ -24,6 +24,22 @@ const outcome = (tokenAddress: string, closeMultiple: number, computedAt = NOW):
 });
 
 describe("trader ability evaluator", () => {
+  it("keeps Solana evidence distinct when mint case differs", () => {
+    const result = evaluateTraderAbility({
+      samples: [sample("MintAbC"), sample("Mintabc")],
+      outcomes: [outcome("MintAbC", 10), outcome("Mintabc", 10)],
+      discoveries: [
+        { chain: "solana", tokenAddress: "MintAbC", discoveryType: "market_cap_500k_10x", discoveredAt: NOW - 300_000 },
+        { chain: "solana", tokenAddress: "Mintabc", discoveryType: "market_cap_500k_10x", discoveredAt: NOW - 200_000 },
+      ],
+      asOf: NOW,
+      window: "30d",
+      preferredHorizon: "24h",
+    });
+
+    expect(result.metrics.independentHighMultipleCases).toBe(2);
+  });
+
   it("counts two milestone labels on one token as one independent high-multiple case", () => {
     const result = evaluateTraderAbility({
       samples: [sample("TokenA")], outcomes: [outcome("TokenA", 10)],
@@ -55,5 +71,35 @@ describe("trader ability evaluator", () => {
   it("keeps excluded dust samples out of the scoring denominator", () => {
     const result = evaluateTraderAbility({ samples: [sample("TokenA", { sampleStatus: "dust", exclusionReason: "buy_amount_below_threshold" })], outcomes: [outcome("TokenA", 10)], discoveries: [], asOf: NOW, window: "30d", preferredHorizon: "24h" });
     expect(result.metrics).toMatchObject({ totalSamples: 0, validSamples: 0 });
+  });
+
+  it("deduplicates recomputed outcomes before coverage and confidence scoring", () => {
+    const tokenAddresses = ["TokenA", "TokenB", "TokenC", "TokenD"];
+    const result = evaluateTraderAbility({
+      samples: tokenAddresses.map((tokenAddress) => sample(tokenAddress)),
+      outcomes: tokenAddresses.flatMap((tokenAddress) => [outcome(tokenAddress, 2, NOW - 1), outcome(tokenAddress, 10, NOW)]),
+      discoveries: [],
+      asOf: NOW,
+      window: "30d",
+      preferredHorizon: "24h",
+    });
+
+    expect(result.metrics.validSamples).toBe(4);
+    expect(result.metrics.coverageRate).toBe(1);
+    expect(result.metrics.medianReturn).toBe(10);
+    expect(result.score.sampleConfidence).toBe(0.35);
+  });
+
+  it("uses the later input outcome when recomputations have equal timestamps", () => {
+    const result = evaluateTraderAbility({
+      samples: [sample("TokenA")],
+      outcomes: [outcome("TokenA", 2), outcome("TokenA", 3)],
+      discoveries: [],
+      asOf: NOW,
+      window: "30d",
+      preferredHorizon: "24h",
+    });
+
+    expect(result.metrics.medianReturn).toBe(3);
   });
 });

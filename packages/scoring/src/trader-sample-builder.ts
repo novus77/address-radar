@@ -1,4 +1,4 @@
-import type { TraderEvent, TraderSampleSourceState, TraderTokenSample } from "@address-radar/domain";
+import { normalizeAddressRadarTokenAddress, type TraderEvent, type TraderSampleSourceState, type TraderTokenSample } from "@address-radar/domain";
 
 export interface BuildTraderTokenSampleInput {
   readonly events: readonly TraderEvent[];
@@ -46,7 +46,7 @@ export function buildTraderTokenSample(input: BuildTraderTokenSampleInput): Trad
 }
 
 export function traderTokenSampleId(entityId: string, chain: string, tokenAddress: string): string {
-  return `${entityId}:${chain.toLowerCase()}:${tokenAddress.toLowerCase()}`;
+  return `${entityId}:${chain.toLowerCase()}:${normalizeAddressRadarTokenAddress(chain, tokenAddress)}`;
 }
 
 function sumAmounts(events: readonly TraderEvent[]): number {
@@ -61,12 +61,24 @@ function weightedAverage(events: readonly TraderEvent[], value: (event: TraderEv
 }
 
 function sourceState(events: readonly TraderEvent[]): TraderSampleSourceState {
-  const hasFomo = events.some(event => event.source === "fomo_stream");
+  const hasFomo = events.some(event => isFomoSource(event.source));
   const hasOnchain = events.some(event => event.source === "onchain_wallet");
   if (hasFomo && hasOnchain) return "FOMO_AND_ONCHAIN";
   if (hasFomo) return "FOMO_ONLY";
   if (hasOnchain) return "ONCHAIN_ONLY";
   return "UNKNOWN";
+}
+
+function isFomoSource(source: TraderEvent["source"]): boolean {
+  switch (source) {
+    case "fomo_stream":
+    case "fomo_profile":
+    case "fomo_leaderboard":
+    case "fomo_token_history":
+      return true;
+    case "onchain_wallet":
+      return false;
+  }
 }
 
 function lifecycleStage(firstBuyAt: number, launchAt: number | null): string {

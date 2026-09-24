@@ -10,6 +10,23 @@ const event = (overrides: Partial<TraderEvent> = {}): TraderEvent => ({
 });
 
 describe("trader token sample builder", () => {
+  it("preserves case-sensitive Solana mints in sample identities", () => {
+    const upper = buildTraderTokenSample({ events: [event({ tokenAddress: "MintAbC" })], launchAt: null, now: 2_000, dustThresholdUsd: 25 });
+    const lower = buildTraderTokenSample({ events: [event({ tokenAddress: "Mintabc" })], launchAt: null, now: 2_000, dustThresholdUsd: 25 });
+
+    expect(upper.sampleId).not.toBe(lower.sampleId);
+    expect(upper.sampleId).toBe("entity-1:solana:MintAbC");
+    expect(lower.sampleId).toBe("entity-1:solana:Mintabc");
+  });
+
+  it("normalizes case-insensitive EVM addresses in sample identities", () => {
+    const upper = buildTraderTokenSample({ events: [event({ chain: "ethereum", tokenAddress: "0xAbCd" })], launchAt: null, now: 2_000, dustThresholdUsd: 25 });
+    const lower = buildTraderTokenSample({ events: [event({ chain: "ethereum", tokenAddress: "0xabcd" })], launchAt: null, now: 2_000, dustThresholdUsd: 25 });
+
+    expect(upper.sampleId).toBe(lower.sampleId);
+    expect(upper.sampleId).toBe("entity-1:ethereum:0xabcd");
+  });
+
   it("folds a trader token history into one weighted sample", () => {
     const result = buildTraderTokenSample({
       events: [
@@ -31,5 +48,15 @@ describe("trader token sample builder", () => {
 
   it("rejects mixed trader or token event sets", () => {
     expect(() => buildTraderTokenSample({ events: [event(), event({ eventId: "event-2", tokenAddress: "TokenB" })], launchAt: null, now: 2_000, dustThresholdUsd: 25 })).toThrow("same entity and token");
+  });
+
+  it.each(["fomo_stream", "fomo_profile", "fomo_leaderboard", "fomo_token_history"] as const)("maps %s to FOMO_ONLY", (source) => {
+    const result = buildTraderTokenSample({ events: [event({ source })], launchAt: null, now: 2_000, dustThresholdUsd: 25 });
+    expect(result.sourceState).toBe("FOMO_ONLY");
+  });
+
+  it.each(["onchain_wallet"] as const)("does not map %s to a Fomo source", (source) => {
+    const result = buildTraderTokenSample({ events: [event({ source })], launchAt: null, now: 2_000, dustThresholdUsd: 25 });
+    expect(result.sourceState).toBe("ONCHAIN_ONLY");
   });
 });

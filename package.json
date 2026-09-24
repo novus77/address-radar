@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "pnpm -r --if-present build && tsc -p tsconfig.json --noEmit",
+    "smoke:packages": "pnpm --dir packages/scoring exec node --input-type=module -e \"const domain = await import('@address-radar/domain'); const scoring = await import('@address-radar/scoring'); if (typeof domain.createCanonicalTrader !== 'function' || typeof scoring.scoreTrader !== 'function') throw new Error('Built package exports unavailable'); console.log('built package imports: ok')\"",
     "typecheck": "pnpm -r --if-present typecheck && tsc -p tsconfig.json --noEmit --pretty false",
     "test": "vitest run",
     "test:e2e": "playwright test --pass-with-no-tests"

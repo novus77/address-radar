@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { CANDIDATE_MILESTONES, evidenceAdmissionClass, strongestSatisfiedTier, type CandidateEvidenceType } from "@address-radar/scoring";
+import { CANDIDATE_MILESTONES, evidenceAdmissionClass, strongestSatisfiedTier, type CandidateEvidenceTier, type CandidateEvidenceType } from "@address-radar/scoring";
 
 describe("candidate tier policy", () => {
   it("defines the five approved candidate capability milestones", () => {
@@ -34,5 +34,18 @@ describe("candidate tier policy", () => {
     ["market_cap_1m_10x", "strong"], ["market_cap_1m_20x", "strong"],
   ] satisfies ReadonlyArray<readonly [CandidateEvidenceType, "early" | "strong"]>)("classifies %s evidence as %s", (type, expectedClass) => {
     expect(evidenceAdmissionClass(type)).toBe(expectedClass);
+  });
+
+  it("freezes milestones, tier arrays, and tier display definitions", () => {
+    const milestone = CANDIDATE_MILESTONES[0]!;
+    const tier = milestone.tiers[0]!;
+
+    expect(Object.isFrozen(CANDIDATE_MILESTONES)).toBe(true);
+    expect(Object.isFrozen(milestone)).toBe(true);
+    expect(Object.isFrozen(milestone.tiers)).toBe(true);
+    expect(Object.isFrozen(tier)).toBe(true);
+    expect(() => (milestone.tiers as CandidateEvidenceTier[]).pop()).toThrow(TypeError);
+    expect(() => { (tier as { label: string }).label = "mutated"; }).toThrow(TypeError);
+    expect(tier.label).toBe("100K / 3x");
   });
 });

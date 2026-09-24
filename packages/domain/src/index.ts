@@ -17,7 +17,7 @@ export { TRADER_OUTCOME_HORIZONS } from "./trader-history.js";
 export type {
   MarketObservation, OutcomeCoverageStatus, TraderAbilitySnapshot, TraderAbilityWindow,
   TraderBackfillJob, TraderBackfillStatus, TraderOutcomeHorizon, TraderSampleSourceState,
-  TraderSampleStatus, TraderTokenOutcome, TraderTokenSample,
+  TraderSampleStatus, TraderStyleCounts, TraderTokenOutcome, TraderTokenSample,
 } from "./trader-history.js";
 export { analyzeWalletPositions } from "./wallet-analysis.js";
 export type { WalletAnalysisMetrics, WalletAnalysisPosition } from "./wallet-analysis.js";

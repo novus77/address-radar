@@ -49,13 +49,13 @@ export function evaluateTraderPerformance(input: {
   return Object.freeze({ snapshot, lifecycle });
 }
 
-function deriveStyles(metrics: ReturnType<typeof evaluateTraderAbility>["metrics"]): Readonly<Record<string, number>> {
+function deriveStyles(metrics: ReturnType<typeof evaluateTraderAbility>["metrics"]): TraderAbilitySnapshot["styles"] {
   return Object.freeze({
-    EARLY_HUNTER: round(metrics.earlyEntryRate),
+    EARLY_LAUNCH: round(metrics.earlyEntryRate),
     HIGH_MULTIPLE: round(0.5 * metrics.hit5xRate + 0.5 * metrics.hit10xRate),
     LARGE_CAP: round(1 - metrics.earlyEntryRate),
     OLD_TOKEN_MOMENTUM: 0,
-  });
+  } satisfies TraderAbilitySnapshot["styles"]);
 }
 
 function round(value: number): number {

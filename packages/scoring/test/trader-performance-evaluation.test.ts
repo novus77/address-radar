@@ -28,6 +28,7 @@ describe("trader performance evaluation", () => {
     });
     expect(result.snapshot).toEqual(expect.objectContaining({ entityId: "entity-1", strategyVersion: "trader-ability-v2" }));
     expect(result.snapshot.metrics).toEqual(expect.objectContaining({ validSamples: 20, independentHighMultipleCases: 3 }));
+    expect(Object.keys(result.snapshot.styles).sort()).toEqual(["EARLY_LAUNCH", "HIGH_MULTIPLE", "LARGE_CAP", "OLD_TOKEN_MOMENTUM"]);
     expect(result.lifecycle).toEqual(expect.objectContaining({ next: "active", changed: true }));
   });
 

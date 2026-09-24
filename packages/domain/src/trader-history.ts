@@ -68,9 +68,11 @@ export interface TraderAbilitySnapshot {
   readonly coverageConfidence: number;
   readonly metrics: Readonly<Record<string, number>>;
   readonly components: Readonly<Record<string, number>>;
-  readonly styles: Readonly<Record<string, number>>;
+  readonly styles: TraderStyleCounts;
   readonly createdAt: number;
 }
+
+export type TraderStyleCounts = Readonly<Partial<Record<TraderStyle, number>>>;
 
 export type TraderBackfillStatus = "pending" | "running" | "completed" | "failed";
 
@@ -87,3 +89,4 @@ export interface TraderBackfillJob {
   readonly createdAt: number;
   readonly updatedAt: number;
 }
+import type { TraderStyle } from "./model.js";

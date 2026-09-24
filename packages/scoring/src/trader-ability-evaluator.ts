@@ -1,4 +1,4 @@
-import type { TraderAbilityWindow, TraderOutcomeHorizon, TraderTokenOutcome, TraderTokenSample } from "@address-radar/domain";
+import { normalizeAddressRadarTokenAddress, type TraderAbilityWindow, type TraderOutcomeHorizon, type TraderTokenOutcome, type TraderTokenSample } from "@address-radar/domain";
 
 import { isCandidateEvidenceType } from "./candidate-tier-policy.js";
 import { scoreTraderAbility, type TraderAbilityScore } from "./scoring.js";
@@ -50,11 +50,11 @@ export function evaluateTraderAbility(input: {
   const samples = input.samples.filter(sample => sample.sampleStatus === "included" && sample.firstBuyAt >= since && sample.firstBuyAt <= input.asOf);
   const sampleKeys = new Set(samples.map(sample => tokenKey(sample.chain, sample.tokenAddress)));
   const sampleIds = new Set(samples.map(sample => sample.sampleId));
-  const outcomes = input.outcomes.filter(outcome => sampleIds.has(outcome.sampleId)
+  const outcomes = latestOutcomes(input.outcomes.filter(outcome => sampleIds.has(outcome.sampleId)
     && outcome.horizon === input.preferredHorizon
     && outcome.coverageStatus === "complete"
     && outcome.computedAt <= input.asOf
-    && outcome.closeMultiple !== null);
+    && outcome.closeMultiple !== null));
   const returns = outcomes.map(outcome => outcome.closeMultiple!);
   const positiveGains = returns.map(value => Math.max(0, value - 1));
   const totalPositiveGain = sum(positiveGains);
@@ -106,7 +106,17 @@ function windowStart(window: TraderAbilityWindow, asOf: number): number {
 }
 
 function tokenKey(chain: string, tokenAddress: string): string {
-  return `${chain.toLowerCase()}:${tokenAddress.toLowerCase()}`;
+  return `${chain.toLowerCase()}:${normalizeAddressRadarTokenAddress(chain, tokenAddress)}`;
+}
+
+function latestOutcomes(outcomes: readonly TraderTokenOutcome[]): readonly TraderTokenOutcome[] {
+  const latestBySampleAndHorizon = new Map<string, TraderTokenOutcome>();
+  for (const outcome of outcomes) {
+    const key = `${outcome.sampleId}:${outcome.horizon}`;
+    const current = latestBySampleAndHorizon.get(key);
+    if (!current || outcome.computedAt >= current.computedAt) latestBySampleAndHorizon.set(key, outcome);
+  }
+  return [...latestBySampleAndHorizon.values()];
 }
 
 function sum(values: readonly number[]): number {

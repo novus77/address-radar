@@ -26,7 +26,16 @@ export interface CandidateMilestoneDefinition {
   tiers: readonly CandidateEvidenceTier[]
 }
 
-export const CANDIDATE_MILESTONES: readonly CandidateMilestoneDefinition[] = [
+function freezeCandidateMilestones(milestones: CandidateMilestoneDefinition[]): readonly CandidateMilestoneDefinition[] {
+  for (const milestone of milestones) {
+    for (const tier of milestone.tiers) Object.freeze(tier);
+    Object.freeze(milestone.tiers);
+    Object.freeze(milestone);
+  }
+  return Object.freeze(milestones);
+}
+
+export const CANDIDATE_MILESTONES: readonly CandidateMilestoneDefinition[] = freezeCandidateMilestones([
   {
     marketCapUsd: 100_000,
     tiers: [
@@ -115,7 +124,7 @@ export const CANDIDATE_MILESTONES: readonly CandidateMilestoneDefinition[] = [
       },
     ],
   },
-]
+]);
 
 const evidenceTiers = CANDIDATE_MILESTONES.flatMap((milestone) => milestone.tiers)
 
