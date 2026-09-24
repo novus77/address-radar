@@ -11,20 +11,26 @@ export interface ShadowTableComparison { readonly table: string; readonly legacy
 export interface ShadowComparisonReport { readonly matches: boolean; readonly tables: readonly ShadowTableComparison[] }
 
 const exists = (database: DatabaseSync, table: string): boolean => Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
-const semanticRows = (database: DatabaseSync, table: string): readonly Record<string, unknown>[] => {
-  const rows = database.prepare(`SELECT * FROM ${identifier(table)}`).all() as Array<Record<string, unknown>>;
-  return rows.map(row => Object.fromEntries(Object.entries(row).filter(([key]) => !excludedColumns.has(key)))).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+const semanticDigest = (database: DatabaseSync, table: string): { readonly count: number; readonly hash: string } => {
+  const columns = (database.prepare(`PRAGMA table_info(${identifier(table)})`).all() as Array<{ name: string }>).map(row => row.name).filter(column => !excludedColumns.has(column));
+  const selected = columns.map(identifier).join(", ");
+  const hash = createHash("sha256");
+  let count = 0;
+  for (const row of database.prepare(`SELECT ${selected} FROM ${identifier(table)} ORDER BY ${selected}`).iterate() as Iterable<Record<string, unknown>>) {
+    hash.update(JSON.stringify(row));
+    hash.update("\n");
+    count += 1;
+  }
+  return Object.freeze({ count, hash: hash.digest("hex") });
 };
-const hash = (rows: readonly Record<string, unknown>[]): string => createHash("sha256").update(JSON.stringify(rows)).digest("hex");
 
 export function compareShadowState(input: { readonly legacy: string; readonly current: string }): ShadowComparisonReport {
   const legacy = new DatabaseSync(resolve(input.legacy), { readOnly: true });
   const current = new DatabaseSync(resolve(input.current), { readOnly: true });
   try {
     const reports = semanticTables.filter(table => exists(legacy, table) && exists(current, table)).map(table => {
-      const legacyRows = semanticRows(legacy, table); const currentRows = semanticRows(current, table);
-      const legacyHash = hash(legacyRows); const currentHash = hash(currentRows);
-      return Object.freeze({ table, legacyCount: legacyRows.length, currentCount: currentRows.length, legacyHash, currentHash, matches: legacyRows.length === currentRows.length && legacyHash === currentHash });
+      const legacyDigest = semanticDigest(legacy, table); const currentDigest = semanticDigest(current, table);
+      return Object.freeze({ table, legacyCount: legacyDigest.count, currentCount: currentDigest.count, legacyHash: legacyDigest.hash, currentHash: currentDigest.hash, matches: legacyDigest.count === currentDigest.count && legacyDigest.hash === currentDigest.hash });
     });
     return Object.freeze({ matches: reports.every(report => report.matches), tables: Object.freeze(reports) });
   } finally { legacy.close(); current.close(); }
