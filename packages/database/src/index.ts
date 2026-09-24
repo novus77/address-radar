@@ -5,6 +5,8 @@ export type {
   AddressEvidenceSourceState,
   AddressRadarRepository,
   AddressSignalEvidence,
+  AutomaticIdentityConflict,
+  AutomaticIdentityResolutionCompletion,
   BroadcastRecord,
   CandidateDiscoveryInput,
   CommitTokenBroadcastInput,

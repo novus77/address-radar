@@ -72,6 +72,10 @@ export interface IdentityResolutionBatchRecord { readonly batchId: string; reado
 export interface WalletMappingObservationInput { readonly observationId: string; readonly importId: string; readonly batchId: string | null; readonly handle: string; readonly accountId: string; readonly chainFamily: "solana" | "evm"; readonly address: string; readonly provider: string; readonly observedAt: number; readonly importedAt: number }
 export interface IdentityConflictRecord { readonly conflictId: string; readonly handle: string; readonly accountId: string; readonly chainFamily: "solana" | "evm"; readonly address: string; readonly conflictingAccountId: string; readonly status: "pending" | "accepted" | "rejected"; readonly payload: unknown; readonly createdAt: number; readonly resolvedAt: number | null; readonly resolution: string | null }
 export interface SuccessfulAutomaticIdentityResolutionInput { readonly account: FomoAccountInput; readonly wallets: readonly WalletIdentityInput[]; readonly cache: IdentityResolutionCache; readonly occurredAt: number }
+export interface AutomaticIdentityConflict { readonly conflictId: string; readonly chainFamily: "solana" | "evm"; readonly address: string; readonly conflictingAccountId: string }
+export type AutomaticIdentityResolutionCompletion =
+  | { readonly kind: "completed"; readonly entityId: string | null }
+  | { readonly kind: "conflict"; readonly conflicts: readonly AutomaticIdentityConflict[] };
 
 export interface AddressRadarRepository {
   upsertFomoAccount(input: FomoAccountInput): void;
@@ -147,7 +151,7 @@ export interface AddressRadarRepository {
   saveWalletMappingObservation(input: WalletMappingObservationInput): void;
   markIdentityResolution(handle: string, status: "resolved" | "not_found" | "conflict", occurredAt: number): void;
   completeIdentityResolution(handle: string, accountId: string, occurredAt: number): string | null;
-  completeAutomaticIdentityResolution(input: SuccessfulAutomaticIdentityResolutionInput): string | null;
+  completeAutomaticIdentityResolution(input: SuccessfulAutomaticIdentityResolutionInput): AutomaticIdentityResolutionCompletion;
   reconcileIdentityResolution(handle: string, accountId: string, occurredAt: number): string | null;
   completeIdentityAdmission(accountId: string, occurredAt: number): string | null;
   markIdentityResolutionBatch(batchId: string, status: "partially_imported" | "imported", importedAt: number): void;
@@ -1207,10 +1211,19 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
           ...wallet,
           address: normalizeWalletAddress(wallet.chainFamily, wallet.address),
         }));
-        const conflicts = wallets.flatMap((wallet) => {
+        const conflictsByAddress = new Map<string, { wallet: WalletIdentityInput; owner: string; conflictId: string }>();
+        for (const wallet of wallets) {
           const owner = repository.walletOwner(wallet.chainFamily, wallet.address);
-          return owner && owner !== input.account.accountId ? [{ wallet, owner }] : [];
-        });
+          if (owner && owner !== input.account.accountId) {
+            const key = `${wallet.chainFamily}:${wallet.address}`;
+            conflictsByAddress.set(key, {
+              wallet,
+              owner,
+              conflictId: `automatic-identity-conflict:${handle}:${wallet.chainFamily}:${wallet.address}:${owner}`,
+            });
+          }
+        }
+        const conflicts = [...conflictsByAddress.values()];
 
         for (const wallet of wallets) {
           if (!conflicts.some((conflict) => conflict.wallet.chainFamily === wallet.chainFamily && conflict.wallet.address === wallet.address)) {
@@ -1221,19 +1234,34 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         if (conflicts.length > 0) {
           database.prepare("DELETE FROM identity_resolution_jobs WHERE handle = ?").run(handle);
           for (const conflict of conflicts) {
-            repository.createIdentityConflict({
-              conflictId: `automatic-identity-conflict:${handle}:${conflict.wallet.chainFamily}:${conflict.wallet.address}:${conflict.owner}`,
+            database.prepare(`
+              INSERT INTO identity_conflicts(
+                conflict_id, handle, account_id, chain_family, address, conflicting_account_id,
+                status, payload, created_at, resolved_at, resolution
+              ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, NULL, NULL)
+              ON CONFLICT(conflict_id) DO UPDATE SET
+                handle = excluded.handle,
+                account_id = excluded.account_id,
+                chain_family = excluded.chain_family,
+                address = excluded.address,
+                conflicting_account_id = excluded.conflicting_account_id,
+                status = 'pending',
+                payload = excluded.payload,
+                created_at = excluded.created_at,
+                resolved_at = NULL,
+                resolution = NULL
+            `).run(
+              conflict.conflictId,
               handle,
-              accountId: input.account.accountId,
-              chainFamily: conflict.wallet.chainFamily,
-              address: conflict.wallet.address,
-              conflictingAccountId: conflict.owner,
-              status: "pending",
-              payload: { source: "fomoscan", observedAt: conflict.wallet.observedAt },
-              createdAt: input.occurredAt,
-              resolvedAt: null,
-              resolution: null,
-            });
+              input.account.accountId,
+              conflict.wallet.chainFamily,
+              conflict.wallet.address,
+              conflict.owner,
+              JSON.stringify({ source: "fomoscan", observedAt: conflict.wallet.observedAt }),
+              input.occurredAt,
+            );
+            const actionable = database.prepare("SELECT status FROM identity_conflicts WHERE conflict_id = ?").get(conflict.conflictId) as { status: IdentityConflictRecord["status"] } | undefined;
+            if (actionable?.status !== "pending") throw new Error(`Identity conflict is not actionable: ${conflict.conflictId}`);
           }
           const updated = database.prepare(`
             UPDATE identity_resolution_queue
@@ -1241,11 +1269,22 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
             WHERE handle = ? AND account_id = ?
           `).run(input.occurredAt + 12 * 60 * 60_000, handle, input.account.accountId);
           if (updated.changes !== 1) throw new Error(`Identity resolution queue update failed for ${handle}`);
-          return null;
+          return Object.freeze({
+            kind: "conflict" as const,
+            conflicts: Object.freeze(conflicts.map((conflict) => Object.freeze({
+              conflictId: conflict.conflictId,
+              chainFamily: conflict.wallet.chainFamily,
+              address: conflict.wallet.address,
+              conflictingAccountId: conflict.owner,
+            }))),
+          });
         }
 
         repository.saveIdentityResolution(input.cache);
-        return completeIdentityResolutionInTransaction(input.cache.handle, input.account.accountId, input.occurredAt);
+        return Object.freeze({
+          kind: "completed" as const,
+          entityId: completeIdentityResolutionInTransaction(input.cache.handle, input.account.accountId, input.occurredAt),
+        });
       });
     },
 

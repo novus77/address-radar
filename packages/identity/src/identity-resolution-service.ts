@@ -1,5 +1,5 @@
 import { normalizeFomoHandle, type ChainFamily } from "@address-radar/domain";
-import type { AddressRadarRepository } from "@address-radar/database";
+import type { AddressRadarRepository, AutomaticIdentityConflict } from "@address-radar/database";
 
 export interface ResolvedFomoWallet {
   readonly chainFamily: ChainFamily;
@@ -19,7 +19,10 @@ export const IDENTITY_CACHE_MS = 30 * 24 * 60 * 60 * 1_000;
 export const NOT_OBSERVED_CACHE_MS = 24 * 60 * 60 * 1_000;
 export const NO_PREVIEW_CACHE_MS = 30 * 24 * 60 * 60 * 1_000;
 
-export type IdentityResolutionResult = FomoScanLookupResult | { readonly kind: "deferred"; readonly reason: "negative_cache"; readonly retryAt: number };
+export type IdentityResolutionResult =
+  | FomoScanLookupResult
+  | { readonly kind: "deferred"; readonly reason: "negative_cache"; readonly retryAt: number }
+  | { readonly kind: "conflict"; readonly handle: string; readonly accountId: string; readonly conflicts: readonly AutomaticIdentityConflict[] };
 
 export function createIdentityResolutionService(input: {
   readonly repository: AddressRadarRepository;
@@ -46,12 +49,20 @@ export function createIdentityResolutionService(input: {
 
       const result = await input.client.byHandle(handle);
       if (result.kind === "resolved") {
-        input.repository.completeAutomaticIdentityResolution({
+        const completion = input.repository.completeAutomaticIdentityResolution({
           account: { accountId: result.accountId, handle: result.handle, firstSeenAt: clock, lastSeenAt: clock },
           wallets: result.wallets.map((wallet) => ({ accountId: result.accountId, ...wallet, confidence: "confirmed", source: "fomoscan", observedAt: result.asOf })),
           cache: { handle, status: "resolved", accountId: result.accountId, expiresAt: clock + IDENTITY_CACHE_MS, nextAttemptAt: clock + IDENTITY_CACHE_MS, attemptCount: 0, payload: JSON.stringify(result), updatedAt: clock },
           occurredAt: clock,
         });
+        if (completion.kind === "conflict") {
+          return Object.freeze({
+            kind: "conflict" as const,
+            handle,
+            accountId: result.accountId,
+            conflicts: completion.conflicts,
+          });
+        }
         return result;
       }
       if (result.kind === "not_observed") {

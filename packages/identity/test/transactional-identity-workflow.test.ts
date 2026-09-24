@@ -238,4 +238,83 @@ describe("automatic identity ownership conflict", () => {
     }]);
     registry.close();
   });
+
+  it("reopens a rejected conflict and returns an actionable conflict result", async () => {
+    const path = databasePath("automatic-identity-conflict-retry");
+    const repository = openAddressRadarRepository(path);
+    repository.upsertFomoAccount({ accountId: "old-account", handle: "OldOwner", firstSeenAt: 1, lastSeenAt: 1 });
+    repository.upsertFomoAccount({ accountId: "new-account", handle: "RetryCandidate", firstSeenAt: 1, lastSeenAt: 1 });
+    repository.upsertTraderEntity({ entityId: "old-entity", lifecycle: "probation", manual: false, locked: false, createdAt: 1, updatedAt: 1 });
+    repository.upsertTraderEntity({ entityId: "new-entity", lifecycle: "candidate", manual: false, locked: false, createdAt: 1, updatedAt: 1 });
+    repository.linkAccountToEntity({ entityId: "old-entity", accountId: "old-account", confidence: "confirmed", source: "existing", observedAt: 1 });
+    repository.linkAccountToEntity({ entityId: "new-entity", accountId: "new-account", confidence: "high", source: "candidate", observedAt: 1 });
+    repository.attachWallet({ accountId: "old-account", chainFamily: "evm", address: "0x2222222222222222222222222222222222222222", confidence: "confirmed", source: "existing", observedAt: 1 });
+    repository.completeIdentityAdmission("old-account", 1);
+    repository.enqueueIdentityResolution({ handle: "RetryCandidate", accountId: "new-account", priority: 90, reason: "automatic_resolution", observedAt: 2 });
+    let observedAt = 3;
+    const service = createIdentityResolutionService({
+      repository,
+      now: () => observedAt,
+      client: {
+        byHandle: async () => ({
+          kind: "resolved" as const,
+          accountId: "new-account",
+          handle: "RetryCandidate",
+          wallets: [{ chainFamily: "evm" as const, address: "0x2222222222222222222222222222222222222222" }],
+          asOf: observedAt,
+        }),
+      },
+    });
+
+    await service.resolve("RetryCandidate");
+    const firstConflict = repository.identityConflicts("pending")[0]!;
+    repository.resolveIdentityConflict({
+      conflictId: firstConflict.conflictId,
+      decision: "rejected",
+      resolution: "insufficient_evidence",
+      occurredAt: 4,
+    });
+
+    observedAt = 5;
+    const retryResult = await service.resolve("RetryCandidate");
+
+    expect(retryResult).toEqual({
+      kind: "conflict",
+      handle: "retrycandidate",
+      accountId: "new-account",
+      conflicts: [{
+        conflictId: firstConflict.conflictId,
+        chainFamily: "evm",
+        address: "0x2222222222222222222222222222222222222222",
+        conflictingAccountId: "old-account",
+      }],
+    });
+    expect(repository.identityConflicts("pending")).toEqual([
+      expect.objectContaining({
+        conflictId: firstConflict.conflictId,
+        status: "pending",
+        resolvedAt: null,
+        resolution: null,
+        createdAt: 5,
+      }),
+    ]);
+    expect(repository.identityConflicts()).toHaveLength(1);
+    expect(repository.identityResolutionQueue(10)).toEqual([
+      expect.objectContaining({ handle: "retrycandidate", accountId: "new-account", status: "conflict" }),
+    ]);
+    expect(repository.identityResolution("RetryCandidate")).toBeNull();
+    expect(repository.account("new-account")?.wallets).toEqual([]);
+    expect(repository.traderEntity("new-entity")?.lifecycle).toBe("candidate");
+    repository.close();
+
+    const registry = openMonitoringRegistry(path);
+    expect(registry.version()).toBe(1);
+    expect(registry.wallets("evm")).toEqual([{
+      address: "0x2222222222222222222222222222222222222222",
+      accountId: "old-account",
+      entityId: "old-entity",
+      lifecycle: "probation",
+    }]);
+    registry.close();
+  });
 });
