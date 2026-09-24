@@ -15,13 +15,12 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
   const repository = openAddressRadarRepository(config.databasePath);
   const monitoringRegistry = openMonitoringRegistry(config.databasePath);
   const marketProvider = createDexScreenerClient({ ...(config.marketBaseUrl ? { baseUrl: config.marketBaseUrl } : {}) });
-  const lifecycleResolver = createTokenLifecycleResolver({ provider: {
-    async tokenFacts(request) {
+  const lifecycleResolver = createTokenLifecycleResolver({ launchProvider: {
+    async launchFacts(request) {
       const market = await marketProvider.lookup(request.chain, request.tokenAddress);
       if (!market) return { status: "unavailable" as const, markets: [] };
       return {
         status: "ready" as const,
-        ...(market.createdAt != null ? { createdAt: market.createdAt } : {}),
         markets: market.launchedAt != null ? [{ launchedAt: market.launchedAt }] : [],
       };
     },

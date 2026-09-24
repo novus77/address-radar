@@ -12,6 +12,13 @@ import {
 } from "@address-radar/identity";
 
 describe("trader identity workflow", () => {
+  const ability = (entityId: string, asOf = 3) => ({
+    snapshotId: `ability-${entityId}-${asOf}`, entityId, window: "30d" as const, asOf,
+    strategyVersion: "address-v1", rawQuality: 0.9, adjustedQuality: 0.8,
+    sampleConfidence: 0.85, coverageConfidence: 1, metrics: {}, components: {},
+    styles: { HIGH_MULTIPLE: 0.9 }, createdAt: asOf,
+  });
+
   it("closes the active resolution item and durably registers the resolved candidate for monitoring", () => {
     const databasePath = join(mkdtempSync(join(tmpdir(), "address-identity-")), "address.sqlite");
     const repository = openAddressRadarRepository(databasePath);
@@ -45,6 +52,31 @@ describe("trader identity workflow", () => {
       lifecycle: "probation",
     }]);
     registry.close();
+  });
+
+  it("synchronizes signal eligibility from confirmed identity, ability, and lifecycle", () => {
+    const repository = openAddressRadarRepository(":memory:");
+    repository.upsertFomoAccount({ accountId: "account", handle: "Eligible", firstSeenAt: 1, lastSeenAt: 1 });
+    repository.upsertTraderEntity({ entityId: "entity", lifecycle: "probation", manual: false, locked: false, createdAt: 1, updatedAt: 1 });
+    repository.linkAccountToEntity({ entityId: "entity", accountId: "account", confidence: "confirmed", source: "fomoscan", observedAt: 1 });
+    repository.saveTraderAbilitySnapshot(ability("entity"));
+
+    expect(repository.traderSignalProfile("entity")).toMatchObject({ mapped: true, monitoringEnabled: false });
+    repository.updateTraderLifecycle("entity", "active", 4);
+    expect(repository.traderSignalProfile("entity")).toMatchObject({ mapped: true, monitoringEnabled: true, fomoMonitoringEnabled: true });
+    repository.updateTraderLifecycle("entity", "suspended", 5);
+    expect(repository.traderSignalProfile("entity")).toMatchObject({ monitoringEnabled: false });
+    repository.close();
+  });
+
+  it.each(["low", "medium"] as const)("does not map %s-confidence identities for signals", (confidence) => {
+    const repository = openAddressRadarRepository(":memory:");
+    repository.upsertFomoAccount({ accountId: confidence, handle: confidence, firstSeenAt: 1, lastSeenAt: 1 });
+    repository.upsertTraderEntity({ entityId: confidence, lifecycle: "elite", manual: false, locked: false, createdAt: 1, updatedAt: 1 });
+    repository.linkAccountToEntity({ entityId: confidence, accountId: confidence, confidence, source: "test", observedAt: 1 });
+    repository.saveTraderAbilitySnapshot(ability(confidence));
+    expect(repository.traderSignalProfile(confidence)).toMatchObject({ mapped: false, monitoringEnabled: false });
+    repository.close();
   });
 });
 

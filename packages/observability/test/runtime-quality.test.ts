@@ -13,6 +13,9 @@ describe("runtime quality snapshot", () => {
       providerStatuses: { fomo: "ready", onchain: "degraded" },
     })).toEqual({
       recordedAt: 20_000,
+      startedAt: 20_000,
+      lastEventAt: 18_000,
+      latestAggregationAt: 19_000,
       eventFreshnessMs: 2_000,
       queueLagMs: 5_000,
       aggregationLagMs: 1_000,
@@ -26,6 +29,17 @@ describe("runtime quality snapshot", () => {
     expect(createRuntimeQualitySnapshot({
       now: 100_000, lastEventAt: 1_000, oldestQueuedAt: null, latestAggregationAt: 1_000,
       registryVersion: 8, providerStatuses: { fomo: "ready" }, staleAfterMs: 10_000,
+    }).status).toBe("degraded");
+  });
+
+  it("reports a ready source without events as warming before it becomes stale", () => {
+    expect(createRuntimeQualitySnapshot({
+      now: 5_000, startedAt: 1_000, lastEventAt: null, oldestQueuedAt: null, latestAggregationAt: null,
+      registryVersion: 1, providerStatuses: { fomo: "ready" }, staleAfterMs: 10_000,
+    }).status).toBe("warming");
+    expect(createRuntimeQualitySnapshot({
+      now: 20_000, startedAt: 1_000, lastEventAt: null, oldestQueuedAt: null, latestAggregationAt: null,
+      registryVersion: 1, providerStatuses: { fomo: "ready" }, staleAfterMs: 10_000,
     }).status).toBe("degraded");
   });
 });

@@ -193,6 +193,32 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     `).run(status, status === "resolved" ? occurredAt : null, status === "resolved" ? occurredAt : occurredAt + 12 * 60 * 60_000, normalizeFomoHandle(handle));
   };
 
+  const synchronizeTraderSignalProfile = (entityId: string, updatedAt: number): void => {
+    const facts = database.prepare(`
+      SELECT e.lifecycle,
+        EXISTS(SELECT 1 FROM trader_ability_snapshots a WHERE a.entity_id = e.entity_id) AS hasAbility,
+        EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id AND ea.confidence IN ('high', 'confirmed')) AS mapped,
+        EXISTS(
+          SELECT 1 FROM entity_accounts ea JOIN wallet_identities w ON w.account_id = ea.account_id
+          WHERE ea.entity_id = e.entity_id AND ea.confidence IN ('high', 'confirmed') AND w.confidence IN ('high', 'confirmed')
+        ) AS hasWallet
+      FROM trader_entities e WHERE e.entity_id = ?
+    `).get(entityId) as { lifecycle: TraderLifecycle; hasAbility: number; mapped: number; hasWallet: number } | undefined;
+    if (!facts) return;
+    const monitoringEnabled = facts.hasAbility === 1 && facts.mapped === 1 && ["active", "elite", "degraded"].includes(facts.lifecycle);
+    const next = { monitoringEnabled, fomoMonitoringEnabled: monitoringEnabled, onchainMonitoringEnabled: monitoringEnabled && facts.hasWallet === 1 };
+    const current = database.prepare("SELECT monitoring_enabled AS monitoringEnabled, fomo_monitoring_enabled AS fomoMonitoringEnabled, onchain_monitoring_enabled AS onchainMonitoringEnabled FROM trader_profiles WHERE entity_id = ?").get(entityId) as { monitoringEnabled: number; fomoMonitoringEnabled: number; onchainMonitoringEnabled: number } | undefined;
+    if (current && current.monitoringEnabled === Number(next.monitoringEnabled) && current.fomoMonitoringEnabled === Number(next.fomoMonitoringEnabled) && current.onchainMonitoringEnabled === Number(next.onchainMonitoringEnabled)) return;
+    database.prepare(`
+      INSERT INTO trader_profiles(entity_id, display_name, priority, notes, monitoring_enabled, fomo_monitoring_enabled, onchain_monitoring_enabled, created_at, updated_at)
+      VALUES (?, ?, 'normal', NULL, ?, ?, ?, ?, ?)
+      ON CONFLICT(entity_id) DO UPDATE SET monitoring_enabled = excluded.monitoring_enabled,
+        fomo_monitoring_enabled = excluded.fomo_monitoring_enabled,
+        onchain_monitoring_enabled = excluded.onchain_monitoring_enabled,
+        updated_at = MAX(trader_profiles.updated_at, excluded.updated_at)
+    `).run(entityId, entityId, Number(next.monitoringEnabled), Number(next.fomoMonitoringEnabled), Number(next.onchainMonitoringEnabled), updatedAt, updatedAt);
+  };
+
   const completeIdentityAdmissionInTransaction = (accountId: string, occurredAt: number): string | null => {
     const entity = database.prepare(`
       SELECT e.entity_id AS entityId, e.lifecycle
@@ -219,6 +245,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
       VALUES (?, ?, 'identity.updated', ?, 'published', ?, ?)
     `).run(`identity-registry:${entity.entityId}:${occurredAt}`, entity.entityId, JSON.stringify({ entityId: entity.entityId, accountId, lifecycle: nextLifecycle }), occurredAt, occurredAt);
     database.prepare("UPDATE monitoring_registry_state SET version = version + 1, updated_at = ? WHERE singleton = 1").run(occurredAt);
+    synchronizeTraderSignalProfile(entity.entityId, occurredAt);
     return entity.entityId;
   };
 
@@ -295,6 +322,8 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
           source = excluded.source,
           last_observed_at = MAX(wallet_identities.last_observed_at, excluded.last_observed_at)
       `).run(input.accountId, input.chainFamily, address, confidence, input.source, existing?.first_observed_at ?? input.observedAt, input.observedAt);
+      const entities = database.prepare("SELECT entity_id AS entityId FROM entity_accounts WHERE account_id = ?").all(input.accountId) as Array<{ entityId: string }>;
+      for (const entity of entities) synchronizeTraderSignalProfile(entity.entityId, input.observedAt);
     },
 
     account(accountId) {
@@ -337,6 +366,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
           locked = excluded.locked,
           updated_at = MAX(trader_entities.updated_at, excluded.updated_at)
       `).run(input.entityId, input.lifecycle, Number(input.manual), Number(input.locked), input.createdAt, input.updatedAt);
+      synchronizeTraderSignalProfile(input.entityId, input.updatedAt);
     },
 
     ensureTraderEntity(input) {
@@ -470,6 +500,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
           source = excluded.source,
           last_observed_at = MAX(entity_accounts.last_observed_at, excluded.last_observed_at)
       `).run(input.entityId, input.accountId, confidence, input.source, existing?.first_observed_at ?? input.observedAt, input.observedAt);
+      synchronizeTraderSignalProfile(input.entityId, input.observedAt);
     },
 
     insertTraderEvent(event) {
@@ -546,7 +577,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     traderSignalProfile(entityId) {
       const row = database.prepare(`
         SELECT e.entity_id AS entityId, e.lifecycle,
-          EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id) AS mapped,
+          EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id AND ea.confidence IN ('high', 'confirmed')) AS mapped,
           COALESCE(p.monitoring_enabled, 0) AS monitoringEnabled,
           COALESCE(p.fomo_monitoring_enabled, 0) AS fomoMonitoringEnabled,
           COALESCE(p.onchain_monitoring_enabled, 0) AS onchainMonitoringEnabled
@@ -712,6 +743,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         snapshot.sampleConfidence, snapshot.coverageConfidence, JSON.stringify(snapshot.metrics),
         JSON.stringify(snapshot.components), JSON.stringify(snapshot.styles), snapshot.createdAt,
       );
+      synchronizeTraderSignalProfile(snapshot.entityId, snapshot.createdAt);
     },
 
     latestTraderAbility(entityId, window) {
@@ -772,6 +804,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     updateTraderLifecycle(entityId, lifecycle, updatedAt) {
       const changed = database.prepare("UPDATE trader_entities SET lifecycle = ?, updated_at = ? WHERE entity_id = ?").run(lifecycle, updatedAt, entityId).changes;
       if (changed !== 1) throw new Error("Trader entity not found");
+      synchronizeTraderSignalProfile(entityId, updatedAt);
     },
 
     recordTokenMilestone(input) {

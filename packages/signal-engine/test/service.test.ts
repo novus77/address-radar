@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { openAddressRadarRepository, type AddressRadarRepository } from "@address-radar/database";
 import type { AddressSignalEvidence } from "@address-radar/aggregation";
-import { createTokenSignalService } from "../src/index.js";
+import { createTokenSignalService, replayRadarSignalV1 } from "../src/index.js";
 
 const evidence = (eventId: string, entityId: string): AddressSignalEvidence => ({
   eventId,
@@ -38,18 +38,37 @@ describe("token signal service", () => {
     });
     const second = service.evaluate("solana", "TokenA", [evidence("c", "entity-2"), evidence("d", "entity-3")]);
 
-    expect(first.candidate).toMatchObject({ signalId: "solana:TokenA", broadcastSequence: 1, action: "new" });
-    expect(second.candidate).toMatchObject({ signalId: "solana:TokenA", broadcastSequence: 2, action: "update" });
+    expect(first.candidate).toMatchObject({ signalId: "solana:TokenA", broadcastSequence: 1 });
+    expect(second.candidate).toMatchObject({ signalId: "solana:TokenA", broadcastSequence: 2 });
     expect(repository.broadcasts("solana:TokenA")).toHaveLength(2);
-    expect(repository.broadcasts("solana:TokenA")[0]?.payload).toEqual(first.candidate);
+    expect(replayRadarSignalV1(repository.broadcasts("solana:TokenA")[0]?.payload)).toEqual(first.candidate);
     expect(first.candidate).toMatchObject({
       schemaVersion: "1", signalId: "solana:TokenA", idempotencyKey: "solana:TokenA:broadcast:1",
       token: { chain: "solana", contractAddress: "TokenA", symbol: "TOK", name: "Token A", imageUrl: null },
-      lifecycleStage: "launched_0_2h", windowMs: 300_000, marketCapUsd: 100_000, priceUsd: 0.01,
+      marketCapUsd: 100_000, priceUsd: 0.01,
       triggeredAt: new Date(3_000).toISOString(), expiresAt: new Date(303_000).toISOString(),
       display: { reasonCodes: ["concurrent_qualified_entries"] },
-      evidenceSummary: { participantCount: 2, totalBuyUsd: 2_000, maxSingleBuyUsd: 1_000 },
     });
+    expect(Object.keys(first.candidate!)).toEqual([
+      "schemaVersion", "signalId", "idempotencyKey", "token", "category", "broadcastSequence",
+      "score", "confidence", "marketCapUsd", "priceUsd", "triggeredAt", "expiresAt", "display",
+    ]);
+    expect(Object.keys(first.candidate!.token)).toEqual(["chain", "contractAddress", "symbol", "name", "imageUrl"]);
+    expect(Object.keys(first.candidate!.display)).toEqual(["title", "summary", "reasonCodes"]);
+  });
+
+  it("rejects corrupted or public-contract-polluted replay payloads", () => {
+    expect(() => replayRadarSignalV1({ publicSignal: { schemaVersion: "1" }, audit: {} })).toThrow(/corrupt/i);
+    expect(() => replayRadarSignalV1({
+      publicSignal: {
+        schemaVersion: "1", signalId: "id", idempotencyKey: "key",
+        token: { chain: "solana", contractAddress: "Token", symbol: null, name: null, imageUrl: null },
+        category: "new_token_discovery", broadcastSequence: 1, score: 0.9, confidence: 0.9,
+        marketCapUsd: null, priceUsd: null, triggeredAt: new Date(0).toISOString(), expiresAt: new Date(1).toISOString(),
+        display: { title: "Title", summary: "Summary", reasonCodes: [] }, entityIds: ["internal"],
+      },
+      audit: {},
+    })).toThrow(/corrupt/i);
   });
 
   it("enforces mapped monitored lifecycle eligibility and degraded discount", () => {
@@ -71,6 +90,6 @@ describe("token signal service", () => {
     ]);
     expect(result.decision.participantCount).toBe(2);
     expect(result.decision.score).toBeCloseTo(0.912);
-    expect(result.candidate?.evidenceSummary.entityIds).toEqual(["active", "degraded"]);
+    expect(result.candidate).not.toHaveProperty("evidenceSummary");
   });
 });

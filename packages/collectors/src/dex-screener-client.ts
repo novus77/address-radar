@@ -93,7 +93,7 @@ export function createDexScreenerClient(input: {
           ...(text(selectedBase?.symbol) ? { symbol: text(selectedBase?.symbol) } : {}),
           ...(text(selectedBase?.name) ? { name: text(selectedBase?.name) } : {}),
           ...(text(selected.info?.imageUrl) ? { imageUrl: text(selected.info?.imageUrl) } : {}),
-          ...(launchedAt !== null ? { createdAt: launchedAt, launchedAt } : {}),
+          ...(launchedAt !== null ? { launchedAt } : {}),
           observedAt: new Date(now()).toISOString(),
         });
       } finally {

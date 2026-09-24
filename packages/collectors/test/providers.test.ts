@@ -116,6 +116,16 @@ describe("Dex Screener client", () => {
     });
   });
 
+  it("treats pair creation as launch evidence only", async () => {
+    const provider = createDexScreenerClient({
+      fetch: async () => Response.json({ pairs: [{ chainId: "solana", baseToken: { address: "Mint" }, priceUsd: "1", liquidity: { usd: 1 }, pairCreatedAt: 500 }] }),
+      now: () => 1_000,
+    });
+    const result = await provider.lookup("solana", "Mint");
+    expect(result).toMatchObject({ launchedAt: 500 });
+    expect(result).not.toHaveProperty("createdAt");
+  });
+
   it.each([
     ["eth", "ethereum"],
     ["bnb", "bsc"],

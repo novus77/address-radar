@@ -8,7 +8,7 @@ export type {
   TokenEvidenceSnapshot,
 } from "./evidence.js";
 export { createTokenLifecycleResolver } from "./token-lifecycle-resolver.js";
-export type { TokenLifecycleMarketProvider, TokenLifecycleResolver } from "./token-lifecycle-resolver.js";
+export type { TokenCreationProvider, TokenLaunchProvider, TokenLifecycleResolver } from "./token-lifecycle-resolver.js";
 export { createTokenAggregationService, DEGRADED_TRADER_DISCOUNT } from "./service.js";
 export type { AggregationDecision } from "./service.js";
 export type { SignalTraderProfile, TokenAggregationRepository, TokenAggregationState } from "./repository.js";
