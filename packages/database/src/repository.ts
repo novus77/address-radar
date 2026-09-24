@@ -1193,8 +1193,57 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     completeAutomaticIdentityResolution(input) {
       assertTimestamp(input.occurredAt, "occurredAt");
       return transaction(() => {
+        const handle = normalizeFomoHandle(input.cache.handle);
+        const queued = database.prepare(`
+          SELECT account_id AS accountId
+          FROM identity_resolution_queue
+          WHERE handle = ?
+        `).get(handle) as { accountId: string } | undefined;
+        if (!queued) throw new Error(`Identity resolution queue entry not found for ${handle}`);
+        if (queued.accountId !== input.account.accountId) throw new Error(`Identity resolution account mismatch for ${handle}`);
+
         repository.upsertFomoAccount(input.account);
-        for (const wallet of input.wallets) repository.attachWallet(wallet);
+        const wallets = input.wallets.map((wallet) => ({
+          ...wallet,
+          address: normalizeWalletAddress(wallet.chainFamily, wallet.address),
+        }));
+        const conflicts = wallets.flatMap((wallet) => {
+          const owner = repository.walletOwner(wallet.chainFamily, wallet.address);
+          return owner && owner !== input.account.accountId ? [{ wallet, owner }] : [];
+        });
+
+        for (const wallet of wallets) {
+          if (!conflicts.some((conflict) => conflict.wallet.chainFamily === wallet.chainFamily && conflict.wallet.address === wallet.address)) {
+            repository.attachWallet(wallet);
+          }
+        }
+
+        if (conflicts.length > 0) {
+          database.prepare("DELETE FROM identity_resolution_jobs WHERE handle = ?").run(handle);
+          for (const conflict of conflicts) {
+            repository.createIdentityConflict({
+              conflictId: `automatic-identity-conflict:${handle}:${conflict.wallet.chainFamily}:${conflict.wallet.address}:${conflict.owner}`,
+              handle,
+              accountId: input.account.accountId,
+              chainFamily: conflict.wallet.chainFamily,
+              address: conflict.wallet.address,
+              conflictingAccountId: conflict.owner,
+              status: "pending",
+              payload: { source: "fomoscan", observedAt: conflict.wallet.observedAt },
+              createdAt: input.occurredAt,
+              resolvedAt: null,
+              resolution: null,
+            });
+          }
+          const updated = database.prepare(`
+            UPDATE identity_resolution_queue
+            SET status = 'conflict', resolved_at = NULL, next_export_at = ?
+            WHERE handle = ? AND account_id = ?
+          `).run(input.occurredAt + 12 * 60 * 60_000, handle, input.account.accountId);
+          if (updated.changes !== 1) throw new Error(`Identity resolution queue update failed for ${handle}`);
+          return null;
+        }
+
         repository.saveIdentityResolution(input.cache);
         return completeIdentityResolutionInTransaction(input.cache.handle, input.account.accountId, input.occurredAt);
       });

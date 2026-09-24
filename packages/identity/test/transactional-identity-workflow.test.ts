@@ -180,3 +180,62 @@ describe("transactional identity completion", () => {
     database.close();
   });
 });
+
+describe("automatic identity ownership conflict", () => {
+  it("keeps the existing owner monitored and leaves the new candidate unresolved", async () => {
+    const path = databasePath("automatic-identity-owner-conflict");
+    const repository = openAddressRadarRepository(path);
+    repository.upsertFomoAccount({ accountId: "old-account", handle: "OldOwner", firstSeenAt: 1, lastSeenAt: 1 });
+    repository.upsertFomoAccount({ accountId: "new-account", handle: "NewCandidate", firstSeenAt: 1, lastSeenAt: 1 });
+    repository.upsertTraderEntity({ entityId: "old-entity", lifecycle: "probation", manual: false, locked: false, createdAt: 1, updatedAt: 1 });
+    repository.upsertTraderEntity({ entityId: "new-entity", lifecycle: "candidate", manual: false, locked: false, createdAt: 1, updatedAt: 1 });
+    repository.linkAccountToEntity({ entityId: "old-entity", accountId: "old-account", confidence: "confirmed", source: "existing", observedAt: 1 });
+    repository.linkAccountToEntity({ entityId: "new-entity", accountId: "new-account", confidence: "high", source: "candidate", observedAt: 1 });
+    repository.attachWallet({ accountId: "old-account", chainFamily: "evm", address: "0x1111111111111111111111111111111111111111", confidence: "confirmed", source: "existing", observedAt: 1 });
+    repository.completeIdentityAdmission("old-account", 1);
+    repository.enqueueIdentityResolution({ handle: "NewCandidate", accountId: "new-account", priority: 90, reason: "automatic_resolution", observedAt: 2 });
+    const service = createIdentityResolutionService({
+      repository,
+      now: () => 3,
+      client: {
+        byHandle: async () => ({
+          kind: "resolved" as const,
+          accountId: "new-account",
+          handle: "NewCandidate",
+          wallets: [{ chainFamily: "evm" as const, address: "0x1111111111111111111111111111111111111111" }],
+          asOf: 3,
+        }),
+      },
+    });
+
+    await service.resolve("NewCandidate");
+
+    expect(repository.walletOwner("evm", "0x1111111111111111111111111111111111111111")).toBe("old-account");
+    expect(repository.account("new-account")?.wallets).toEqual([]);
+    expect(repository.identityResolution("NewCandidate")).toBeNull();
+    expect(repository.identityResolutionQueue(10)).toEqual([
+      expect.objectContaining({ handle: "newcandidate", accountId: "new-account", status: "conflict", resolvedAt: null }),
+    ]);
+    expect(repository.identityConflicts("pending")).toEqual([
+      expect.objectContaining({
+        handle: "newcandidate",
+        accountId: "new-account",
+        conflictingAccountId: "old-account",
+        chainFamily: "evm",
+        address: "0x1111111111111111111111111111111111111111",
+      }),
+    ]);
+    expect(repository.traderEntity("new-entity")?.lifecycle).toBe("candidate");
+    repository.close();
+
+    const registry = openMonitoringRegistry(path);
+    expect(registry.version()).toBe(1);
+    expect(registry.wallets("evm")).toEqual([{
+      address: "0x1111111111111111111111111111111111111111",
+      accountId: "old-account",
+      entityId: "old-entity",
+      lifecycle: "probation",
+    }]);
+    registry.close();
+  });
+});
