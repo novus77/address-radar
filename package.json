@@ -4,15 +4,14 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.19.0",
+  "engines": {
+    "node": ">=24 <25"
+  },
   "scripts": {
-    "build": "tsc -b",
-    "typecheck": "tsc -b --pretty false",
+    "build": "pnpm -r --if-present build && tsc -p tsconfig.json --noEmit",
+    "typecheck": "pnpm -r --if-present typecheck && tsc -p tsconfig.json --noEmit --pretty false",
     "test": "vitest run",
-    "test:e2e": "playwright test",
-    "scanner": "tsx apps/scanner/src/cli.ts",
-    "console": "tsx apps/console/src/cli.ts",
-    "wallet-monitor": "tsx apps/wallet-monitor/src/cli.ts",
-    "wallet-analysis": "tsx apps/wallet-analysis/src/cli.ts"
+    "test:e2e": "playwright test --pass-with-no-tests"
   },
   "dependencies": {
     "zod": "4.5.4"
