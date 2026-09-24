@@ -10,7 +10,8 @@ export interface BuildTraderTokenSampleInput {
 export function buildTraderTokenSample(input: BuildTraderTokenSampleInput): TraderTokenSample {
   const first = input.events[0];
   if (!first) throw new Error("At least one event is required");
-  if (!input.events.every(event => event.entityId === first.entityId && event.chain === first.chain && event.tokenAddress === first.tokenAddress)) {
+  const firstTokenIdentity = canonicalTokenIdentity(first.chain, first.tokenAddress);
+  if (!input.events.every(event => event.entityId === first.entityId && canonicalTokenIdentity(event.chain, event.tokenAddress) === firstTokenIdentity)) {
     throw new Error("Events must belong to the same entity and token");
   }
 
@@ -46,7 +47,11 @@ export function buildTraderTokenSample(input: BuildTraderTokenSampleInput): Trad
 }
 
 export function traderTokenSampleId(entityId: string, chain: string, tokenAddress: string): string {
-  return `${entityId}:${chain.toLowerCase()}:${normalizeAddressRadarTokenAddress(chain, tokenAddress)}`;
+  return `${entityId}:${canonicalTokenIdentity(chain, tokenAddress)}`;
+}
+
+function canonicalTokenIdentity(chain: string, tokenAddress: string): string {
+  return `${chain.toLowerCase()}:${normalizeAddressRadarTokenAddress(chain, tokenAddress)}`;
 }
 
 function sumAmounts(events: readonly TraderEvent[]): number {

@@ -27,6 +27,21 @@ describe("trader token sample builder", () => {
     expect(upper.sampleId).toBe("entity-1:ethereum:0xabcd");
   });
 
+  it("folds checksum and lowercase EVM events into one sample", () => {
+    const result = buildTraderTokenSample({
+      events: [
+        event({ chain: "ethereum", tokenAddress: "0xAbCd" }),
+        event({ eventId: "event-2", chain: "ethereum", tokenAddress: "0xabcd", amountUsd: 200, occurredAt: 2_000 }),
+      ],
+      launchAt: null,
+      now: 3_000,
+      dustThresholdUsd: 25,
+    });
+
+    expect(result.sampleId).toBe("entity-1:ethereum:0xabcd");
+    expect(result.totalBuyUsd).toBe(300);
+  });
+
   it("folds a trader token history into one weighted sample", () => {
     const result = buildTraderTokenSample({
       events: [

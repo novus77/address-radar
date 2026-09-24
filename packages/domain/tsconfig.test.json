@@ -5,8 +5,7 @@
     "noEmit": true,
     "rootDir": "../..",
     "paths": {
-      "@address-radar/domain": ["./src/index.ts"],
-      "@address-radar/scoring": ["../scoring/src/index.ts"]
+      "@address-radar/domain": ["./src/index.ts"]
     }
   },
   "references": [],
