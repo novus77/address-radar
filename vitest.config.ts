@@ -9,6 +9,7 @@ export default defineConfig({
       "@address-radar/database": fileURLToPath(new URL("./packages/database/src/index.ts", import.meta.url)),
       "@address-radar/identity": fileURLToPath(new URL("./packages/identity/src/index.ts", import.meta.url)),
       "@address-radar/scoring": fileURLToPath(new URL("./packages/scoring/src/index.ts", import.meta.url)),
+      "@address-radar/collectors": fileURLToPath(new URL("./packages/collectors/src/index.ts", import.meta.url)),
     },
   },
   test: {
