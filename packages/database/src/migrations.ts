@@ -2,12 +2,14 @@ import type { DatabaseSync } from "node:sqlite";
 import { decodePersistedRadarSignal } from "@address-radar/signal-engine";
 
 import { initializeAddressRadarSchema } from "./schema.js";
+import { initializeCandidateHistorySchema } from "./candidate-history-store.js";
 
 export function migrateAddressRadarDatabase(database: DatabaseSync): void {
   database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
   database.exec("BEGIN IMMEDIATE");
   try {
     initializeAddressRadarSchema(database);
+    initializeCandidateHistorySchema(database);
     ensureColumn(database, "signal_outbox", "claim_token", "TEXT");
     ensureColumn(database, "signal_outbox", "claim_generation", "INTEGER NOT NULL DEFAULT 0");
     ensureColumn(database, "signal_outbox", "lease_expires_at", "INTEGER");

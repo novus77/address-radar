@@ -40,3 +40,5 @@ export type {
   WalletAnalysisReviewResult,
 } from "./repository.js";
 export { initializeAddressRadarSchema } from "./schema.js";
+export { createCandidateHistoryStore, initializeCandidateHistorySchema } from "./candidate-history-store.js";
+export type { CandidateHistoryStore } from "./candidate-history-store.js";

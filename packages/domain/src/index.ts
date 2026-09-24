@@ -1,5 +1,12 @@
 export { createCanonicalTrader } from "./canonical-trader.js";
 export type { CanonicalTrader, CanonicalTraderWallet, MonitoringCoverage } from "./canonical-trader.js";
+export type {
+  CandidateEvidenceV3,
+  HistoricalToken,
+  MilestonePrecision,
+  PersistedCandidateAdmissionSnapshot,
+  TokenMilestoneCrossing,
+} from "./candidate-history.js";
 export { normalizeFomoHandle, normalizeWalletAddress, strongestIdentityConfidence } from "./identity.js";
 export { decideLifecycleWithReason } from "./lifecycle.js";
 export type { LifecycleDecision, LifecycleInput } from "./lifecycle.js";
