@@ -13,7 +13,8 @@
     "typecheck": "pnpm -r --if-present typecheck && tsc -p tsconfig.json --noEmit --pretty false",
     "test": "vitest run",
     "test:e2e": "playwright test --pass-with-no-tests",
-    "console": "tsx apps/console/src/cli.ts"
+    "console": "tsx apps/console/src/cli.ts",
+    "check:boundaries": "tsx scripts/check-boundaries.ts"
   },
   "dependencies": {
     "zod": "4.5.4"
