@@ -109,16 +109,6 @@ const parseClaim = (text: string): LookupClaim | null => {
 
 const cursorValue = (cursor: LookupCursor): string => `${JSON.stringify(cursor)}\n`;
 
-function legacyByteOffset(buffer: Buffer, lineNumber: number): number | null {
-  let byteOffset = 0;
-  for (let line = 0; line < lineNumber; line += 1) {
-    const newlineIndex = buffer.indexOf(0x0a, byteOffset);
-    if (newlineIndex < 0) return null;
-    byteOffset = newlineIndex + 1;
-  }
-  return byteOffset;
-}
-
 export class FomoTokenLookupProducer {
   readonly #filePath: string;
   readonly #bucketMs: number;
@@ -280,17 +270,19 @@ export class FomoTokenLookupConsumer {
   async #resolvedCursor(snapshot: QueueSnapshot): Promise<LookupCursor> {
     const persisted = parseCursor(await readText(this.#cursorPath));
     if (!persisted) return { version: 1, lineNumber: 0, attempts: 0, byteOffset: 0, generation: snapshot.generation, prefixHash: hash(new Uint8Array()) };
-    const byteOffset = persisted.byteOffset ?? legacyByteOffset(snapshot.buffer, persisted.lineNumber);
-    const validBoundary = byteOffset !== null && (byteOffset === 0 || byteOffset <= snapshot.buffer.length && snapshot.buffer[byteOffset - 1] === 0x0a);
-    const validPrefix = byteOffset !== null && (persisted.prefixHash === undefined || persisted.prefixHash === hash(snapshot.buffer.subarray(0, byteOffset)));
-    if (persisted.generation !== undefined && persisted.generation !== snapshot.generation || !validBoundary || !validPrefix) {
+    if (persisted.byteOffset === undefined || persisted.generation === undefined || persisted.prefixHash === undefined) {
       const reset: LookupCursor = { version: 1, lineNumber: 0, attempts: 0, byteOffset: 0, generation: snapshot.generation, prefixHash: hash(new Uint8Array()) };
       await this.#persistCursor(reset);
       return reset;
     }
-    const resolved: LookupCursor = { ...persisted, byteOffset: byteOffset!, generation: snapshot.generation, prefixHash: hash(snapshot.buffer.subarray(0, byteOffset!)) };
-    if (persisted.byteOffset === undefined || persisted.generation === undefined || persisted.prefixHash === undefined) await this.#persistCursor(resolved);
-    return resolved;
+    const validBoundary = persisted.byteOffset === 0 || persisted.byteOffset <= snapshot.buffer.length && snapshot.buffer[persisted.byteOffset - 1] === 0x0a;
+    const validPrefix = persisted.prefixHash === hash(snapshot.buffer.subarray(0, persisted.byteOffset));
+    if (persisted.generation !== snapshot.generation || !validBoundary || !validPrefix) {
+      const reset: LookupCursor = { version: 1, lineNumber: 0, attempts: 0, byteOffset: 0, generation: snapshot.generation, prefixHash: hash(new Uint8Array()) };
+      await this.#persistCursor(reset);
+      return reset;
+    }
+    return persisted;
   }
 
   async #verifiedClaimState(claim: LookupClaim): Promise<{ readonly snapshot: QueueSnapshot; readonly cursor: LookupCursor } | null> {

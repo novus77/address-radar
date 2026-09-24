@@ -9,9 +9,24 @@ import {
   FomoTokenLookupResultConsumer,
   FomoTokenLookupResultProducer,
 } from "@address-radar/collectors";
-import { atomicWrite, withExclusiveFileLock } from "../src/fomo/durable-file.js";
+import { atomicWrite, withExclusiveFileLock, type FileLockOwnerIdentityProvider } from "../src/fomo/durable-file.js";
 
 const delay = (milliseconds: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+const testOwnerIdentityProvider = (status: FileLockOwnerIdentityProvider["status"]): FileLockOwnerIdentityProvider => ({
+  current: async () => ({ pid: process.pid, hostname: hostname(), processStartIdentity: "test:current" }),
+  status,
+});
+
+const staleLockMetadata = (processStartIdentity = "test:dead") => ({
+  version: 1,
+  token: "stale-owner",
+  pid: process.pid,
+  hostname: hostname(),
+  processStartIdentity,
+  createdAt: 0,
+  heartbeatAt: 0,
+});
 
 describe("durable file coordination", () => {
   it("keeps a live long-running owner beyond staleMs and serializes reacquisition", async () => {
@@ -39,16 +54,82 @@ describe("durable file coordination", () => {
     expect(maximumActive).toBe(1);
   });
 
-  it("does not remove a replacement lock during release", async () => {
+  it("serializes concurrent reclaimers of the same stale owner", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "durable-lock-"));
+    const lockPath = join(directory, "resource.lock");
+    await writeFile(lockPath, `${JSON.stringify(staleLockMetadata())}\n`);
+    await utimes(lockPath, new Date(0), new Date(0));
+    const ownerIdentityProvider = testOwnerIdentityProvider(async (owner) => owner.processStartIdentity === "test:dead" ? "dead" : "alive");
+    let active = 0;
+    let maximumActive = 0;
+    const operation = async () => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await delay(20);
+      active -= 1;
+    };
+
+    await Promise.all([
+      withExclusiveFileLock(lockPath, operation, { staleMs: 1, timeoutMs: 500, retryDelayMs: 1, ownerIdentityProvider }),
+      withExclusiveFileLock(lockPath, operation, { staleMs: 1, timeoutMs: 500, retryDelayMs: 1, ownerIdentityProvider }),
+    ]);
+    expect(maximumActive).toBe(1);
+  });
+
+  it("blocks fresh acquisition while stale recovery owns the pathname guard", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "durable-lock-"));
+    const lockPath = join(directory, "resource.lock");
+    await writeFile(lockPath, `${JSON.stringify(staleLockMetadata())}\n`);
+    await utimes(lockPath, new Date(0), new Date(0));
+    let enteredStatus!: () => void;
+    let releaseStatus!: () => void;
+    const statusEntered = new Promise<void>((resolve) => { enteredStatus = resolve; });
+    const statusRelease = new Promise<void>((resolve) => { releaseStatus = resolve; });
+    let statusCalls = 0;
+    const ownerIdentityProvider = testOwnerIdentityProvider(async (owner) => {
+      if (owner.processStartIdentity === "test:dead" && statusCalls++ === 0) {
+        enteredStatus();
+        await statusRelease;
+        return "dead";
+      }
+      return owner.processStartIdentity === "test:dead" ? "dead" : "alive";
+    });
+    const order: string[] = [];
+    const recovering = withExclusiveFileLock(lockPath, async () => {
+      order.push("recovering-start");
+      await delay(20);
+      order.push("recovering-end");
+    }, { staleMs: 1, timeoutMs: 500, retryDelayMs: 1, ownerIdentityProvider });
+    await statusEntered;
+    const fresh = withExclusiveFileLock(lockPath, async () => { order.push("fresh"); }, { staleMs: 1, timeoutMs: 500, retryDelayMs: 1, ownerIdentityProvider });
+    await delay(10);
+    expect(order).toEqual([]);
+    releaseStatus();
+
+    await Promise.all([recovering, fresh]);
+    expect(order).toEqual(["recovering-start", "recovering-end", "fresh"]);
+  });
+
+  it("recovers a stale lock when a live PID has a different process-start identity", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "durable-lock-"));
+    const lockPath = join(directory, "resource.lock");
+    await writeFile(lockPath, `${JSON.stringify(staleLockMetadata("test:previous-process"))}\n`);
+    await utimes(lockPath, new Date(0), new Date(0));
+    const ownerIdentityProvider = testOwnerIdentityProvider(async (owner) => owner.processStartIdentity === "test:previous-process" ? "reused" : "alive");
+
+    await expect(withExclusiveFileLock(lockPath, async () => 42, { staleMs: 1, timeoutMs: 200, retryDelayMs: 1, ownerIdentityProvider })).resolves.toBe(42);
+  });
+
+  it("rejects ownership replacement during the critical section without deleting the replacement", async () => {
     const directory = await mkdtemp(join(tmpdir(), "durable-lock-"));
     const lockPath = join(directory, "resource.lock");
     const displacedPath = join(directory, "displaced.lock");
 
     await expect(withExclusiveFileLock(lockPath, async () => {
       await rename(lockPath, displacedPath);
-      await writeFile(lockPath, `${JSON.stringify({ version: 1, token: "replacement", pid: process.pid, hostname: hostname(), createdAt: Date.now() })}\n`);
+      await writeFile(lockPath, `${JSON.stringify({ ...staleLockMetadata("test:replacement"), token: "replacement" })}\n`);
       return 42;
-    })).resolves.toBe(42);
+    })).rejects.toThrow("Lock ownership lost");
 
     expect(JSON.parse(await readFile(lockPath, "utf8"))).toMatchObject({ token: "replacement" });
   });
@@ -101,7 +182,7 @@ describe("Fomo lookup queue", () => {
   it("recovers a stale producer lock without waiting indefinitely", async () => {
     const directory = await mkdtemp(join(tmpdir(), "lookup-queue-"));
     const filePath = join(directory, "lookups.jsonl");
-    await writeFile(`${filePath}.lock`, JSON.stringify({ token: "dead" }));
+    await writeFile(`${filePath}.lock`, `${JSON.stringify({ ...staleLockMetadata("linux:0"), pid: 2_147_483_647 })}\n`);
     const blocked = new FomoTokenLookupProducer({ filePath, lockTimeoutMs: 20, staleLockMs: 10_000 });
     await expect(blocked.enqueue({ chainId: "base", tokenAddress: "0x1", requestedAt: 1 })).rejects.toThrow("Timed out acquiring lock");
     await utimes(`${filePath}.lock`, new Date(0), new Date(0));
@@ -162,6 +243,21 @@ describe("Fomo lookup queue", () => {
 
     const restarted = new FomoTokenLookupConsumer({ filePath, cursorPath });
     expect((await restarted.next())?.request.tokenAddress).toBe("0x2");
+  });
+
+  it("replays from zero when a legacy line-only cursor has no generation evidence", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "lookup-queue-"));
+    const filePath = join(directory, "lookups.jsonl");
+    const cursorPath = join(directory, "cursor.json");
+    const replacement = join(directory, "replacement.jsonl");
+    const producer = new FomoTokenLookupProducer({ filePath: replacement });
+    await producer.enqueue({ chainId: "base", tokenAddress: "0xfirst", requestedAt: 1 });
+    await producer.enqueue({ chainId: "base", tokenAddress: "0xsecond", requestedAt: 600_001 });
+    await writeFile(cursorPath, `${JSON.stringify({ version: 1, lineNumber: 1, attempts: 0 })}\n`);
+    await rename(replacement, filePath);
+
+    const restarted = new FomoTokenLookupConsumer({ filePath, cursorPath });
+    expect((await restarted.next())?.request.tokenAddress).toBe("0xfirst");
   });
 
   it("preserves milestone pagination fields and rejects contradictory requests", async () => {

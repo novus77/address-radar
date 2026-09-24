@@ -1,19 +1,31 @@
 import { randomUUID } from "node:crypto";
-import { link, mkdir, open, readFile, rename, stat, unlink, type FileHandle } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rmdir, stat, unlink, type FileHandle } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname } from "node:path";
+
+export interface FileLockOwnerIdentity {
+  readonly pid: number;
+  readonly hostname: string;
+  readonly processStartIdentity: string;
+}
+
+export type FileLockOwnerStatus = "alive" | "dead" | "reused" | "unknown";
+
+export interface FileLockOwnerIdentityProvider {
+  current(): Promise<FileLockOwnerIdentity>;
+  status(owner: FileLockOwnerIdentity): Promise<FileLockOwnerStatus>;
+}
 
 export interface FileLockOptions {
   readonly timeoutMs?: number;
   readonly staleMs?: number;
   readonly retryDelayMs?: number;
+  readonly ownerIdentityProvider?: FileLockOwnerIdentityProvider;
 }
 
-interface LockMetadata {
+interface LockMetadata extends FileLockOwnerIdentity {
   readonly version: 1;
   readonly token: string;
-  readonly pid: number;
-  readonly hostname: string;
   readonly createdAt: number;
   readonly heartbeatAt: number;
 }
@@ -25,6 +37,8 @@ interface LockSnapshot {
   readonly ino: number | bigint;
   readonly mtimeMs: number;
 }
+
+const portableProcessStartIdentity = `portable:${Math.round(Date.now() - process.uptime() * 1_000)}`;
 
 export async function readText(path: string): Promise<string> {
   try { return await readFile(path, "utf8"); }
@@ -88,16 +102,19 @@ export async function durableRemove(path: string): Promise<void> {
 }
 
 const delay = (milliseconds: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const sameInode = (left: { readonly dev: number | bigint; readonly ino: number | bigint }, right: { readonly dev: number | bigint; readonly ino: number | bigint }): boolean => left.dev === right.dev && left.ino === right.ino;
+
+function combinedFailure(message: string, failures: unknown[]): unknown {
+  return failures.length === 1 ? failures[0] : new AggregateError(failures, message);
+}
 
 function parseLockMetadata(contents: string): LockMetadata | null {
   try {
     const value = JSON.parse(contents) as Partial<LockMetadata>;
-    if (value.version === 1 && typeof value.token === "string" && value.token.length > 0 && Number.isSafeInteger(value.pid) && (value.pid as number) > 0 && typeof value.hostname === "string" && value.hostname.length > 0 && Number.isSafeInteger(value.createdAt) && Number.isSafeInteger(value.heartbeatAt)) return value as LockMetadata;
-  } catch { /* Invalid locks are recoverable only after their mtime expires. */ }
+    if (value.version === 1 && typeof value.token === "string" && value.token.length > 0 && Number.isSafeInteger(value.pid) && (value.pid as number) > 0 && typeof value.hostname === "string" && value.hostname.length > 0 && typeof value.processStartIdentity === "string" && value.processStartIdentity.length > 0 && Number.isSafeInteger(value.createdAt) && Number.isSafeInteger(value.heartbeatAt)) return value as LockMetadata;
+  } catch { /* Invalid owner identity fails closed. */ }
   return null;
 }
-
-const sameInode = (left: { readonly dev: number | bigint; readonly ino: number | bigint }, right: { readonly dev: number | bigint; readonly ino: number | bigint }): boolean => left.dev === right.dev && left.ino === right.ino;
 
 async function snapshotLock(path: string): Promise<LockSnapshot> {
   const before = await stat(path);
@@ -111,62 +128,140 @@ function sameSnapshot(left: LockSnapshot, right: LockSnapshot): boolean {
   return sameInode(left, right) && left.contents === right.contents && left.metadata?.token === right.metadata?.token;
 }
 
-function localPidIsAlive(pid: number): boolean {
+function pidLiveness(pid: number): "alive" | "dead" | "unknown" {
   try {
     process.kill(pid, 0);
-    return true;
+    return "alive";
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return "dead";
+    return "unknown";
   }
 }
 
-async function restoreMovedLock(stalePath: string, path: string): Promise<void> {
+async function linuxProcessStartIdentity(pid: number): Promise<string | null> {
+  if (process.platform !== "linux") return null;
   try {
-    await link(stalePath, path);
-    await durableRemove(stalePath);
+    const contents = await readFile(`/proc/${pid}/stat`, "utf8");
+    const closeParen = contents.lastIndexOf(")");
+    if (closeParen < 0) return null;
+    const fieldsAfterCommand = contents.slice(closeParen + 1).trim().split(/\s+/);
+    const startTime = fieldsAfterCommand[19];
+    return startTime ? `linux:${startTime}` : null;
   } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+const defaultOwnerIdentityProvider: FileLockOwnerIdentityProvider = {
+  async current() {
+    return {
+      pid: process.pid,
+      hostname: hostname(),
+      processStartIdentity: await linuxProcessStartIdentity(process.pid) ?? portableProcessStartIdentity,
+    };
+  },
+  async status(owner) {
+    if (owner.hostname !== hostname()) return "unknown";
+    const liveness = pidLiveness(owner.pid);
+    if (liveness !== "alive") return liveness;
+    if (owner.processStartIdentity.startsWith("linux:")) {
+      const currentIdentity = await linuxProcessStartIdentity(owner.pid);
+      if (currentIdentity === null) return pidLiveness(owner.pid) === "dead" ? "dead" : "unknown";
+      return currentIdentity === owner.processStartIdentity ? "alive" : "reused";
+    }
+    if (owner.pid !== process.pid) return "unknown";
+    return owner.processStartIdentity === portableProcessStartIdentity ? "alive" : "reused";
+  },
+};
+
+async function acquirePathGuard(path: string, deadline: number, retryDelayMs: number): Promise<void> {
+  const guardPath = `${path}.guard`;
+  for (;;) {
+    try {
+      await mkdir(guardPath);
+      try { await syncDirectory(dirname(guardPath)); }
+      catch (error) {
+        const failures: unknown[] = [error];
+        try { await rmdir(guardPath); } catch (cleanupError) { failures.push(cleanupError); }
+        throw combinedFailure(`Lock guard acquisition cleanup failed: ${path}`, failures);
+      }
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (Date.now() >= deadline) throw new Error(`Timed out acquiring lock guard: ${path}`);
+      await delay(Math.min(retryDelayMs, Math.max(1, deadline - Date.now())));
+    }
+  }
+}
+
+async function withPathGuard<T>(path: string, deadline: number, retryDelayMs: number, operation: () => Promise<T>): Promise<T> {
+  const guardPath = `${path}.guard`;
+  await acquirePathGuard(path, deadline, retryDelayMs);
+  let result: T | undefined;
+  let operationFailure: unknown;
+  try { result = await operation(); }
+  catch (error) { operationFailure = error; }
+  let releaseFailure: unknown;
+  try {
+    await rmdir(guardPath);
+    await syncDirectory(dirname(guardPath));
+  } catch (error) { releaseFailure = error; }
+  const failures = [operationFailure, releaseFailure].filter((failure) => failure !== undefined);
+  if (failures.length > 0) throw combinedFailure(`Lock guard operation or release failed: ${path}`, failures);
+  return result as T;
+}
+
+async function installLock(path: string, token: string, owner: FileLockOwnerIdentity): Promise<FileHandle> {
+  const handle = await open(path, "wx");
+  const createdAt = Date.now();
+  const metadata: LockMetadata = { version: 1, token, ...owner, createdAt, heartbeatAt: createdAt };
+  try {
+    await handle.writeFile(`${JSON.stringify(metadata)}\n`, "utf8");
+    await handle.datasync();
+    await syncDirectory(dirname(path));
+    return handle;
+  } catch (error) {
+    const failures: unknown[] = [error];
+    try { await handle.close(); } catch (closeError) { failures.push(closeError); }
+    try { await durableRemove(path); } catch (removeError) { failures.push(removeError); }
+    throw combinedFailure(`Lock installation cleanup failed: ${path}`, failures);
+  }
+}
+
+async function acquireOrRecoverLock(path: string, token: string, owner: FileLockOwnerIdentity, staleMs: number, ownerIdentityProvider: FileLockOwnerIdentityProvider): Promise<FileHandle | null> {
+  try { return await installLock(path, token, owner); }
+  catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
   }
-}
 
-async function recoverStaleLock(path: string, staleMs: number): Promise<boolean> {
   let candidate: LockSnapshot;
   try { candidate = await snapshotLock(path); }
   catch (error) {
-    if (["ENOENT", "EAGAIN"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+    if (["ENOENT", "EAGAIN"].includes((error as NodeJS.ErrnoException).code ?? "")) return null;
     throw error;
   }
-  if (Date.now() - candidate.mtimeMs < staleMs) return false;
-  if (candidate.metadata?.hostname === hostname() && localPidIsAlive(candidate.metadata.pid)) return false;
+  if (Date.now() - candidate.mtimeMs < staleMs || candidate.metadata === null) return null;
+  const ownerStatus = await ownerIdentityProvider.status(candidate.metadata);
+  if (ownerStatus !== "dead" && ownerStatus !== "reused") return null;
 
   let verified: LockSnapshot;
   try { verified = await snapshotLock(path); }
   catch (error) {
-    if (["ENOENT", "EAGAIN"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+    if (["ENOENT", "EAGAIN"].includes((error as NodeJS.ErrnoException).code ?? "")) return null;
     throw error;
   }
-  if (!sameSnapshot(candidate, verified) || Date.now() - verified.mtimeMs < staleMs) return false;
-  if (verified.metadata?.hostname === hostname() && localPidIsAlive(verified.metadata.pid)) return false;
+  if (!sameSnapshot(candidate, verified) || Date.now() - verified.mtimeMs < staleMs) return null;
+  const verifiedStatus = await ownerIdentityProvider.status(verified.metadata!);
+  if (verifiedStatus !== "dead" && verifiedStatus !== "reused") return null;
 
   const stalePath = `${path}.stale.${randomUUID()}`;
-  try { await rename(path, stalePath); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
-  }
-
-  try {
-    const moved = await snapshotLock(stalePath);
-    if (!sameSnapshot(verified, moved)) {
-      await restoreMovedLock(stalePath, path);
-      throw new Error(`Lock changed during stale recovery: ${path}`);
-    }
-    await durableRemove(stalePath);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
-  }
+  await rename(path, stalePath);
+  const moved = await snapshotLock(stalePath);
+  if (!sameSnapshot(verified, moved)) throw new Error(`Lock changed during guarded stale recovery: ${path}`);
+  await durableRemove(stalePath);
+  return installLock(path, token, owner);
 }
 
 async function releaseOwnedLock(path: string, token: string, handle: FileHandle): Promise<"released" | "not-owner"> {
@@ -186,43 +281,23 @@ async function releaseOwnedLock(path: string, token: string, handle: FileHandle)
   return "released";
 }
 
-function combinedFailure(message: string, failures: unknown[]): unknown {
-  return failures.length === 1 ? failures[0] : new AggregateError(failures, message);
-}
-
 export async function withExclusiveFileLock<T>(path: string, operation: () => Promise<T>, options: FileLockOptions = {}): Promise<T> {
   const timeoutMs = options.timeoutMs ?? 2_000;
   const staleMs = options.staleMs ?? 30_000;
   const retryDelayMs = options.retryDelayMs ?? 10;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || !Number.isSafeInteger(staleMs) || staleMs < 1 || !Number.isSafeInteger(retryDelayMs) || retryDelayMs < 1) throw new Error("Invalid file lock options");
+  const ownerIdentityProvider = options.ownerIdentityProvider ?? defaultOwnerIdentityProvider;
+  const owner = await ownerIdentityProvider.current();
   const token = randomUUID();
-  const startedAt = Date.now();
-  const directory = dirname(path);
-  await mkdir(directory, { recursive: true });
-  let handle: FileHandle;
+  const deadline = Date.now() + timeoutMs;
+  await mkdir(dirname(path), { recursive: true });
+  let handle: FileHandle | null = null;
 
-  for (;;) {
-    try {
-      handle = await open(path, "wx");
-      const createdAt = Date.now();
-      const metadata: LockMetadata = { version: 1, token, pid: process.pid, hostname: hostname(), createdAt, heartbeatAt: createdAt };
-      try {
-        await handle.writeFile(`${JSON.stringify(metadata)}\n`, "utf8");
-        await handle.datasync();
-        await syncDirectory(directory);
-      } catch (error) {
-        const failures: unknown[] = [error];
-        try { await handle.close(); } catch (closeError) { failures.push(closeError); }
-        try { await durableRemove(path); } catch (removeError) { failures.push(removeError); }
-        throw combinedFailure(`Lock acquisition cleanup failed: ${path}`, failures);
-      }
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      if (await recoverStaleLock(path, staleMs)) continue;
-      if (Date.now() - startedAt >= timeoutMs) throw new Error(`Timed out acquiring lock: ${path}`);
-      await delay(Math.min(retryDelayMs, Math.max(1, timeoutMs - (Date.now() - startedAt))));
-    }
+  while (handle === null) {
+    handle = await withPathGuard(path, deadline, retryDelayMs, () => acquireOrRecoverLock(path, token, owner, staleMs, ownerIdentityProvider));
+    if (handle !== null) break;
+    if (Date.now() >= deadline) throw new Error(`Timed out acquiring lock: ${path}`);
+    await delay(Math.min(retryDelayMs, Math.max(1, deadline - Date.now())));
   }
 
   let heartbeatFailure: unknown;
@@ -231,8 +306,8 @@ export async function withExclusiveFileLock<T>(path: string, operation: () => Pr
     heartbeatTail = heartbeatTail.then(async () => {
       try {
         const now = new Date();
-        await handle.utimes(now, now);
-        await handle.datasync();
+        await handle!.utimes(now, now);
+        await handle!.datasync();
       } catch (error) { heartbeatFailure ??= error; }
     });
   }, Math.max(1, Math.floor(staleMs / 3)));
@@ -246,8 +321,10 @@ export async function withExclusiveFileLock<T>(path: string, operation: () => Pr
   await heartbeatTail;
 
   let releaseFailure: unknown;
-  try { await releaseOwnedLock(path, token, handle); }
-  catch (error) { releaseFailure = error; }
+  try {
+    const releaseStatus = await withPathGuard(path, deadline, retryDelayMs, () => releaseOwnedLock(path, token, handle!));
+    if (releaseStatus === "not-owner") throw new Error(`Lock ownership lost: ${path}`);
+  } catch (error) { releaseFailure = error; }
   let closeFailure: unknown;
   try { await handle.close(); }
   catch (error) { closeFailure = error; }
