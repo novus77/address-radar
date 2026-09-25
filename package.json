@@ -21,6 +21,7 @@
     "zod": "4.5.4"
   },
   "devDependencies": {
+    "@address-radar/database": "workspace:*",
     "@playwright/test": "1.62.1",
     "@types/node": "^24.13.3",
     "tsx": "^4.23.15",

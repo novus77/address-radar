@@ -12,6 +12,9 @@ importers:
         specifier: 4.5.4
         version: 4.5.4
     devDependencies:
+      '@address-radar/database':
+        specifier: workspace:*
+        version: link:packages/database
       '@playwright/test':
         specifier: 1.62.1
         version: 1.62.1
