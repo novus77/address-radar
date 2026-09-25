@@ -94,7 +94,7 @@ describe("wallet analysis production wiring", () => {
       DUNE_PRE_MILESTONE_TRADES_QUERY_ID: "13",
       DUNE_HISTORICAL_START_AT: "2026-08-09T16:00:00.000Z",
       ADDRESS_RADAR_GATEWAY_DELIVERY_ENABLED: "false",
-    })).toMatchObject({ queryIds: { token_universe: 11, milestone_crossings: 12, pre_milestone_trades: 13 }, chains: ["solana", "bsc", "eth", "base"], dailyCreditBudget: 1000 });
+    })).toMatchObject({ queryIds: { token_universe: 11, milestone_crossings: 12, pre_milestone_trades: 13 }, chains: ["bsc", "eth", "base", "robinhood", "monad"], dailyCreditBudget: 1000 });
     expect(() => loadHistoricalBackfillConfig({ DUNE_API_KEY: "secret", ADDRESS_RADAR_GATEWAY_DELIVERY_ENABLED: "true" })).toThrow(/delivery/i);
   });
 

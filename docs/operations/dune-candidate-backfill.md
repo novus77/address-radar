@@ -12,19 +12,24 @@ The production runtime uses the Dune Data API. Dune MCP is restricted to dataset
 - Authentication: OAuth in the local Codex profile; no credential is stored in this repository.
 - Tool timeout: `300` seconds.
 - Production authentication: service-only `DUNE_API_KEY` environment variable.
-- Current account usage and saved-query execution must be verified from a fresh Codex process because MCP servers are loaded when the process starts.
+- Dune MCP connection and saved-query execution were validated on 2026-09-25. Recheck account usage before expanding the historical range.
 
 ## Dataset coverage
 
 | Internal chain | Dune chain | Historical status | Initial sources |
 | --- | --- | --- | --- |
-| `solana` | `solana` | catalog available, saved query pending validation | curated DEX trades, token metadata, prices, token supply/balances |
-| `bsc` | `bnb` | catalog available, saved query pending validation | `dex.trades`, token metadata, prices, token supply/balances |
-| `eth` | `ethereum` | catalog available, saved query pending validation | `dex.trades`, token metadata, prices, token supply/balances |
-| `base` | `base` | catalog available, saved query pending validation | `dex.trades`, token metadata, prices, token supply/balances |
-| `robinhood` | none verified | `historical_provider_unavailable` | real-time Fomo/RPC only until an indexed dataset is proven |
+| `solana` | `solana` | historical discovery degraded; real-time remains enabled | `dex_solana.trades`; full latest-supply aggregation exceeds the free-engine timeout |
+| `bsc` | `bnb` | validated | `dex.trades`, `tokens.supply_latest` |
+| `eth` | `ethereum` | query contract validated through the shared EVM path | `dex.trades`, `tokens.supply_latest` |
+| `base` | `base` | query contract validated through the shared EVM path | `dex.trades`, `tokens.supply_latest` |
+| `robinhood` | `robinhood` | indexed; enabled through the shared EVM path | `dex.trades`, `tokens.supply_latest` |
+| `monad` | `monad` | indexed; enabled through the shared EVM path | `dex.trades`, `tokens.supply_latest` |
 
 Market cap is reconstructed from a timestamp-aligned price and circulating/available supply. It must not be inferred from current supply without recording `precision = estimated`. A milestone crossing is the earliest qualifying observation, not the token creation time.
+
+The current EVM implementation uses a five-minute median price only when a bucket has at least `$250` volume, three trades, and two traders. Historical evidence rows require at least `$50` notional. Token discovery retains only tokens observed at or above `$1M`; candidate evidence can still be earned at the `$100K`, `$200K`, `$300K`, `$500K`, and `$1M` milestones.
+
+Solana historical discovery is deliberately excluded from `DUNE_HISTORICAL_CHAINS` until a bounded supply provider is available. This degradation does not disable Solana real-time Fomo or RPC monitoring and does not block EVM history partitions.
 
 Official references:
 
@@ -43,7 +48,7 @@ Create all three queries under the production Dune account or production team, n
 2. `address_radar_milestone_crossings_v1`
 3. `address_radar_pre_milestone_trades_v1`
 
-Record their numeric IDs in the server environment only. Query SQL and expected output schemas belong in repository documentation; credentials and OAuth artifacts do not.
+Validated private query IDs are `8831335`, `8831344`, and `8831345` in the order above. Their SQL source is versioned under `deployment/dune/`; credentials and OAuth artifacts must never be committed.
 
 Required output contracts:
 
@@ -68,7 +73,7 @@ Rotate the API key after initial setup because it was handled during interactive
 ## Credit and failure controls
 
 - Initial historical concurrency: `1` execution.
-- Default daily budget: `DUNE_DAILY_CREDIT_BUDGET=1000`; tune only after observing real query cost.
+- Initial daily scheduler budget: `DUNE_DAILY_CREDIT_BUDGET=100`; tune only after observing real query cost and account usage.
 - Stop scheduling new partitions when the local daily budget is exhausted.
 - HTTP `402` is `credit_limit`; pause historical work until the next budget window.
 - HTTP `429` and `5xx` are retryable with bounded backoff.

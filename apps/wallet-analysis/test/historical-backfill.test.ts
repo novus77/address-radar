@@ -143,4 +143,43 @@ describe("Dune historical backfill worker", () => {
     database.close();
     repository.close();
   });
+
+  it("preserves approximate milestone precision from Dune", async () => {
+    const path = await databasePath();
+    const repository = openAddressRadarRepository(path);
+    const database = new DatabaseSync(path);
+    const historyStore = createCandidateHistoryStore(database);
+    const runSavedQueryPage = vi.fn(async () => ({
+      queryId: 12,
+      executionId: "exec-estimated",
+      rows: [{
+        chain: "base",
+        token_address: "0xABC",
+        milestone_market_cap_usd: 500_000,
+        crossed_at: "2026-08-10T01:00:00.000Z",
+        precision: "estimated_latest_supply_5m_median",
+        source_reference: "dune:milestone:0xabc",
+      }],
+      nextOffset: null,
+      totalRowCount: 1,
+    }));
+    const worker = createDuneHistoricalBackfillWorker({
+      client: { runSavedQueryPage } as never,
+      repository,
+      historyStore,
+      queryIds: { token_universe: 11, milestone_crossings: 12, pre_milestone_trades: 13 },
+      pageSize: 100,
+      strategyVersion: "candidate-history-v3",
+    });
+    const [base] = createHistoricalPartitions({ queryKind: "milestone_crossings", chains: ["base"], from: START, to: START + DAY, tokenAddressesByChain: { base: ["0xabc"] }, createdAt: 1 });
+
+    await worker.execute(base!, new AbortController().signal);
+
+    expect(historyStore.milestoneCrossings("base:0xabc")).toEqual([
+      expect.objectContaining({ marketCapUsd: 500_000, precision: "estimated" }),
+    ]);
+    database.close();
+    repository.close();
+  });
+
 });

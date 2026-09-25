@@ -51,7 +51,7 @@ export function loadHistoricalBackfillConfig(env: Readonly<Record<string, string
   };
   const startAt = Date.parse(env.DUNE_HISTORICAL_START_AT ?? "2026-08-09T16:00:00.000Z");
   if (!Number.isFinite(startAt)) throw new Error("DUNE_HISTORICAL_START_AT must be an ISO timestamp");
-  const chains = [...new Set((env.DUNE_HISTORICAL_CHAINS ?? "solana,bsc,eth,base").split(",").map(value => value.trim().toLowerCase()).filter(Boolean))];
+  const chains = [...new Set((env.DUNE_HISTORICAL_CHAINS ?? "bsc,eth,base,robinhood,monad").split(",").map(value => value.trim().toLowerCase()).filter(Boolean))];
   if (!chains.length) throw new Error("DUNE_HISTORICAL_CHAINS must not be empty");
   return Object.freeze({
     databasePath: env.ADDRESS_RADAR_DATABASE_PATH?.trim() || ".address-radar/address-radar.sqlite",

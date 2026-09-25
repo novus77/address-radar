@@ -83,7 +83,7 @@ export function createDuneHistoricalBackfillWorker(input: {
           const marketCapUsd = requiredNumber(row, "milestone_market_cap_usd");
           const crossedAt = timestamp(row, "crossed_at");
           observedAt.push(crossedAt);
-          input.historyStore.saveMilestoneCrossing({ milestoneId: `${chain}:${tokenAddress}:${marketCapUsd}`, tokenId: `${chain}:${tokenAddress}`, marketCapUsd, crossedAt, precision: optionalString(row, "precision") === "estimated" ? "estimated" : "exact", source: "dune", sourceEventIds: [optionalString(row, "source_reference") ?? `${page.executionId}:${crossedAt}`], strategyVersion: input.strategyVersion });
+          input.historyStore.saveMilestoneCrossing({ milestoneId: `${chain}:${tokenAddress}:${marketCapUsd}`, tokenId: `${chain}:${tokenAddress}`, marketCapUsd, crossedAt, precision: optionalString(row, "precision")?.startsWith("estimated") ? "estimated" : "exact", source: "dune", sourceEventIds: [optionalString(row, "source_reference") ?? `${page.executionId}:${crossedAt}`], strategyVersion: input.strategyVersion });
         }
       } else {
         const rows = page.rows.map((row, index) => {
