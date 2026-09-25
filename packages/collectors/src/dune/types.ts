@@ -19,11 +19,28 @@ export interface DuneQueryResult<Row extends Readonly<Record<string, unknown>>> 
   readonly totalRowCount: number;
 }
 
+export interface DuneSavedQueryPageOptions extends DuneSavedQueryOptions {
+  readonly executionId?: string | null;
+  readonly offset?: number | null;
+}
+
+export interface DuneQueryPage<Row extends Readonly<Record<string, unknown>>> {
+  readonly queryId: number;
+  readonly executionId: string;
+  readonly rows: readonly Row[];
+  readonly nextOffset: number | null;
+  readonly totalRowCount: number;
+}
+
 export interface DuneDataApiClient {
   runSavedQuery<Row extends Readonly<Record<string, unknown>> = Readonly<Record<string, unknown>>>(
     queryId: number,
     options?: DuneSavedQueryOptions,
   ): Promise<DuneQueryResult<Row>>;
+  runSavedQueryPage<Row extends Readonly<Record<string, unknown>> = Readonly<Record<string, unknown>>>(
+    queryId: number,
+    options?: DuneSavedQueryPageOptions,
+  ): Promise<DuneQueryPage<Row>>;
 }
 
 export interface DuneDataApiClientOptions {

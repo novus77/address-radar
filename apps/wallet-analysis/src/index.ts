@@ -1,5 +1,6 @@
 export { createCandidateDiscoveryService } from "./candidate-discovery.js";
 export { createHistoricalBackfillScheduler } from "./historical-backfill.js";
+export { createDuneHistoricalBackfillWorker } from "./dune-historical-worker.js";
 export type { HistoricalBackfillWorker, HistoricalBackfillWorkerResult } from "./historical-backfill.js";
 export { createHistoricalEvidenceService } from "./historical-evidence.js";
 export type { HistoricalTradeEvidenceRow } from "./historical-evidence.js";
@@ -7,8 +8,8 @@ export { createHistoricalPartitions } from "./historical-partitions.js";
 export type { CandidateDiscoveryResult } from "./candidate-discovery.js";
 export { createTraderPerformanceRuntime } from "./performance.js";
 export { createWalletAnalysisReviewService } from "./review.js";
-export { loadWalletAnalysisConfig } from "./config.js";
-export type { WalletAnalysisConfig } from "./config.js";
+export { loadHistoricalBackfillConfig, loadWalletAnalysisConfig } from "./config.js";
+export type { HistoricalBackfillConfig, WalletAnalysisConfig } from "./config.js";
 export { createEvmRpcWalletHistoryProvider, createSolanaRpcWalletHistoryProvider, openHistoricalEventStore, openSqliteHistoricalMarketSource, reconstructWalletPositions } from "./history.js";
 export type { AnalysisRpcClient, HistoricalEventStore, HistoricalMarketSource, HistoricalTokenEvent } from "./history.js";
 export { createConfiguredAnalysisRpcClient } from "./rpc.js";

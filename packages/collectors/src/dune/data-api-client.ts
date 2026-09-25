@@ -1,7 +1,9 @@
 import type {
   DuneDataApiClient,
   DuneDataApiClientOptions,
+  DuneQueryPage,
   DuneQueryResult,
+  DuneSavedQueryPageOptions,
   DuneSavedQueryOptions,
 } from "./types.js";
 
@@ -156,6 +158,47 @@ export function createDuneDataApiClient(options: DuneDataApiClientOptions): Dune
         offset = number(page.next_offset);
       }
       return Object.freeze({ queryId, executionId, rows: Object.freeze(rows), pageCount, totalRowCount });
+    },
+    async runSavedQueryPage<Row extends Readonly<Record<string, unknown>>>(queryId: number, queryOptions: DuneSavedQueryPageOptions = {}): Promise<DuneQueryPage<Row>> {
+      if (!Number.isSafeInteger(queryId) || queryId <= 0) throw new Error("Dune query ID must be a positive integer");
+      const pageSize = queryOptions.pageSize ?? 1_000;
+      const offset = queryOptions.offset ?? 0;
+      if (!Number.isSafeInteger(pageSize) || pageSize <= 0 || pageSize > 100_000) throw new Error("Dune page size must be between 1 and 100000");
+      if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Dune result offset must be a nonnegative integer");
+      const deadline = now() + timeoutMs;
+      let executionId = string(queryOptions.executionId);
+      let state = "QUERY_STATE_PENDING";
+      if (executionId) {
+        const status = await request(`/execution/${encodeURIComponent(executionId)}/status`, { method: "GET" }, queryOptions.signal);
+        state = string(status.state) ?? "QUERY_STATE_UNKNOWN";
+        if (terminalFailure(state)) throw new DuneExecutionError(errorMessage(status), executionId, state);
+      } else {
+        const body: Record<string, unknown> = {};
+        if (queryOptions.parameters) body.query_parameters = queryOptions.parameters;
+        if (queryOptions.performance) body.performance = queryOptions.performance;
+        const started = await request(`/query/${queryId}/execute`, { method: "POST", body: JSON.stringify(body) }, queryOptions.signal);
+        executionId = string(started.execution_id);
+        if (!executionId) throw new DuneApiError("Malformed Dune execution response", null, false);
+        state = string(started.state) ?? "QUERY_STATE_PENDING";
+      }
+      while (state !== "QUERY_STATE_COMPLETED") {
+        if (now() >= deadline) throw new DuneTimeoutError(executionId, timeoutMs);
+        await sleep(pollIntervalMs, queryOptions.signal);
+        const status = await request(`/execution/${encodeURIComponent(executionId)}/status`, { method: "GET" }, queryOptions.signal);
+        state = string(status.state) ?? "QUERY_STATE_UNKNOWN";
+        if (terminalFailure(state)) throw new DuneExecutionError(errorMessage(status), executionId, state);
+      }
+      const page = await request(`/execution/${encodeURIComponent(executionId)}/results?limit=${pageSize}&offset=${offset}`, { method: "GET" }, queryOptions.signal);
+      const result = object(page.result);
+      if (!Array.isArray(result.rows)) throw new DuneApiError("Malformed Dune result rows", null, false);
+      const metadata = result.metadata && typeof result.metadata === "object" ? result.metadata as JsonObject : {};
+      return Object.freeze({
+        queryId,
+        executionId,
+        rows: Object.freeze(result.rows.map(row => object(row) as Row)),
+        nextOffset: number(page.next_offset),
+        totalRowCount: number(metadata.total_row_count) ?? result.rows.length,
+      });
     },
   });
 }

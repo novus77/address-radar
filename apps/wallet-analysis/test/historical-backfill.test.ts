@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { openAddressRadarRepository } from "@address-radar/database";
-import { createHistoricalBackfillScheduler, createHistoricalPartitions } from "../src/index.js";
+import { createCandidateHistoryStore } from "@address-radar/database";
+import { DatabaseSync } from "node:sqlite";
+import { createDuneHistoricalBackfillWorker, createHistoricalBackfillScheduler, createHistoricalPartitions } from "../src/index.js";
 
 const DAY = 24 * 60 * 60_000;
 const START = Date.parse("2026-08-09T16:00:00.000Z");
@@ -107,6 +109,38 @@ describe("historical backfill scheduler", () => {
       expect.objectContaining({ chain: "base", status: "failed", lastError: "base unavailable" }),
       expect.objectContaining({ chain: "solana", status: "completed" }),
     ]));
+    repository.close();
+  });
+});
+
+describe("Dune historical backfill worker", () => {
+  it("resumes a persisted execution page and normalizes token inventory", async () => {
+    const path = await databasePath();
+    const repository = openAddressRadarRepository(path);
+    const database = new DatabaseSync(path);
+    const historyStore = createCandidateHistoryStore(database);
+    const runSavedQueryPage = vi.fn(async () => ({
+      queryId: 11,
+      executionId: "exec-1",
+      rows: [{ chain: "base", token_address: "0xABC", symbol: "ALPHA", first_trade_at: "2026-08-10T00:00:00.000Z", first_reached_1m_at: "2026-08-10T01:00:00.000Z", peak_market_cap_usd: 2_000_000 }],
+      nextOffset: null,
+      totalRowCount: 101,
+    }));
+    const worker = createDuneHistoricalBackfillWorker({
+      client: { runSavedQueryPage } as never,
+      repository,
+      historyStore,
+      queryIds: { token_universe: 11, milestone_crossings: 12, pre_milestone_trades: 13 },
+      pageSize: 100,
+      strategyVersion: "candidate-history-v3",
+    });
+    const [base] = createHistoricalPartitions({ queryKind: "token_universe", chains: ["base"], from: START, to: START + DAY, createdAt: 1 });
+    const partition = { ...base!, status: "running" as const, executionId: "exec-1", nextOffset: 100, rowCount: 100, attemptCount: 2 };
+
+    await expect(worker.execute(partition, new AbortController().signal)).resolves.toMatchObject({ executionId: "exec-1", nextOffset: null, rowCount: 101, watermark: START + DAY, creditsUsed: 0, done: true });
+    expect(runSavedQueryPage).toHaveBeenCalledWith(11, expect.objectContaining({ executionId: "exec-1", offset: 100, pageSize: 100, parameters: expect.objectContaining({ chain: "base" }) }));
+    expect(historyStore.historicalToken("base:0xabc")).toMatchObject({ symbol: "ALPHA", peakMarketCapUsd: 2_000_000 });
+    database.close();
     repository.close();
   });
 });

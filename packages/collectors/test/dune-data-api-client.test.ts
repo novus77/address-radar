@@ -59,6 +59,31 @@ describe("Dune Data API client", () => {
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 
+  it("resumes one result page from a persisted execution and offset", async () => {
+    const requests: string[] = [];
+    const responses = [
+      json({ execution_id: "exec-resume", state: "QUERY_STATE_COMPLETED" }),
+      json({ execution_id: "exec-resume", query_id: 42, state: "QUERY_STATE_COMPLETED", next_offset: 200, result: { rows: [{ id: 101 }], metadata: { total_row_count: 300 } } }),
+    ];
+    const client = createDuneDataApiClient({ apiKey: "secret", fetch: async input => { requests.push(String(input)); return responses.shift()!; } });
+
+    await expect(client.runSavedQueryPage<{ readonly id: number }>(42, {
+      executionId: "exec-resume",
+      offset: 100,
+      pageSize: 100,
+    })).resolves.toEqual({
+      queryId: 42,
+      executionId: "exec-resume",
+      rows: [{ id: 101 }],
+      nextOffset: 200,
+      totalRowCount: 300,
+    });
+    expect(requests).toEqual([
+      "https://api.dune.com/api/v1/execution/exec-resume/status",
+      "https://api.dune.com/api/v1/execution/exec-resume/results?limit=100&offset=100",
+    ]);
+  });
+
   it("does not retry terminal authentication errors or expose the API key", async () => {
     const fetch = vi.fn(async () => json({ error: "Invalid API Key" }, 401));
     const client = createDuneDataApiClient({ apiKey: "secret-value", fetch, sleep: async () => {} });
