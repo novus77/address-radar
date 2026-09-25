@@ -84,3 +84,17 @@ Rotate the API key after initial setup because it was handled during interactive
 4. Create the three saved queries with a one-day test interval.
 5. Validate row uniqueness, timestamp precision, chain address normalization, and result pagination.
 6. Expand to the `2026-08-09T16:00:00.000Z` UTC historical watermark only after the sample passes.
+
+## Shadow deployment checklist
+
+1. Stop the wallet-analysis service and create a verified SQLite backup with `scripts/backup-production-state.sh`.
+2. Restore that backup to a temporary path and run `npm run audit:candidate-history -- /path/to/restored.db`.
+3. Install the release under `/opt/address-radar/releases/<revision>` and atomically update `/opt/address-radar/current`.
+4. Populate `/etc/address-radar/address-radar.env` from `deployment/address-radar.env.example`; use the rotated key and validated numeric query IDs.
+5. Confirm `ADDRESS_RADAR_GATEWAY_DELIVERY_ENABLED=false` before starting any historical work.
+6. Restart `address-radar-wallet-analysis.service`, then verify the console historical operations panel and the audit JSON.
+7. Start with one chain-day partition. Confirm cursor, row count, credit usage, and watermark advance.
+8. Restart the worker once while that partition is active. It must resume from the persisted checkpoint without duplicate evidence.
+9. Expand the backfill only after API, logs, funnel counters, and the restored rollback copy all pass inspection.
+
+The production audit command exits non-zero for orphan candidate evidence, failed or stale partitions, failed re-evaluations, or delivery being enabled during shadow acceptance. An empty inventory or an in-progress backfill is reported as a warning rather than a blocker.
