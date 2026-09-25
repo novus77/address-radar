@@ -139,6 +139,7 @@ describe("Dune historical backfill worker", () => {
 
     await expect(worker.execute(partition, new AbortController().signal)).resolves.toMatchObject({ executionId: "exec-1", nextOffset: null, rowCount: 101, watermark: START + DAY, creditsUsed: 0, done: true });
     expect(runSavedQueryPage).toHaveBeenCalledWith(11, expect.objectContaining({ executionId: "exec-1", offset: 100, pageSize: 100, parameters: expect.objectContaining({ chain: "base" }) }));
+    expect(runSavedQueryPage.mock.calls[0]?.[1].parameters).not.toHaveProperty("token_addresses");
     expect(historyStore.historicalToken("base:0xabc")).toMatchObject({ symbol: "ALPHA", peakMarketCapUsd: 2_000_000 });
     database.close();
     repository.close();

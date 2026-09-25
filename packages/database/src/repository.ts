@@ -236,7 +236,7 @@ const toSignalOutboxRecord = (row: Record<string, unknown>): SignalOutboxRecord 
 export function openAddressRadarRepository(databasePath: string): AddressRadarRepository {
   const database = new DatabaseSync(databasePath);
   migrateAddressRadarDatabase(database);
-  database.exec("PRAGMA busy_timeout = 100");
+  database.exec("PRAGMA busy_timeout = 1000");
 
   const transaction = <T>(operation: () => T): T => {
     if (database.isTransaction) return operation();

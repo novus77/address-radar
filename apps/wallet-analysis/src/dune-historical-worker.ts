@@ -52,7 +52,9 @@ export function createDuneHistoricalBackfillWorker(input: {
           chain: partition.chain,
           start_time: new Date(partition.dayStart).toISOString(),
           end_time: new Date(partition.dayEnd).toISOString(),
-          token_addresses: JSON.stringify(partition.tokenAddresses),
+          ...(partition.queryKind === "token_universe" ? {} : {
+            token_addresses: JSON.stringify(partition.tokenAddresses),
+          }),
         },
       });
       const observedAt: number[] = [];
