@@ -55,9 +55,14 @@ export function auditCandidateHistory(database: DatabaseSync, input: {
   return Object.freeze({ ok: blockers.length === 0, auditedAt: input.now, counts, watermarks: Object.freeze(watermarks.map(item => Object.freeze(item))), blockers: Object.freeze(blockers), warnings: Object.freeze(warnings) });
 }
 
+export function resolveAuditDatabasePath(args: readonly string[], environmentPath?: string): string {
+  const databasePath = args.find(argument => argument !== "--") ?? environmentPath;
+  if (!databasePath) throw new Error("Database path is required as a positional argument or ADDRESS_RADAR_DATABASE_PATH");
+  return databasePath;
+}
+
 async function main(): Promise<void> {
-  const databasePath = process.argv[2] ?? process.env.ADDRESS_RADAR_DATABASE_PATH;
-  if (!databasePath) throw new Error("Database path is required as argv[2] or ADDRESS_RADAR_DATABASE_PATH");
+  const databasePath = resolveAuditDatabasePath(process.argv.slice(2), process.env.ADDRESS_RADAR_DATABASE_PATH);
   const database = new DatabaseSync(databasePath);
   try {
     migrateAddressRadarDatabase(database);

@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { createCandidateHistoryStore, initializeCandidateHistorySchema, openAddressRadarRepository } from "@address-radar/database";
 import { createCandidateDiscoveryService, createHistoricalEvidenceService } from "../../apps/wallet-analysis/src/index.js";
-import { auditCandidateHistory } from "../../scripts/audit-candidate-history.js";
+import { auditCandidateHistory, resolveAuditDatabasePath } from "../../scripts/audit-candidate-history.js";
 
 describe("candidate history replay convergence", () => {
   it("produces identical evidence and admission snapshots for historical and real-time inputs", async () => {
@@ -91,4 +91,10 @@ describe("candidate history replay convergence", () => {
     expect(report.blockers).toContain("orphan_candidate_evidence");
     database.close();
   });
+
+  it("ignores the package-manager argument separator when resolving the audit database", () => {
+    expect(resolveAuditDatabasePath(["--", "/var/lib/address-radar/address-radar.db"], "/fallback.db")).toBe("/var/lib/address-radar/address-radar.db");
+    expect(resolveAuditDatabasePath([], "/fallback.db")).toBe("/fallback.db");
+  });
+
 });
