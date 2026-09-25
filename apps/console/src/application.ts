@@ -170,6 +170,90 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
       });
       return { status: 200, body: { total: items.length, page: 1, pageSize: 500, updatedAt: Date.now(), items } };
     }
+    if (pathname === "/api/v2/historical-tokens") {
+      const items = rows(`
+        SELECT h.token_id AS tokenId, h.chain, h.token_address AS tokenAddress,
+          h.symbol, h.image_url AS imageUrl, h.first_trade_at AS firstTradeAt,
+          h.first_reached_1m_at AS firstReached1mAt,
+          h.peak_market_cap_usd AS peakMarketCapUsd, h.source,
+          CASE WHEN EXISTS (
+            SELECT 1 FROM token_milestone_crossings m
+            WHERE m.token_id = h.token_id AND m.precision != 'unavailable'
+          ) THEN 'complete' ELSE 'missing' END AS milestoneStatus,
+          COALESCE((
+            SELECT p.status FROM historical_backfill_partitions p
+            WHERE EXISTS (
+              SELECT 1 FROM json_each(p.token_addresses) a
+              WHERE LOWER(CAST(a.value AS TEXT)) = LOWER(h.token_address)
+            )
+            ORDER BY CASE p.status WHEN 'running' THEN 1 WHEN 'failed' THEN 2 WHEN 'pending' THEN 3 ELSE 4 END,
+              p.updated_at DESC LIMIT 1
+          ), 'not_scheduled') AS backfillStatus,
+          (SELECT COUNT(*) FROM candidate_evidence_v3 e WHERE e.token_id = h.token_id) AS eligibleBuyerCount,
+          (SELECT COUNT(DISTINCT e.trader_id) FROM candidate_evidence_v3 e WHERE e.token_id = h.token_id) AS evidenceTraderCount,
+          (SELECT r.status FROM historical_re_evaluation_requests r WHERE r.token_id = h.token_id ORDER BY r.requested_at DESC LIMIT 1) AS reEvaluationStatus
+        FROM historical_tokens h
+        ORDER BY h.first_reached_1m_at DESC, h.chain, h.token_address
+        LIMIT 1000
+      `).map(item => {
+        const row = item as Record<string, unknown>;
+        const diagnostics: string[] = [];
+        if (row.milestoneStatus !== "complete") diagnostics.push("缺少可信的市值里程碑时间");
+        if (row.backfillStatus === "not_scheduled") diagnostics.push("尚未安排历史交易回补");
+        if (row.backfillStatus === "failed") diagnostics.push("历史交易回补失败，可手动重试");
+        if (Number(row.eligibleBuyerCount ?? 0) === 0) diagnostics.push("尚未发现满足最低买入金额的早期交易员");
+        return Object.freeze({ ...row, diagnostics: Object.freeze(diagnostics) });
+      });
+      return { status: 200, body: { total: items.length, updatedAt: Date.now(), items } };
+    }
+    if (pathname === "/api/v2/historical-partitions") {
+      const items = rows(`
+        SELECT partition_id AS partitionId, query_kind AS queryKind, chain,
+          day_start AS dayStart, day_end AS dayEnd, token_addresses AS tokenAddresses,
+          status, execution_id AS executionId, next_offset AS nextOffset,
+          row_count AS rowCount, attempt_count AS attemptCount, watermark,
+          next_retry_at AS nextRetryAt, lease_expires_at AS leaseExpiresAt,
+          last_error AS lastError, created_at AS createdAt, updated_at AS updatedAt,
+          completed_at AS completedAt
+        FROM historical_backfill_partitions
+        ORDER BY updated_at DESC, partition_id
+        LIMIT 1000
+      `).map(item => {
+        const row = item as Record<string, unknown>;
+        return Object.freeze({
+          ...row,
+          tokenAddresses: typeof row.tokenAddresses === "string" ? Object.freeze(stringList(JSON.parse(row.tokenAddresses) as unknown)) : Object.freeze([]),
+        });
+      });
+      return { status: 200, body: { total: items.length, updatedAt: Date.now(), items } };
+    }
+    if (pathname === "/api/v2/historical-operations") {
+      const usageDay = new Date().toISOString().slice(0, 10);
+      const credits = database.prepare("SELECT credits_used AS creditsUsed FROM historical_backfill_credit_usage WHERE usage_day = ?").get(usageDay) as { creditsUsed: number } | undefined;
+      const counts = database.prepare(`
+        SELECT
+          SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pendingPartitionCount,
+          SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS runningPartitionCount,
+          SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failedPartitionCount
+        FROM historical_backfill_partitions
+      `).get() as Record<string, number | null>;
+      const watermarks = rows(`
+        SELECT chain, query_kind AS queryKind, watermark, updated_at AS updatedAt
+        FROM historical_backfill_watermarks ORDER BY chain, query_kind
+      `);
+      const realtime = database.prepare("SELECT MAX(occurred_at) AS value FROM trader_events").get() as { value: number | null };
+      const historical = database.prepare("SELECT MAX(watermark) AS value FROM historical_backfill_watermarks").get() as { value: number | null };
+      return { status: 200, body: {
+        creditsUsedToday: Number(credits?.creditsUsed ?? 0),
+        pendingPartitionCount: Number(counts.pendingPartitionCount ?? 0),
+        runningPartitionCount: Number(counts.runningPartitionCount ?? 0),
+        failedPartitionCount: Number(counts.failedPartitionCount ?? 0),
+        historicalWatermark: historical.value,
+        realtimeWatermark: realtime.value,
+        watermarks,
+        updatedAt: Date.now(),
+      } };
+    }
     if (pathname === "/api/v1/overview") {
       const count = (table: string): number => Number((database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count);
       const delivered = Number((database.prepare("SELECT COUNT(*) AS count FROM broadcast_records").get() as { count: number }).count);
@@ -616,6 +700,37 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
         database.prepare("UPDATE milestone_backfill_jobs SET status = 'pending', next_attempt_at = ?, last_error = NULL, completed_at = NULL, updated_at = ? WHERE job_id = ?").run(now, now, jobId);
         audit("milestone_backfill.retry", { jobId, previousStatus: job.status });
         return { status: 200, body: { jobId, status: "pending", updatedAt: now } };
+      }
+      const historicalPartitionRetryMatch = pathname.match(/^\/api\/v2\/historical-partitions\/([^/]+)\/retry$/);
+      if (method === "POST" && historicalPartitionRetryMatch) {
+        const partitionId = decodeURIComponent(historicalPartitionRetryMatch[1] ?? "");
+        const partition = database.prepare("SELECT status FROM historical_backfill_partitions WHERE partition_id = ?").get(partitionId) as { status: string } | undefined;
+        if (!partition) return { status: 404, body: { error: "historical_partition_not_found" } };
+        if (partition.status !== "failed") return { status: 409, body: { error: "historical_partition_not_retryable" } };
+        const now = Date.now();
+        database.prepare(`
+          UPDATE historical_backfill_partitions
+          SET status = 'pending', execution_id = NULL, next_offset = NULL,
+            lease_expires_at = NULL, last_error = NULL, next_retry_at = ?,
+            completed_at = NULL, updated_at = ?
+          WHERE partition_id = ?
+        `).run(now, now, partitionId);
+        audit("historical_partition.retry", { partitionId, previousStatus: partition.status });
+        return { status: 200, body: { partitionId, status: "pending", updatedAt: now } };
+      }
+      const historicalReEvaluateMatch = pathname.match(/^\/api\/v2\/historical-tokens\/([^/]+)\/re-evaluate$/);
+      if (method === "POST" && historicalReEvaluateMatch) {
+        const tokenId = decodeURIComponent(historicalReEvaluateMatch[1] ?? "");
+        const token = database.prepare("SELECT token_id AS tokenId FROM historical_tokens WHERE token_id = ?").get(tokenId) as { tokenId: string } | undefined;
+        if (!token) return { status: 404, body: { error: "historical_token_not_found" } };
+        const existing = database.prepare("SELECT request_id AS requestId, status, requested_at AS requestedAt FROM historical_re_evaluation_requests WHERE token_id = ? AND status IN ('pending', 'running') ORDER BY requested_at DESC LIMIT 1").get(tokenId) as { requestId: string; status: string; requestedAt: number } | undefined;
+        if (existing) return { status: 202, body: { tokenId, ...existing } };
+        const requestId = randomUUID();
+        const requestedAt = Date.now();
+        database.prepare("INSERT INTO historical_re_evaluation_requests(request_id, token_id, status, requested_at, started_at, completed_at, last_error) VALUES (?, ?, 'pending', ?, NULL, NULL, NULL)")
+          .run(requestId, tokenId, requestedAt);
+        audit("historical_token.re_evaluate", { requestId, tokenId });
+        return { status: 202, body: { requestId, tokenId, status: "pending", requestedAt } };
       }
       if (method === "PUT" && pathname === "/api/v1/config") {
         const strategyVersion = typeof input.strategyVersion === "string" ? input.strategyVersion.trim() : "";

@@ -8,8 +8,9 @@ const state = {
   signals: [],
   identityQueue: [],
   identityForms: [],
-  milestoneBackfills: [],
-  milestoneSummary: {},
+  historicalTokens: [],
+  historicalPartitions: [],
+  historicalOperations: {},
   walletAnalyses: [],
   selectedWalletAnalysisId: null,
 };
@@ -218,29 +219,45 @@ const renderWalletAnalyses = () => {
   }).join("")}</tbody></table>` : empty("还没有地址分析任务。");
 };
 
-const milestoneStatusLabel = value => ({ pending: "待处理", running: "处理中", completed: "已完成", partial: "部分覆盖", failed: "失败", unavailable: "来源不可用" })[value] || value;
+const historicalStatusLabel = value => ({ complete: "已重建", missing: "缺失", not_scheduled: "未安排", pending: "等待回补", running: "正在回补", completed: "回补完成", failed: "回补失败" })[value] || value;
 
 const renderMilestones = () => {
   const query = $("#milestone-search").value.trim().toLowerCase();
-  const status = $("#milestone-status").value;
-  const items = state.milestoneBackfills.filter(item => (!query || `${item.jobId} ${item.chain} ${item.tokenAddress}`.toLowerCase().includes(query)) && (!status || item.status === status));
-  const summary = state.milestoneSummary;
-  $("#milestone-summary").innerHTML = [
-    ["里程碑任务", summary.total],
-    ["已完成", summary.completed],
-    ["部分/失败", Number(summary.partial || 0) + Number(summary.failed || 0) + Number(summary.unavailable || 0)],
-    ["已重评", summary.evaluated],
-    ["候选发现", summary.qualifiedCandidates],
+  const chain = $("#historical-chain").value;
+  const date = $("#historical-date").value;
+  const milestone = $("#historical-milestone").value;
+  const backfill = $("#historical-backfill").value;
+  const buyers = $("#historical-buyers").value;
+  const evidence = $("#historical-evidence").value;
+  const items = state.historicalTokens.filter(item => {
+    const reachedDate = item.firstReached1mAt ? new Date(Number(item.firstReached1mAt)).toISOString().slice(0, 10) : "";
+    const buyerMatch = !buyers || (buyers === "yes" ? Number(item.eligibleBuyerCount) > 0 : Number(item.eligibleBuyerCount) === 0);
+    const evidenceMatch = !evidence || (evidence === "yes" ? Number(item.evidenceTraderCount) > 0 : Number(item.evidenceTraderCount) === 0);
+    return (!query || `${item.symbol || ""} ${item.tokenAddress}`.toLowerCase().includes(query)) && (!chain || item.chain === chain) && (!date || reachedDate === date) && (!milestone || item.milestoneStatus === milestone) && (!backfill || item.backfillStatus === backfill) && buyerMatch && evidenceMatch;
+  });
+  const operations = state.historicalOperations;
+  $("#historical-operations").innerHTML = [
+    ["历史代币", state.historicalTokens.length],
+    ["Dune 今日额度", text(operations.creditsUsedToday, 0)],
+    ["等待分区", text(operations.pendingPartitionCount, 0)],
+    ["运行分区", text(operations.runningPartitionCount, 0)],
+    ["失败分区", text(operations.failedPartitionCount, 0)],
+    ["历史水位", time(operations.historicalWatermark)],
+    ["实时水位", time(operations.realtimeWatermark)],
   ].map(([label, value]) => `<article><span>${escapeHtml(label)}</span><strong>${text(value, 0)}</strong></article>`).join("");
-  $("#milestone-grid").innerHTML = items.length ? `<table class="operator-table"><thead><tr><th>链 / 代币</th><th>里程碑</th><th>回补状态</th><th>历史覆盖</th><th>重评结果</th><th>最高证明</th><th>最近更新</th><th>操作</th></tr></thead><tbody>${items.map(item => `<tr><td><strong>${escapeHtml(item.chain)}</strong><small>${escapeHtml(item.tokenAddress)}</small></td><td>${money(item.milestoneMarketCapUsd)}<small>${time(item.reachedAt)}</small></td><td><span class="tag ${escapeHtml(item.status)}">${escapeHtml(milestoneStatusLabel(item.status))}</span><small>${item.lastError ? escapeHtml(item.lastError) : `尝试 ${text(item.attemptCount, 0)} 次`}</small></td><td>${text(item.recordsInserted, 0)}/${text(item.recordsSeen, 0)} 条<small>${escapeHtml(text(item.coverageStatus, "尚未评估"))}</small></td><td>${text(item.eligibleBuyCount, 0)} 个早期买入<small>${text(item.qualifiedCandidateCount, 0)} 个候选 · ${time(item.evaluatedAt)}</small></td><td><strong>${item.highestProvenMultiple ? `${Number(item.highestProvenMultiple).toFixed(1)}x` : "--"}</strong></td><td>${time(item.updatedAt)}</td><td>${["failed", "unavailable", "partial"].includes(item.status) ? `<button type="button" data-retry-backfill="${escapeHtml(item.jobId)}">重试</button>` : '<span class="muted">--</span>'}</td></tr>`).join("")}</tbody></table>` : empty("没有符合当前筛选条件的里程碑回补任务。");
+  $("#historical-filter-summary").textContent = `显示 ${items.length}/${state.historicalTokens.length} 个历史代币；每个合约仅占一行。`;
+  const tokenRows = items.length ? items.map(item => `<tr><td><div class="token-identity">${item.imageUrl ? `<img src="${escapeHtml(item.imageUrl)}" alt="" loading="lazy">` : `<span class="token-fallback">${escapeHtml((item.symbol || "?").slice(0, 1))}</span>`}<div><strong>${escapeHtml(text(item.symbol, "未知代币"))}</strong><span class="tag chain">${escapeHtml(item.chain)}</span><button class="address-copy compact-copy" type="button" data-copy="${escapeHtml(item.tokenAddress)}"><span>${escapeHtml(item.tokenAddress.slice(0, 8))}…${escapeHtml(item.tokenAddress.slice(-6))}</span><small>复制 CA</small></button></div></div></td><td>${time(item.firstReached1mAt)}</td><td><strong>${money(item.peakMarketCapUsd)}</strong></td><td><span class="tag ${escapeHtml(item.milestoneStatus)}">${escapeHtml(historicalStatusLabel(item.milestoneStatus))}</span></td><td><span class="tag ${escapeHtml(item.backfillStatus)}">${escapeHtml(historicalStatusLabel(item.backfillStatus))}</span></td><td><strong>${text(item.eligibleBuyerCount, 0)}</strong></td><td><strong>${text(item.evidenceTraderCount, 0)}</strong></td><td>${item.diagnostics?.length ? item.diagnostics.map(value => `<small>${escapeHtml(value)}</small>`).join("") : '<span class="tag completed">证据链完整</span>'}</td><td><button type="button" data-re-evaluate-token="${escapeHtml(item.tokenId)}" ${["pending", "running"].includes(item.reEvaluationStatus) ? "disabled" : ""}>${["pending", "running"].includes(item.reEvaluationStatus) ? "重评等待中" : "重新评估"}</button></td></tr>`).join("") : '<tr><td colspan="9" class="empty-row">没有符合当前筛选条件的历史代币。</td></tr>';
+  $("#milestone-grid").innerHTML = `<table class="operator-table historical-token-table"><thead><tr><th>代币</th><th>首次达到 1M</th><th>历史最高市值</th><th>里程碑</th><th>历史回补</th><th>早期买家</th><th>证据交易员</th><th>诊断</th><th>操作</th></tr></thead><tbody>${tokenRows}</tbody></table>`;
+  const partitions = state.historicalPartitions;
+  $("#historical-partitions-grid").innerHTML = partitions.length ? `<table class="operator-table"><thead><tr><th>分区</th><th>链 / 查询</th><th>日期范围</th><th>状态</th><th>行数 / 游标</th><th>水位线</th><th>诊断</th><th>操作</th></tr></thead><tbody>${partitions.map(item => `<tr><td><strong>${escapeHtml(item.partitionId)}</strong><small>${text(item.tokenAddresses?.length, 0)} 个代币</small></td><td>${escapeHtml(item.chain)}<small>${escapeHtml(item.queryKind)}</small></td><td>${time(item.dayStart)}<small>至 ${time(item.dayEnd)}</small></td><td><span class="tag ${escapeHtml(item.status)}">${escapeHtml(historicalStatusLabel(item.status))}</span><small>尝试 ${text(item.attemptCount, 0)} 次</small></td><td>${text(item.rowCount, 0)}<small>游标 ${text(item.nextOffset, 0)}</small></td><td>${time(item.watermark)}</td><td><small>${escapeHtml(text(item.lastError, "运行正常"))}</small></td><td>${item.status === "failed" ? `<button type="button" data-retry-partition="${escapeHtml(item.partitionId)}">重试分区</button>` : '<span class="muted">--</span>'}</td></tr>`).join("")}</tbody></table>` : empty("暂无历史分区。");
 };
 
 const load = async () => {
-  const [overview, chainPage, aggregationPage, candidateFunnel, candidatePage] = await Promise.all([apiV2("workbench/summary"), apiV2("chains"), apiV2("token-aggregates"), apiV2("candidate-funnel"), apiV2("candidates")]);
+  const [overview, chainPage, aggregationPage, candidateFunnel, candidatePage, historicalTokenPage, historicalPartitionPage, historicalOperations] = await Promise.all([apiV2("workbench/summary"), apiV2("chains"), apiV2("token-aggregates"), apiV2("candidate-funnel"), apiV2("candidates"), apiV2("historical-tokens"), apiV2("historical-partitions"), apiV2("historical-operations")]);
   const metrics = { traders: overview.addressLibraryCount, candidates: candidateFunnel.currentAdmittedCount, aggregations: overview.aggregatedTokenCount, broadcasts: overview.deliveredSignalCount };
   for (const [key, value] of Object.entries(metrics)) { const node = $(`#metric-${key}`); if (node) node.textContent = text(value, "0"); }
-  for (const selector of ["#aggregation-chain", "#signal-chain"]) $(selector).insertAdjacentHTML("beforeend", chainPage.items.map(chain => `<option value="${escapeHtml(chain.id)}">${escapeHtml(chain.labelZh)}</option>`).join(""));
-  const modules = ["traders", "candidates", "backtests", "aggregations", "outcomes", "milestone-backfills", "milestone-backfills/summary", "wallet-analyses"];
+  for (const selector of ["#aggregation-chain", "#signal-chain", "#historical-chain"]) $(selector).insertAdjacentHTML("beforeend", chainPage.items.map(chain => `<option value="${escapeHtml(chain.id)}">${escapeHtml(chain.labelZh)}</option>`).join(""));
+  const modules = ["traders", "candidates", "backtests", "aggregations", "outcomes", "wallet-analyses"];
   const data = await Promise.all(modules.map(module => api(module)));
   state.traders = data[0];
   renderTraders();
@@ -250,9 +267,10 @@ const load = async () => {
   $("#backtests-grid").innerHTML = cards.backtests(data[2]);
   state.aggregations = aggregationPage.items;
   state.signals = data[4];
-  state.milestoneBackfills = data[5];
-  state.milestoneSummary = data[6];
-  state.walletAnalyses = data[7];
+  state.historicalTokens = historicalTokenPage.items;
+  state.historicalPartitions = historicalPartitionPage.items;
+  state.historicalOperations = historicalOperations;
+  state.walletAnalyses = data[5];
   $("#aggregation-minimum").value = localStorage.getItem("addressRadarMinimumAggregationUsd") || "100";
   renderAggregations();
   renderSignals();
@@ -269,8 +287,7 @@ document.querySelectorAll("[data-module]").forEach(button => button.addEventList
 $("#signal-search").addEventListener("input", renderSignals);
 $("#signal-chain").addEventListener("input", renderSignals);
 $("#signal-action").addEventListener("input", renderSignals);
-$("#milestone-search").addEventListener("input", renderMilestones);
-$("#milestone-status").addEventListener("input", renderMilestones);
+["#milestone-search", "#historical-chain", "#historical-date", "#historical-milestone", "#historical-backfill", "#historical-buyers", "#historical-evidence"].forEach(selector => $(selector).addEventListener("input", renderMilestones));
 
 $("#traders-grid").addEventListener("click", event => {
   const copy = event.target.closest("[data-copy]");
@@ -412,18 +429,26 @@ $("#identity-conflicts-grid").addEventListener("click", async event => {
 });
 
 $("#milestone-grid").addEventListener("click", async event => {
-  const button = event.target.closest("[data-retry-backfill]");
+  const copy = event.target.closest("[data-copy]");
+  if (copy) { await navigator.clipboard.writeText(copy.dataset.copy); copy.querySelector("small").textContent = "已复制"; return; }
+  const button = event.target.closest("[data-re-evaluate-token]");
   if (!button) return;
   button.disabled = true;
-  try {
-    await api(`milestone-backfills/${encodeURIComponent(button.dataset.retryBackfill)}/retry`, { method: "POST", body: "{}" });
-    const [items, summary] = await Promise.all([api("milestone-backfills"), api("milestone-backfills/summary")]);
-    state.milestoneBackfills = items;
-    state.milestoneSummary = summary;
-    renderMilestones();
-  } finally {
-    button.disabled = false;
-  }
+  await apiV2(`historical-tokens/${encodeURIComponent(button.dataset.reEvaluateToken)}/re-evaluate`, { method: "POST", body: "{}" });
+  const page = await apiV2("historical-tokens");
+  state.historicalTokens = page.items;
+  renderMilestones();
+});
+
+$("#historical-partitions-grid").addEventListener("click", async event => {
+  const button = event.target.closest("[data-retry-partition]");
+  if (!button) return;
+  button.disabled = true;
+  await apiV2(`historical-partitions/${encodeURIComponent(button.dataset.retryPartition)}/retry`, { method: "POST", body: "{}" });
+  const [partitionPage, operations] = await Promise.all([apiV2("historical-partitions"), apiV2("historical-operations")]);
+  state.historicalPartitions = partitionPage.items;
+  state.historicalOperations = operations;
+  renderMilestones();
 });
 
 void load();

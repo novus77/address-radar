@@ -88,6 +88,20 @@ export function initializeCandidateHistorySchema(database: DatabaseSync): void {
       evaluated_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS candidate_admission_snapshots_latest ON candidate_admission_snapshots(trader_id, evaluated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS historical_re_evaluation_requests (
+      request_id TEXT PRIMARY KEY,
+      token_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed')),
+      requested_at INTEGER NOT NULL,
+      started_at INTEGER,
+      completed_at INTEGER,
+      last_error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS historical_re_evaluation_requests_claim
+      ON historical_re_evaluation_requests(status, requested_at, request_id);
+    CREATE INDEX IF NOT EXISTS historical_re_evaluation_requests_token
+      ON historical_re_evaluation_requests(token_id, requested_at DESC);
   `);
 }
 

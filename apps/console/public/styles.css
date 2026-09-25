@@ -88,6 +88,15 @@ select { font:inherit; border:1px solid var(--ink); padding:12px 14px; backgroun
 .tag.completed { background:var(--mint); }
 .tag.partial,.tag.pending,.tag.running { background:var(--acid); }
 .tag.failed,.tag.unavailable { background:#ef9a87; }
+.tag.missing,.tag.not_scheduled { background:#ef9a87; }
+.history-operations { grid-template-columns:repeat(7,1fr); }
+.history-filters { grid-template-columns:minmax(260px,1.4fr) repeat(6,minmax(130px,.55fr)); }
+.token-identity { display:flex; align-items:flex-start; gap:10px; min-width:230px; }
+.token-identity img,.token-fallback { width:38px; height:38px; flex:0 0 38px; border:1px solid var(--ink); border-radius:50%; object-fit:cover; background:var(--ink); color:var(--acid); display:grid; place-items:center; font-family:"Songti SC","STSong",serif; font-size:19px; }
+.token-identity>div { display:grid; grid-template-columns:auto 1fr; align-items:center; gap:5px 8px; min-width:0; }
+.token-identity .compact-copy { grid-column:1/-1; }
+.historical-token-table { min-width:1380px; }
+.historical-token-table td:nth-child(8) small { display:block; max-width:260px; margin-bottom:4px; color:var(--muted); }
 
-@media(max-width:980px){.filter-bar{grid-template-columns:1fr 1fr}.coverage-summary{grid-template-columns:repeat(2,1fr)}.coverage-summary article{border-bottom:1px solid var(--line)}.identity-toolbar{align-items:flex-start;gap:12px;flex-direction:column}.inline-filters{width:100%}.inline-filters input{min-width:0;flex:1}.detail-grid{grid-template-columns:1fr}.detail-grid>section{border-right:0}.identity-form-row,.manual-trader-form,.wallet-analysis-form{grid-template-columns:1fr 1fr}.remove-form{align-self:end}}
+@media(max-width:980px){.filter-bar,.history-filters{grid-template-columns:1fr 1fr}.coverage-summary{grid-template-columns:repeat(2,1fr)}.coverage-summary article{border-bottom:1px solid var(--line)}.identity-toolbar{align-items:flex-start;gap:12px;flex-direction:column}.inline-filters{width:100%}.inline-filters input{min-width:0;flex:1}.detail-grid{grid-template-columns:1fr}.detail-grid>section{border-right:0}.identity-form-row,.manual-trader-form,.wallet-analysis-form{grid-template-columns:1fr 1fr}.remove-form{align-self:end}}
 @media(max-width:620px){.filter-bar{grid-template-columns:1fr}.inline-filters{display:grid}.profile-summary{align-items:flex-start}.detail-grid{display:block}.identity-form-row,.manual-trader-form,.wallet-analysis-form{grid-template-columns:1fr}.manual-trader-form .wide,#manual-trader-feedback{grid-column:auto}.form-footer{align-items:flex-start;flex-direction:column}}

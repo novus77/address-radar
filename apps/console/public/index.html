@@ -61,10 +61,21 @@
       <section class="module" data-panel="aggregations"><header><p class="eyebrow">CONVERGENCE</p><h2>代币聚合</h2><span>每行一个合约，查看当前证据与距离信号还缺什么</span></header><div class="filter-bar"><label>最低聚合买入金额（USD）<input id="aggregation-minimum" type="number" min="0" step="10" value="100"></label><select id="aggregation-chain"><option value="">全部链</option></select><select id="aggregation-lifecycle"><option value="">全部代币阶段</option><option value="created">已创建</option><option value="launched_0_2h">刚发射 0-2 小时</option><option value="launched_2_12h">发射 2-12 小时</option><option value="launched_12_24h">发射 12-24 小时</option><option value="older_1_7d">老币 1-7 天</option><option value="older_7d_plus">老币 7 天以上</option></select><select id="aggregation-status"><option value="">全部聚合状态</option><option value="observe">正在聚合</option><option value="broadcast">首次信号合格</option><option value="rebroadcast">再次信号合格</option></select></div><div class="filter-summary" id="aggregation-filter-summary"></div><div class="data-grid" id="aggregations-grid"></div></section>
       <section class="module" data-panel="outcomes"><header><p class="eyebrow">SIGNALS</p><h2>信号结果</h2><span>展示本地已合格信号，并单独标明是否已投递</span></header><div class="filter-bar compact"><input id="signal-search" type="search" placeholder="搜索代币或信号"><select id="signal-chain"><option value="">全部链</option></select><select id="signal-action"><option value="">全部类型</option><option value="new">首次播报</option><option value="update">再次播报</option></select></div><div class="data-grid" id="outcomes-grid"></div></section>
       <section class="module" data-panel="milestones">
-        <header><p class="eyebrow">HISTORY RECOVERY</p><h2>历史覆盖与重评估</h2><span>查看里程碑历史证据覆盖、候选发现与降级原因</span></header>
-        <div class="coverage-summary" id="milestone-summary"></div>
-        <div class="filter-bar compact"><input id="milestone-search" type="search" placeholder="搜索链、代币或任务"><select id="milestone-status"><option value="">全部回补状态</option><option value="pending">待处理</option><option value="running">处理中</option><option value="completed">已完成</option><option value="partial">部分覆盖</option><option value="failed">失败</option><option value="unavailable">来源不可用</option></select></div>
+        <header><p class="eyebrow">HISTORY OPERATIONS</p><h2>历史覆盖与重评估</h2><span>从历史代币到早期交易员证据，查看完整回补漏斗与可操作故障</span></header>
+        <div class="coverage-summary history-operations" id="historical-operations"></div>
+        <div class="filter-bar history-filters">
+          <input id="milestone-search" type="search" placeholder="搜索代币名称或合约地址">
+          <select id="historical-chain" aria-label="历史链"><option value="">全部链</option></select>
+          <input id="historical-date" aria-label="达到 1M 日期" type="date">
+          <select id="historical-milestone" aria-label="里程碑状态"><option value="">全部里程碑</option><option value="complete">已重建</option><option value="missing">缺失</option></select>
+          <select id="historical-backfill" aria-label="回补状态"><option value="">全部回补状态</option><option value="not_scheduled">未安排</option><option value="pending">等待回补</option><option value="running">正在回补</option><option value="completed">回补完成</option><option value="failed">回补失败</option></select>
+          <select id="historical-buyers" aria-label="早期买家"><option value="">全部买家状态</option><option value="yes">已有早期买家</option><option value="no">暂无早期买家</option></select>
+          <select id="historical-evidence" aria-label="候选证据"><option value="">全部证据状态</option><option value="yes">已形成证据</option><option value="no">尚无证据</option></select>
+        </div>
+        <div class="filter-summary" id="historical-filter-summary"></div>
         <div class="table-shell" id="milestone-grid"></div>
+        <h3 class="section-title">历史回补分区</h3>
+        <div class="table-shell" id="historical-partitions-grid"></div>
       </section>
       <section class="module identity-module" data-panel="identity">
         <header><p class="eyebrow">IDENTITY RESOLUTION</p><h2>身份解析</h2><span>处理待解析 Fomo 用户，或手动新增可监控交易员</span></header>
