@@ -19,6 +19,7 @@ export interface TokenSignalDecision {
   readonly maxSingleBuyUsd: number;
   readonly sourceState: AddressEvidenceSourceState;
   readonly missingConditions: readonly string[];
+  readonly bundleDiagnostics: import("@address-radar/aggregation").BundleDiagnostics;
 }
 
 export interface TokenSignalPolicyInput {
@@ -52,6 +53,7 @@ const observed = (
   maxSingleBuyUsd: number,
   sourceState: AddressEvidenceSourceState,
   missingConditions: readonly string[],
+  bundleDiagnostics: import("@address-radar/aggregation").BundleDiagnostics,
   score = 0,
 ): TokenSignalDecision => Object.freeze({
   action: "observe",
@@ -66,6 +68,7 @@ const observed = (
   maxSingleBuyUsd,
   sourceState,
   missingConditions: Object.freeze([...missingConditions]),
+  bundleDiagnostics,
 });
 
 export function evaluateTokenSignal({
@@ -81,13 +84,13 @@ export function evaluateTokenSignal({
   });
   const stage = snapshot.lifecycleStage;
   if (snapshot.inWindow.length === 0) {
-    return observed(previous, "unknown", 0, 0, 0, 0, "UNKNOWN", ["fresh_evidence"]);
+    return observed(previous, "unknown", 0, 0, 0, 0, "UNKNOWN", ["fresh_evidence"], snapshot.bundleDiagnostics);
   }
   if (stage === "unknown") {
     return observed(previous, stage, 0, new Set(snapshot.inWindow.map(item => item.entityId)).size, snapshot.inWindow.reduce(
       (sum, item) => sum + Math.max(0, item.amountUsd ?? 0),
       0,
-    ), 0, snapshot.sourceState, ["token_lifecycle"]);
+    ), 0, snapshot.sourceState, ["token_lifecycle"], snapshot.bundleDiagnostics);
   }
 
   const policy = TOKEN_SIGNAL_ROUTE_POLICIES[stage];
@@ -121,7 +124,7 @@ export function evaluateTokenSignal({
   const score = qualified.reduce((combined, item) => 1 - (1 - combined) * (1 - item.contribution), 0);
   if (score < threshold) missing.push(`score:${threshold}`);
   if (missing.length > 0) {
-    return observed(previous, stage, policy.windowMs, qualified.length, totalBuyUsd, maxSingleBuyUsd, snapshot.sourceState, missing, score);
+    return observed(previous, stage, policy.windowMs, qualified.length, totalBuyUsd, maxSingleBuyUsd, snapshot.sourceState, missing, snapshot.bundleDiagnostics, score);
   }
 
   const priorBroadcastCount = previous?.broadcastCount ?? 0;
@@ -138,5 +141,6 @@ export function evaluateTokenSignal({
     maxSingleBuyUsd,
     sourceState: snapshot.sourceState,
     missingConditions: Object.freeze([]),
+    bundleDiagnostics: snapshot.bundleDiagnostics,
   });
 }

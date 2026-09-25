@@ -15,6 +15,17 @@ export interface AddressSignalEvidence {
   readonly traderTags?: readonly string[];
   readonly dedupeKey?: string;
   readonly traderLifecycle?: "active" | "elite" | "degraded";
+  readonly independenceKey?: string;
+  readonly bundleRisk?: "suspected" | "strong" | "confirmed";
+}
+
+export interface BundleDiagnostics {
+  readonly rawParticipantCount: number;
+  readonly independentParticipantCount: number;
+  readonly bundledParticipantCount: number;
+  readonly bundledBuyUsd: number;
+  readonly bundleBuyShare: number;
+  readonly groups: readonly Readonly<{ independenceKey: string; entityIds: readonly string[]; risk: "suspected" | "strong" | "confirmed" }>[];
 }
 
 export interface TokenAggregationPrevious {
@@ -37,6 +48,7 @@ export interface TokenEvidenceSnapshot {
   readonly inWindow: readonly AddressSignalEvidence[];
   readonly traders: readonly AggregatedTraderEvidence[];
   readonly sourceState: AddressEvidenceSourceState;
+  readonly bundleDiagnostics: BundleDiagnostics;
 }
 
 const clampProbability = (value: number): number => Math.max(0, Math.min(1, value));
@@ -56,6 +68,7 @@ export function aggregateEvidenceWindow(input: {
   readonly evidence: readonly AddressSignalEvidence[];
   readonly windowMs: (stage: TokenLifecycleStage) => number;
 }): TokenEvidenceSnapshot {
+  const emptyDiagnostics: BundleDiagnostics = Object.freeze({ rawParticipantCount: 0, independentParticipantCount: 0, bundledParticipantCount: 0, bundledBuyUsd: 0, bundleBuyShare: 0, groups: Object.freeze([]) });
   const consumed = new Set(input.previous?.consumedEvidenceIds ?? []);
   const consumedEconomic = new Set(input.previous?.consumedEconomicKeys ?? []);
   const freshBuys = input.evidence.filter(item => !consumed.has(item.eventId) && !consumedEconomic.has(item.dedupeKey ?? item.eventId) && (item.side ?? "buy") === "buy");
@@ -65,6 +78,7 @@ export function aggregateEvidenceWindow(input: {
       inWindow: Object.freeze([]),
       traders: Object.freeze([]),
       sourceState: "UNKNOWN",
+      bundleDiagnostics: emptyDiagnostics,
     });
   }
 
@@ -76,6 +90,7 @@ export function aggregateEvidenceWindow(input: {
       inWindow: Object.freeze([...freshBuys]),
       traders: Object.freeze([]),
       sourceState: sourceState(freshBuys),
+      bundleDiagnostics: emptyDiagnostics,
     });
   }
 
@@ -105,7 +120,8 @@ export function aggregateEvidenceWindow(input: {
   }>();
   for (const economic of economicEvents.values()) {
     const item = economic.selected;
-    const current = byEntity.get(item.entityId) ?? {
+    const independenceKey = item.independenceKey ?? item.entityId;
+    const current = byEntity.get(independenceKey) ?? {
       contribution: 0,
       amountUsd: 0,
       maxSingleBuyUsd: 0,
@@ -117,8 +133,23 @@ export function aggregateEvidenceWindow(input: {
     current.maxSingleBuyUsd = Math.max(current.maxSingleBuyUsd, Math.max(0, item.amountUsd ?? 0));
     for (const tag of item.traderTags ?? []) current.traderTags.add(tag);
     current.eventIds.push(...economic.eventIds);
-    byEntity.set(item.entityId, current);
+    byEntity.set(independenceKey, current);
   }
+
+  const rawParticipantCount = new Set(inWindow.map(item => item.entityId)).size;
+  const bundleGroups = new Map<string, { entityIds: Set<string>; risk: "suspected" | "strong" | "confirmed" }>();
+  for (const item of inWindow) {
+    if (!item.independenceKey || !item.bundleRisk) continue;
+    const group = bundleGroups.get(item.independenceKey) ?? { entityIds: new Set<string>(), risk: item.bundleRisk };
+    group.entityIds.add(item.entityId);
+    if (item.bundleRisk === "confirmed" || (item.bundleRisk === "strong" && group.risk === "suspected")) group.risk = item.bundleRisk;
+    bundleGroups.set(item.independenceKey, group);
+  }
+  const bundledEntities = new Set([...bundleGroups.values()].flatMap(group => [...group.entityIds]));
+  const bundledEconomicKeys = new Set(inWindow.filter(item => bundledEntities.has(item.entityId)).map(item => item.dedupeKey ?? item.eventId));
+  const totalBuyUsd = [...economicEvents.values()].reduce((sum, item) => sum + Math.max(0, item.selected.amountUsd ?? 0), 0);
+  const bundledBuyUsd = [...economicEvents].filter(([key]) => bundledEconomicKeys.has(key)).reduce((sum, [, item]) => sum + Math.max(0, item.selected.amountUsd ?? 0), 0);
+  const bundleDiagnostics: BundleDiagnostics = Object.freeze({ rawParticipantCount, independentParticipantCount: byEntity.size, bundledParticipantCount: bundledEntities.size, bundledBuyUsd, bundleBuyShare: totalBuyUsd > 0 ? bundledBuyUsd / totalBuyUsd : 0, groups: Object.freeze([...bundleGroups].map(([independenceKey, group]) => Object.freeze({ independenceKey, entityIds: Object.freeze([...group.entityIds].sort()), risk: group.risk }))) });
 
   return Object.freeze({
     lifecycleStage,
@@ -132,5 +163,6 @@ export function aggregateEvidenceWindow(input: {
       eventIds: Object.freeze(item.eventIds),
     }))),
     sourceState: sourceState(inWindow),
+    bundleDiagnostics,
   });
 }

@@ -23,6 +23,7 @@ describe("workbench v2 API", () => {
       sourceState: "FOMO_ONLY",
       windowMs: 300_000,
       missingConditions: ["distinct_traders:2", "score:0.7"],
+      bundleDiagnostics: { rawParticipantCount: 3, independentParticipantCount: 2, bundledParticipantCount: 2, bundledBuyUsd: 300, bundleBuyShare: 0.6, groups: [] },
       updatedAt: 10_000,
     });
     repository.close();
@@ -37,6 +38,7 @@ describe("workbench v2 API", () => {
           chain: "base",
           tokenAddress: "0xtoken",
           missingConditionLabels: ["还需要 2 名高质量交易员", "综合评分需达到 70%"],
+          bundleDiagnostics: { rawParticipantCount: 3, independentParticipantCount: 2, bundledParticipantCount: 2 },
         }],
       },
     });

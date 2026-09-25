@@ -24,7 +24,7 @@ describe("scanner runtime", () => {
       collectors: [{
         collect: async () => [
           { chain: "solana", tokenAddress: "TokenA", evidence: { eventId: "accepted-a", entityId: "entity-0", contribution: 0.8, occurredAt: 1_000, side: "buy", amountUsd: 1_000, lifecycleStage: "launched_0_2h", traderTags: ["EARLY_LAUNCH"] } },
-          { chain: "solana", tokenAddress: "TokenA", evidence: { eventId: "accepted-b", entityId: "entity-1", contribution: 0.8, occurredAt: 1_001, side: "buy", amountUsd: 1_000, lifecycleStage: "launched_0_2h", traderTags: ["HIGH_MULTIPLE"] } },
+          { chain: "solana", tokenAddress: "TokenA", evidence: { eventId: "accepted-b", entityId: "entity-1", contribution: 0.8, occurredAt: 12_001, side: "buy", amountUsd: 1_000, lifecycleStage: "launched_0_2h", traderTags: ["HIGH_MULTIPLE"] } },
           { chain: "solana", tokenAddress: "TokenA", evidence: { eventId: "small", entityId: "entity-2", contribution: 0.9, occurredAt: 1_002, side: "buy", amountUsd: 10, lifecycleStage: "launched_0_2h" } },
           { chain: "base", tokenAddress: "TokenA", evidence: { eventId: "blocked-chain", entityId: "entity-3", contribution: 0.9, occurredAt: 1_003, side: "buy", amountUsd: 1_000, lifecycleStage: "launched_0_2h" } },
         ],

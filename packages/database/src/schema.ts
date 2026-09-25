@@ -369,6 +369,18 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       dedupe_key TEXT
     );
     CREATE INDEX IF NOT EXISTS address_signal_evidence_token_time ON address_signal_evidence(chain, token_address, occurred_at);
+    CREATE TABLE IF NOT EXISTS wallet_bundle_pair_tokens (
+      pair_key TEXT NOT NULL,
+      token_id TEXT NOT NULL,
+      chain TEXT NOT NULL,
+      left_entity_id TEXT NOT NULL,
+      right_entity_id TEXT NOT NULL,
+      min_delta_ms INTEGER NOT NULL,
+      first_observed_at INTEGER NOT NULL,
+      last_observed_at INTEGER NOT NULL,
+      PRIMARY KEY(pair_key, token_id)
+    );
+    CREATE INDEX IF NOT EXISTS wallet_bundle_pairs_entities ON wallet_bundle_pair_tokens(left_entity_id, right_entity_id, last_observed_at DESC);
     CREATE TABLE IF NOT EXISTS token_evaluation_state (
       token_id TEXT PRIMARY KEY,
       chain TEXT NOT NULL,
@@ -382,6 +394,7 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       source_state TEXT NOT NULL,
       window_ms INTEGER NOT NULL,
       missing_conditions TEXT NOT NULL,
+      bundle_diagnostics TEXT NOT NULL DEFAULT '{}',
       updated_at INTEGER NOT NULL,
       UNIQUE(chain, token_address)
     );

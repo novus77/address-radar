@@ -17,6 +17,7 @@ export function migrateAddressRadarDatabase(database: DatabaseSync): void {
     ensureColumn(database, "signal_outbox_migration_review", "decided_by", "TEXT");
     ensureColumn(database, "signal_outbox_migration_review", "decision_reason", "TEXT");
     ensureColumn(database, "signal_outbox_migration_review", "decided_at", "INTEGER");
+    ensureColumn(database, "token_evaluation_state", "bundle_diagnostics", "TEXT NOT NULL DEFAULT '{}'");
     migrateEntityAccountUniqueness(database);
     database.exec(`
       UPDATE signal_outbox_migration_review

@@ -6,7 +6,10 @@ export type {
   AggregatedTraderEvidence,
   TokenAggregationPrevious,
   TokenEvidenceSnapshot,
+  BundleDiagnostics,
 } from "./evidence.js";
+export { applyWalletBundleGroups, detectTemporalBundlePairs, walletBundlePairKey, STRONG_BUNDLE_WINDOW_MS, SUSPECTED_BUNDLE_WINDOW_MS } from "./bundle.js";
+export type { WalletBundlePairObservation, WalletBundleRelation } from "./bundle.js";
 export { createTokenLifecycleResolver } from "./token-lifecycle-resolver.js";
 export type { TokenCreationProvider, TokenLaunchProvider, TokenLifecycleResolver } from "./token-lifecycle-resolver.js";
 export { createTokenAggregationService, DEGRADED_TRADER_DISCOUNT } from "./service.js";

@@ -136,4 +136,12 @@ describe("token signal policy", () => {
     ] });
     expect(decision.consumeEvidenceIds).toEqual(["qa", "qb"]);
   });
+
+  it("counts wallets buying within ten seconds as one independent participant", () => {
+    const decision = evaluateTokenSignal({ previous: null, threshold: 0.7, evidence: [
+      evidence("a", 0.8, "a", { occurredAt: 1_000, independenceKey: "bundle:a+b", bundleRisk: "strong" }),
+      evidence("b", 0.8, "b", { occurredAt: 6_000, independenceKey: "bundle:a+b", bundleRisk: "strong" }),
+    ] });
+    expect(decision).toMatchObject({ action: "observe", participantCount: 1, totalBuyUsd: 2_000, bundleDiagnostics: { rawParticipantCount: 2, independentParticipantCount: 1, bundledParticipantCount: 2 } });
+  });
 });

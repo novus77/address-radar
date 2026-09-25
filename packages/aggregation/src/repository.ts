@@ -1,5 +1,7 @@
 import type { TraderLifecycle } from "@address-radar/domain";
 import type { AddressSignalEvidence, AddressEvidenceSourceState } from "./evidence.js";
+import type { BundleDiagnostics } from "./evidence.js";
+import type { WalletBundlePairObservation, WalletBundleRelation } from "./bundle.js";
 
 export interface SignalTraderProfile {
   readonly entityId: string;
@@ -22,11 +24,14 @@ export interface TokenEvaluationInput {
   readonly lifecycleStage: string; readonly score: number; readonly participantCount: number;
   readonly totalBuyUsd: number; readonly sourceState: AddressEvidenceSourceState; readonly windowMs: number;
   readonly missingConditions: readonly string[]; readonly updatedAt: number;
+  readonly bundleDiagnostics?: BundleDiagnostics;
 }
 
 export interface TokenAggregationRepository {
   saveAddressSignalEvidence(chain: string, tokenAddress: string, evidence: AddressSignalEvidence): void;
   addressSignalEvidenceForToken(chain: string, tokenAddress: string, since: number): readonly AddressSignalEvidence[];
+  recordWalletBundlePairs?(chain: string, tokenAddress: string, pairs: readonly WalletBundlePairObservation[]): void;
+  walletBundleRelations?(entityIds: readonly string[]): readonly WalletBundleRelation[];
   tokenAggregationState(chain: string, tokenAddress: string): TokenAggregationState | null;
   traderSignalProfile(entityId: string): SignalTraderProfile | null;
   upsertTraderSignalProfile(input: {

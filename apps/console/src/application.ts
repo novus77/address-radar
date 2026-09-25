@@ -151,7 +151,7 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
           e.action, e.signal_family AS signalFamily, e.lifecycle_stage AS lifecycleStage,
           e.score AS currentScore, e.participant_count AS participantCount,
           e.total_buy_usd AS totalBuyUsd, e.source_state AS sourceState,
-          e.window_ms AS windowMs, e.missing_conditions AS missingConditions,
+          e.window_ms AS windowMs, e.missing_conditions AS missingConditions, e.bundle_diagnostics AS bundleDiagnostics,
           COALESCE(a.broadcast_count, 0) AS broadcastCount, e.updated_at AS updatedAt
         FROM token_evaluation_state e
         LEFT JOIN token_aggregation_state a ON a.token_id = e.token_id
@@ -164,6 +164,7 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
           : [];
         return Object.freeze({
           ...row,
+          bundleDiagnostics: typeof row.bundleDiagnostics === "string" ? JSON.parse(row.bundleDiagnostics) : {},
           missingConditions: Object.freeze(conditions),
           missingConditionLabels: Object.freeze(conditions.map(explainTokenMissingCondition)),
         });

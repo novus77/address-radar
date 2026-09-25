@@ -27,7 +27,7 @@ import {
   type TraderTokenSample,
   type WalletIdentityInput,
 } from "@address-radar/domain";
-import { matchCanonicalTraderEvent, type TokenAggregationRepository } from "@address-radar/aggregation";
+import { matchCanonicalTraderEvent, type BundleDiagnostics, type TokenAggregationRepository, type WalletBundleRelation } from "@address-radar/aggregation";
 import type { RuntimeQualityRepository, RuntimeQualitySnapshot } from "@address-radar/observability";
 import { migrateAddressRadarDatabase } from "./migrations.js";
 
@@ -67,7 +67,7 @@ export interface TraderPopulationAuditRecord { readonly current30dAccountIds: re
 
 export interface TraderLifecycleEventRecord { readonly lifecycleEventId: string; readonly entityId: string; readonly previousState: TraderEntityInput["lifecycle"]; readonly nextState: TraderEntityInput["lifecycle"]; readonly reasons: readonly string[]; readonly strategyVersion: string; readonly occurredAt: number }
 export interface TokenAggregationStateRecord { readonly tokenId: string; readonly chain: string; readonly tokenAddress: string; readonly currentScore: number; readonly peakScore: number; readonly broadcastCount: number; readonly updatedAt: number; readonly consumedEvidenceIds: readonly string[]; readonly consumedEconomicKeys: readonly string[] }
-export interface TokenEvaluationRecord { readonly tokenId: string; readonly chain: string; readonly tokenAddress: string; readonly action: "observe" | "broadcast" | "rebroadcast"; readonly signalFamily: AddressSignalFamily | null; readonly lifecycleStage: TokenLifecycleStage; readonly score: number; readonly participantCount: number; readonly totalBuyUsd: number; readonly sourceState: AddressEvidenceSourceState; readonly windowMs: number; readonly missingConditions: readonly string[]; readonly updatedAt: number }
+export interface TokenEvaluationRecord { readonly tokenId: string; readonly chain: string; readonly tokenAddress: string; readonly action: "observe" | "broadcast" | "rebroadcast"; readonly signalFamily: AddressSignalFamily | null; readonly lifecycleStage: TokenLifecycleStage; readonly score: number; readonly participantCount: number; readonly totalBuyUsd: number; readonly sourceState: AddressEvidenceSourceState; readonly windowMs: number; readonly missingConditions: readonly string[]; readonly bundleDiagnostics?: BundleDiagnostics; readonly updatedAt: number }
 export interface BroadcastRecord { readonly broadcastId: string; readonly tokenId: string; readonly broadcastNumber: number; readonly strategyVersion: string; readonly score: number; readonly triggeredAt: number; readonly payload: unknown }
 export interface CommitTokenBroadcastInput { readonly chain: string; readonly tokenAddress: string; readonly expectedPreviousBroadcastCount: number; readonly strategyVersion: string; readonly score: number; readonly triggeredAt: number; readonly evidenceIds: readonly string[]; readonly economicKeys: readonly string[]; readonly evaluation: Omit<TokenEvaluationRecord, "tokenId">; readonly payload: unknown; readonly publicSignal: unknown }
 export interface CommitTokenBroadcastResult { readonly inserted: boolean; readonly broadcastNumber: number }
@@ -1233,14 +1233,42 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
       })));
     },
 
+    recordWalletBundlePairs(chain, tokenAddress, pairs) {
+      if (pairs.length === 0) return;
+      const tokenId = addressRadarTokenId(chain, tokenAddress);
+      transaction(() => {
+        const statement = database.prepare(`
+          INSERT INTO wallet_bundle_pair_tokens(pair_key, token_id, chain, left_entity_id, right_entity_id, min_delta_ms, first_observed_at, last_observed_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(pair_key, token_id) DO UPDATE SET
+            min_delta_ms = MIN(wallet_bundle_pair_tokens.min_delta_ms, excluded.min_delta_ms),
+            first_observed_at = MIN(wallet_bundle_pair_tokens.first_observed_at, excluded.first_observed_at),
+            last_observed_at = MAX(wallet_bundle_pair_tokens.last_observed_at, excluded.last_observed_at)
+        `);
+        for (const pair of pairs) statement.run(pair.pairKey, tokenId, chain.toLowerCase(), pair.leftEntityId, pair.rightEntityId, pair.deltaMs, pair.observedAt, pair.observedAt);
+      });
+    },
+
+    walletBundleRelations(entityIds) {
+      const selected = new Set(entityIds);
+      if (selected.size < 2) return Object.freeze([]);
+      const rows = database.prepare(`
+        SELECT pair_key AS pairKey, left_entity_id AS leftEntityId, right_entity_id AS rightEntityId,
+          COUNT(*) AS distinctTokenCount, MIN(min_delta_ms) AS deltaMs, MAX(last_observed_at) AS observedAt
+        FROM wallet_bundle_pair_tokens
+        GROUP BY pair_key, left_entity_id, right_entity_id
+      `).all() as Array<Omit<WalletBundleRelation, "recurring">>;
+      return Object.freeze(rows.filter(row => selected.has(row.leftEntityId) && selected.has(row.rightEntityId)).map(row => Object.freeze({ ...row, recurring: row.distinctTokenCount >= 2 })));
+    },
+
     saveTokenEvaluation(input) {
       const tokenId = addressRadarTokenId(input.chain, input.tokenAddress);
       database.prepare(`
         INSERT INTO token_evaluation_state(
           token_id, chain, token_address, action, signal_family, lifecycle_stage,
           score, participant_count, total_buy_usd, source_state, window_ms,
-          missing_conditions, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          missing_conditions, bundle_diagnostics, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(token_id) DO UPDATE SET
           action = excluded.action,
           signal_family = excluded.signal_family,
@@ -1251,6 +1279,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
           source_state = excluded.source_state,
           window_ms = excluded.window_ms,
           missing_conditions = excluded.missing_conditions,
+          bundle_diagnostics = excluded.bundle_diagnostics,
           updated_at = excluded.updated_at
       `).run(
         tokenId,
@@ -1265,6 +1294,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         input.sourceState,
         input.windowMs,
         JSON.stringify(input.missingConditions),
+        JSON.stringify(input.bundleDiagnostics ?? {}),
         input.updatedAt,
       );
     },
@@ -1275,11 +1305,11 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
           signal_family AS signalFamily, lifecycle_stage AS lifecycleStage, score,
           participant_count AS participantCount, total_buy_usd AS totalBuyUsd,
           source_state AS sourceState, window_ms AS windowMs,
-          missing_conditions AS missingConditions, updated_at AS updatedAt
+          missing_conditions AS missingConditions, bundle_diagnostics AS bundleDiagnostics, updated_at AS updatedAt
         FROM token_evaluation_state
         WHERE token_id = ?
-      `).get(addressRadarTokenId(chain, tokenAddress)) as (Omit<TokenEvaluationRecord, "missingConditions"> & { missingConditions: string }) | undefined;
-      return row ? Object.freeze({ ...row, missingConditions: Object.freeze(JSON.parse(row.missingConditions) as string[]) }) : null;
+      `).get(addressRadarTokenId(chain, tokenAddress)) as (Omit<TokenEvaluationRecord, "missingConditions" | "bundleDiagnostics"> & { missingConditions: string; bundleDiagnostics: string }) | undefined;
+      return row ? Object.freeze({ ...row, missingConditions: Object.freeze(JSON.parse(row.missingConditions) as string[]), bundleDiagnostics: Object.freeze(JSON.parse(row.bundleDiagnostics) as BundleDiagnostics) }) : null;
     },
 
     tokenAggregationState(chain, tokenAddress) {
@@ -1345,13 +1375,13 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         for (const key of input.economicKeys) consumeEconomic.run(key, broadcastId, input.triggeredAt);
         const evaluation = input.evaluation;
         database.prepare(`
-          INSERT INTO token_evaluation_state(token_id, chain, token_address, action, signal_family, lifecycle_stage, score, participant_count, total_buy_usd, source_state, window_ms, missing_conditions, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO token_evaluation_state(token_id, chain, token_address, action, signal_family, lifecycle_stage, score, participant_count, total_buy_usd, source_state, window_ms, missing_conditions, bundle_diagnostics, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(token_id) DO UPDATE SET action = excluded.action, signal_family = excluded.signal_family,
             lifecycle_stage = excluded.lifecycle_stage, score = excluded.score, participant_count = excluded.participant_count,
             total_buy_usd = excluded.total_buy_usd, source_state = excluded.source_state, window_ms = excluded.window_ms,
-            missing_conditions = excluded.missing_conditions, updated_at = excluded.updated_at
-        `).run(tokenId, input.chain.toLowerCase(), normalizeAddressRadarTokenAddress(input.chain, input.tokenAddress), evaluation.action, evaluation.signalFamily, evaluation.lifecycleStage, evaluation.score, evaluation.participantCount, evaluation.totalBuyUsd, evaluation.sourceState, evaluation.windowMs, JSON.stringify(evaluation.missingConditions), evaluation.updatedAt);
+            missing_conditions = excluded.missing_conditions, bundle_diagnostics = excluded.bundle_diagnostics, updated_at = excluded.updated_at
+        `).run(tokenId, input.chain.toLowerCase(), normalizeAddressRadarTokenAddress(input.chain, input.tokenAddress), evaluation.action, evaluation.signalFamily, evaluation.lifecycleStage, evaluation.score, evaluation.participantCount, evaluation.totalBuyUsd, evaluation.sourceState, evaluation.windowMs, JSON.stringify(evaluation.missingConditions), JSON.stringify(evaluation.bundleDiagnostics ?? {}), evaluation.updatedAt);
         database.prepare(`
           INSERT INTO signal_outbox(outbox_id, broadcast_id, token_id, broadcast_sequence, payload, status, attempt_count, next_retry_at, last_error, claimed_by, claimed_at, delivered_at, created_at)
           VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, NULL, NULL, NULL, NULL, ?)
