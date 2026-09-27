@@ -51,4 +51,18 @@ describe("historical candidate evidence", () => {
     expect(store.evidenceForTrader("trader-1")).toEqual([]);
     database.close();
   });
+
+  it("does not report an unresolved wallet unless its evidence is accepted", () => {
+    const database = new DatabaseSync(":memory:");
+    initializeCandidateHistorySchema(database);
+    const store = createCandidateHistoryStore(database);
+    store.saveMilestoneCrossing({ milestoneId: "base:t:100000", tokenId: "base:t", marketCapUsd: 100_000, crossedAt: 100, precision: "exact", source: "dune", sourceEventIds: ["m"], strategyVersion: "v3" });
+    const service = createHistoricalEvidenceService({ store, resolveTraderId: () => null, strategyVersion: "candidate-history-v3" });
+
+    expect(service.ingest([{ eventId: "e1", economicKey: "e1", chain: "base", tokenAddress: "t", traderAddress: "0xnew", side: "buy", amountUsd: 20, marketCapUsd: 20_000, occurredAt: 10, source: "dune" }], 200)).toMatchObject({
+      acceptedEvidence: 0,
+      unresolvedTraderIds: [],
+    });
+    database.close();
+  });
 });

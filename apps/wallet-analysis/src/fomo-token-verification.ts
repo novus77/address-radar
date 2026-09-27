@@ -8,8 +8,11 @@ import type {
 
 export const FOMO_HISTORICAL_CHAINS = Object.freeze(["solana", "eth", "bsc", "robinhood", "base"] as const);
 
-const RETRY_DELAY_MS = 30 * 60_000;
-const LOOKUP_LEASE_MS = 30 * 60_000;
+const retryDelayMs = (attemptCount: number): number => {
+  if (attemptCount <= 0) return 30 * 60_000;
+  if (attemptCount === 1) return 2 * 60 * 60_000;
+  return 12 * 60 * 60_000;
+};
 
 const canonicalChain = (value: string): string => {
   const chain = value.trim().toLowerCase();
@@ -24,6 +27,7 @@ interface VerificationRow {
   readonly tokenId: string;
   readonly chain: string;
   readonly tokenAddress: string;
+  readonly attemptCount: number;
 }
 
 function inferredStatus(result: FomoTokenLookupResult): NonNullable<FomoTokenLookupResult["verificationStatus"]> {
@@ -35,9 +39,12 @@ export function createFomoHistoricalVerificationService(input: {
   readonly database: DatabaseSync;
   readonly producer: FomoTokenLookupProducer;
   readonly consumer: FomoTokenLookupResultConsumer;
+  readonly maximumActiveLookups?: number;
   readonly now?: () => number;
 }) {
   const now = input.now ?? Date.now;
+  const maximumActiveLookups = input.maximumActiveLookups ?? 100;
+  if (!Number.isSafeInteger(maximumActiveLookups) || maximumActiveLookups <= 0) throw new Error("maximumActiveLookups must be a positive integer");
 
   const applyResult = (result: FomoTokenLookupResult): boolean => {
     const chain = canonicalChain(result.chainId);
@@ -74,7 +81,7 @@ export function createFomoHistoricalVerificationService(input: {
           history_available = 0, last_error = 'fomo_token_not_found', last_checked_at = ?,
           next_retry_at = ?, updated_at = ?
         WHERE token_id = ?
-      `).run(misses >= 2 ? "not_found" : "pending", misses, completedAt, misses >= 2 ? 0 : completedAt + RETRY_DELAY_MS, completedAt, row.tokenId);
+      `).run(misses >= 2 ? "not_found" : "pending", misses, completedAt, misses >= 2 ? 0 : completedAt + retryDelayMs(misses - 1), completedAt, row.tokenId);
       return true;
     }
 
@@ -83,7 +90,7 @@ export function createFomoHistoricalVerificationService(input: {
         UPDATE historical_token_verifications
         SET status = 'deferred', last_error = ?, last_checked_at = ?, next_retry_at = ?, updated_at = ?
         WHERE token_id = ?
-      `).run(result.errorCode ?? "fomo_lookup_deferred", completedAt, completedAt + RETRY_DELAY_MS, completedAt, row.tokenId);
+      `).run(result.errorCode ?? "fomo_lookup_deferred", completedAt, completedAt + retryDelayMs(1), completedAt, row.tokenId);
       return true;
     }
 
@@ -120,8 +127,10 @@ export function createFomoHistoricalVerificationService(input: {
       }
 
       const timestamp = now();
+      const active = input.database.prepare("SELECT COUNT(*) AS count FROM historical_token_verifications WHERE status = 'queued' AND next_retry_at > ?").get(timestamp) as { count: number };
+      if (Number(active.count) >= maximumActiveLookups) return Object.freeze({ processed: false, action: "idle" as const });
       const row = input.database.prepare(`
-        SELECT h.token_id AS tokenId, h.chain, h.token_address AS tokenAddress
+        SELECT h.token_id AS tokenId, h.chain, h.token_address AS tokenAddress, v.attempt_count AS attemptCount
         FROM historical_token_verifications v
         JOIN historical_tokens h ON h.token_id = v.token_id
         WHERE (v.status IN ('pending', 'deferred')
@@ -139,7 +148,7 @@ export function createFomoHistoricalVerificationService(input: {
         SET status = 'queued', attempt_count = attempt_count + 1,
           next_retry_at = ?, updated_at = ?
         WHERE token_id = ?
-      `).run(timestamp + LOOKUP_LEASE_MS, timestamp, row.tokenId);
+      `).run(timestamp + retryDelayMs(row.attemptCount), timestamp, row.tokenId);
       return Object.freeze({ processed: true, action: "queued" as const });
     },
 

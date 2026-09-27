@@ -6,6 +6,7 @@ import { createDuneHistoricalBackfillWorker } from "./dune-historical-worker.js"
 import { createFomoHistoricalVerificationService } from "./fomo-token-verification.js";
 import { createHistoricalBackfillScheduler, runHistoricalBackfillCycle } from "./historical-backfill.js";
 import { createHistoricalPartitions } from "./historical-partitions.js";
+import { createHistoricalStagePlanner } from "./historical-stage-planner.js";
 import { runWalletAnalysisService } from "./service.js";
 import { createSolanaTokenSupplyProvider } from "./solana-token-supply.js";
 
@@ -18,6 +19,7 @@ const verification = createFomoHistoricalVerificationService({
   database,
   producer: new FomoTokenLookupProducer({ filePath: config.fomoLookupQueuePath }),
   consumer: new FomoTokenLookupResultConsumer({ filePath: config.fomoLookupResultPath, cursorPath: config.fomoLookupResultCursorPath }),
+  maximumActiveLookups: config.fomoMaximumActiveLookups,
 });
 const client = createDuneDataApiClient({ apiKey: config.apiKey, timeoutMs: config.timeoutMs, pollIntervalMs: config.pollIntervalMs });
 const worker = createDuneHistoricalBackfillWorker({
@@ -34,22 +36,20 @@ const worker = createDuneHistoricalBackfillWorker({
     const row = database.prepare("SELECT ea.entity_id AS entityId FROM wallet_identities w JOIN entity_accounts ea ON ea.account_id = w.account_id WHERE w.chain_family = ? AND w.address = ? ORDER BY ea.last_observed_at DESC LIMIT 1").get(family, family === "evm" ? address.toLowerCase() : address) as { entityId: string } | undefined;
     return row?.entityId ?? null;
   },
+  onAcceptedUnresolvedWallet(wallet) {
+    repository.admitHistoricalWalletCandidate({ ...wallet, strategyVersion: config.strategyVersion });
+  },
 });
 const scheduler = createHistoricalBackfillScheduler({ repository, worker, dailyCreditBudget: config.dailyCreditBudget });
 const endAt = Date.now();
+const stagePlanner = createHistoricalStagePlanner({ database, repository, chains: config.chains, startAt: config.startAt });
 
 const seedStage = (queryKind: "token_universe" | "milestone_crossings" | "pre_milestone_trades", tokenAddressesByChain?: Readonly<Record<string, readonly string[]>>): void => {
   for (const partition of createHistoricalPartitions({ queryKind, chains: config.chains, from: config.startAt, to: endAt, ...(tokenAddressesByChain ? { tokenAddressesByChain } : {}), createdAt: Date.now() })) repository.enqueueHistoricalBackfillPartition(partition);
 };
-const completed = (kind: string): boolean => {
-  const partitions = repository.historicalBackfillPartitions().filter(item => item.queryKind === kind);
-  return partitions.length > 0 && partitions.every(item => item.status === "completed");
-};
-const tokenAddresses = (): Readonly<Record<string, readonly string[]>> => Object.freeze(Object.fromEntries(config.chains.map(chain => [chain, Object.freeze((database.prepare("SELECT token_address AS tokenAddress FROM historical_tokens WHERE chain = ? ORDER BY token_address").all(chain) as { tokenAddress: string }[]).map(item => item.tokenAddress))])));
 const seed = (): void => {
   seedStage("token_universe");
-  if (completed("token_universe")) seedStage("milestone_crossings", tokenAddresses());
-  if (completed("milestone_crossings")) seedStage("pre_milestone_trades", tokenAddresses());
+  stagePlanner.plan();
 };
 
 const controller = new AbortController();

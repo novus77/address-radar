@@ -51,4 +51,69 @@ describe("FOMO historical verification", () => {
     await expect(service.runOnce()).resolves.toEqual({ processed: true, action: "queued" });
     expect(enqueue).toHaveBeenCalledWith({ chainId: "base", tokenAddress: "0xToken", requestedAt: 4 });
   });
+
+  it("stops producing lookups when the active queue reaches its cap", async () => {
+    database = new DatabaseSync(":memory:");
+    initializeCandidateHistorySchema(database);
+    const store = createCandidateHistoryStore(database);
+    for (const address of ["0xactive", "0xwaiting"]) store.saveHistoricalToken({
+      tokenId: `base:${address}`,
+      chain: "base",
+      tokenAddress: address,
+      symbol: "TOK",
+      imageUrl: null,
+      firstTradeAt: 1,
+      firstReached1mAt: 2,
+      peakMarketCapUsd: 1_100_000,
+      source: "test",
+      sourceQueryId: null,
+      provenance: {},
+    });
+    database.prepare("UPDATE historical_token_verifications SET status = 'queued', next_retry_at = 10000 WHERE token_id = 'base:0xactive'").run();
+    directory = mkdtempSync(join(tmpdir(), "address-radar-fomo-verification-"));
+    const producer = new FomoTokenLookupProducer({ filePath: join(directory, "lookups.jsonl") });
+    const enqueue = vi.spyOn(producer, "enqueue");
+    const service = createFomoHistoricalVerificationService({
+      database,
+      producer,
+      consumer: new FomoTokenLookupResultConsumer({ filePath: join(directory, "results.jsonl"), cursorPath: join(directory, "cursor.json") }),
+      maximumActiveLookups: 1,
+      now: () => 100,
+    });
+
+    await expect(service.runOnce()).resolves.toEqual({ processed: false, action: "idle" });
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("uses progressively longer retry leases for repeated lookups", async () => {
+    database = new DatabaseSync(":memory:");
+    initializeCandidateHistorySchema(database);
+    createCandidateHistoryStore(database).saveHistoricalToken({
+      tokenId: "base:0xretry",
+      chain: "base",
+      tokenAddress: "0xretry",
+      symbol: "TOK",
+      imageUrl: null,
+      firstTradeAt: 1,
+      firstReached1mAt: 2,
+      peakMarketCapUsd: 1_100_000,
+      source: "test",
+      sourceQueryId: null,
+      provenance: {},
+    });
+    directory = mkdtempSync(join(tmpdir(), "address-radar-fomo-verification-"));
+    let timestamp = 1_000;
+    const service = createFomoHistoricalVerificationService({
+      database,
+      producer: new FomoTokenLookupProducer({ filePath: join(directory, "lookups.jsonl") }),
+      consumer: new FomoTokenLookupResultConsumer({ filePath: join(directory, "results.jsonl"), cursorPath: join(directory, "cursor.json") }),
+      now: () => timestamp,
+    });
+
+    await service.runOnce();
+    expect(database.prepare("SELECT next_retry_at AS nextRetryAt FROM historical_token_verifications WHERE token_id = 'base:0xretry'").get()).toEqual({ nextRetryAt: timestamp + 30 * 60_000 });
+    timestamp += 30 * 60_000;
+    await service.runOnce();
+    expect(database.prepare("SELECT next_retry_at AS nextRetryAt FROM historical_token_verifications WHERE token_id = 'base:0xretry'").get()).toEqual({ nextRetryAt: timestamp + 2 * 60 * 60_000 });
+  });
 });

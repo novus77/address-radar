@@ -342,7 +342,16 @@ describe("address intelligence developer console", () => {
     })]);
 
     const operations = await (await authorizedFetch(server.url, "/api/v2/historical-operations")).json() as Record<string, unknown>;
-    expect(operations).toMatchObject({ creditsUsedToday: 37, pendingPartitionCount: 0, failedPartitionCount: 1 });
+    expect(operations).toMatchObject({
+      creditsUsedToday: 37,
+      pendingPartitionCount: 0,
+      failedPartitionCount: 1,
+      activeFomoLookupCount: 0,
+      milestoneEligibleTokenCount: 0,
+      milestoneCompletedTokenCount: 1,
+      earlyTradeCompletedTokenCount: 1,
+      materializedHistoricalTraderCount: 0,
+    });
     expect(operations.watermarks).toEqual([expect.objectContaining({ chain: "solana", queryKind: "pre_milestone_trades" })]);
 
     const partitions = await (await authorizedFetch(server.url, "/api/v2/historical-partitions")).json() as { total: number; items: Array<Record<string, unknown>> };

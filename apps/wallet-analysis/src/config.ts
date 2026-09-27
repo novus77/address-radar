@@ -21,6 +21,7 @@ export interface HistoricalBackfillConfig {
   readonly fomoLookupQueuePath: string;
   readonly fomoLookupResultPath: string;
   readonly fomoLookupResultCursorPath: string;
+  readonly fomoMaximumActiveLookups: number;
   readonly solanaRpc?: { readonly primary: string; readonly fallback?: string };
 }
 
@@ -81,6 +82,7 @@ export function loadHistoricalBackfillConfig(env: Readonly<Record<string, string
     fomoLookupQueuePath: env.ADDRESS_RADAR_FOMO_LOOKUP_QUEUE_PATH?.trim() || env.RADAR_FOMO_LOOKUP_QUEUE_PATH?.trim() || `${databasePath}.fomo-lookups.ndjson`,
     fomoLookupResultPath: env.ADDRESS_RADAR_FOMO_LOOKUP_RESULT_PATH?.trim() || env.RADAR_FOMO_LOOKUP_RESULT_PATH?.trim() || `${databasePath}.fomo-results.ndjson`,
     fomoLookupResultCursorPath: env.ADDRESS_RADAR_FOMO_LOOKUP_RESULT_CURSOR_PATH?.trim() || env.ADDRESS_RADAR_FOMO_RESULT_CURSOR_PATH?.trim() || `${databasePath}.fomo-results.cursor.json`,
+    fomoMaximumActiveLookups: positiveInteger("ADDRESS_RADAR_FOMO_MAX_ACTIVE_LOOKUPS", 100),
     ...(solanaPrimary ? { solanaRpc: Object.freeze({ primary: solanaPrimary, ...(solanaFallback ? { fallback: solanaFallback } : {}) }) } : {}),
   });
 }

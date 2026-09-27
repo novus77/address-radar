@@ -101,6 +101,7 @@ export interface AddressRadarRepository extends TokenAggregationRepository, Runt
   entityForAccount(accountId: string): string | null;
   upsertTraderEntity(input: TraderEntityInput): void;
   ensureTraderEntity(input: TraderEntityInput): void;
+  admitHistoricalWalletCandidate(input: { readonly traderId: string; readonly chain: string; readonly address: string; readonly observedAt: number; readonly strategyVersion: string }): void;
   admitManualTrader(input: {
     readonly entityId: string;
     readonly displayName: string;
@@ -491,6 +492,52 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         INSERT OR IGNORE INTO trader_entities(entity_id, lifecycle, manual, locked, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(input.entityId, input.lifecycle, Number(input.manual), Number(input.locked), input.createdAt, input.updatedAt);
+    },
+
+    admitHistoricalWalletCandidate(input) {
+      assertId(input.traderId, "traderId");
+      assertTimestamp(input.observedAt, "observedAt");
+      const chain = input.chain.trim().toLowerCase();
+      const chainFamily = chain === "solana" ? "solana" : "evm";
+      const address = normalizeWalletAddress(chainFamily, input.address);
+      transaction(() => {
+        database.prepare(`
+          INSERT INTO trader_entities(entity_id, lifecycle, manual, locked, created_at, updated_at)
+          VALUES (?, 'candidate', 0, 0, ?, ?)
+          ON CONFLICT(entity_id) DO UPDATE SET updated_at = MAX(trader_entities.updated_at, excluded.updated_at)
+        `).run(input.traderId, input.observedAt, input.observedAt);
+        database.prepare(`
+          INSERT INTO entity_wallet_identities(entity_id, chain_family, address, confidence, source, first_observed_at, last_observed_at)
+          VALUES (?, ?, ?, 'high', 'historical_milestone', ?, ?)
+          ON CONFLICT(entity_id, chain_family, address) DO UPDATE SET
+            confidence = 'high', source = 'historical_milestone',
+            last_observed_at = MAX(entity_wallet_identities.last_observed_at, excluded.last_observed_at)
+        `).run(input.traderId, chainFamily, address, input.observedAt, input.observedAt);
+        database.prepare(`
+          INSERT INTO trader_sources(entity_id, source_key, first_observed_at, last_observed_at, payload)
+          VALUES (?, 'milestone', ?, ?, ?)
+          ON CONFLICT(entity_id, source_key) DO UPDATE SET
+            last_observed_at = MAX(trader_sources.last_observed_at, excluded.last_observed_at),
+            payload = excluded.payload
+        `).run(input.traderId, input.observedAt, input.observedAt, JSON.stringify({ chain, strategyVersion: input.strategyVersion }));
+        database.prepare("INSERT OR IGNORE INTO trader_tags(entity_id, category, tag, created_at) VALUES (?, 'source', 'source.milestone_discovery', ?)").run(input.traderId, input.observedAt);
+        recordResolvedWalletAutomation(database, { traderId: input.traderId, accountId: input.traderId, chainFamily, address, occurredAt: input.observedAt });
+        database.prepare(`
+          INSERT INTO trader_monitoring_policy(trader_id, policy, updated_at)
+          VALUES (?, 'periodic', ?)
+          ON CONFLICT(trader_id) DO UPDATE SET
+            policy = CASE WHEN trader_monitoring_policy.policy = 'off' THEN 'off' ELSE 'periodic' END,
+            updated_at = MAX(trader_monitoring_policy.updated_at, excluded.updated_at)
+        `).run(input.traderId, input.observedAt);
+        database.prepare(`
+          INSERT INTO trader_coverage_state(trader_id, tier, coverage_state, last_covered_at, next_evaluation_at, strategy_version, updated_at)
+          VALUES (?, 'T2', 'queued', NULL, ?, ?, ?)
+          ON CONFLICT(trader_id) DO UPDATE SET
+            next_evaluation_at = MIN(trader_coverage_state.next_evaluation_at, excluded.next_evaluation_at),
+            strategy_version = excluded.strategy_version,
+            updated_at = MAX(trader_coverage_state.updated_at, excluded.updated_at)
+        `).run(input.traderId, input.observedAt, input.strategyVersion, input.observedAt);
+      });
     },
 
     admitManualTrader(input) {

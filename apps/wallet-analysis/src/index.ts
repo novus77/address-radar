@@ -11,7 +11,11 @@ export { createFomoHistoricalVerificationService, FOMO_HISTORICAL_CHAINS } from 
 export type { HistoricalBackfillWorker, HistoricalBackfillWorkerResult } from "./historical-backfill.js";
 export { createHistoricalEvidenceService } from "./historical-evidence.js";
 export type { HistoricalTradeEvidenceRow } from "./historical-evidence.js";
+export { classifyHistoricalTokenEligibility } from "./historical-token-eligibility.js";
+export type { HistoricalTokenEligibility } from "./historical-token-eligibility.js";
 export { createHistoricalPartitions } from "./historical-partitions.js";
+export { createHistoricalStagePlanner } from "./historical-stage-planner.js";
+export type { HistoricalStagePlanResult } from "./historical-stage-planner.js";
 export type { CandidateDiscoveryResult } from "./candidate-discovery.js";
 export { createTraderPerformanceRuntime, evaluateRepeatableTraderAbility } from "./performance.js";
 export type { RepeatableAbilityOutcome, RepeatableAbilitySample } from "./performance.js";

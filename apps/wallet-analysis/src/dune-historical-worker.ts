@@ -4,6 +4,7 @@ import type { HistoricalBackfillPartition } from "@address-radar/database";
 
 import { createHistoricalEvidenceService } from "./historical-evidence.js";
 import type { HistoricalBackfillWorker } from "./historical-backfill.js";
+import { classifyHistoricalTokenEligibility } from "./historical-token-eligibility.js";
 import type { SolanaTokenSupplyProvider } from "./solana-token-supply.js";
 
 type Row = Readonly<Record<string, unknown>>;
@@ -37,6 +38,7 @@ export function createDuneHistoricalBackfillWorker(input: {
   readonly strategyVersion: string;
   readonly resolveTraderId?: (chain: string, address: string) => string | null;
   readonly resolveVerifiedTokenAddresses?: (chain: string, addresses: readonly string[]) => { readonly pending: number; readonly eligible: readonly string[] };
+  readonly onAcceptedUnresolvedWallet?: (input: { readonly traderId: string; readonly chain: string; readonly address: string; readonly observedAt: number }) => void;
   readonly solanaSupply?: SolanaTokenSupplyProvider;
 }): HistoricalBackfillWorker {
   const evidence = createHistoricalEvidenceService({
@@ -79,8 +81,9 @@ export function createDuneHistoricalBackfillWorker(input: {
       if (partition.queryKind === "token_universe") {
         for (const row of page.rows) {
           const chain = normalizeChain(requiredString(row, "chain").toLowerCase());
-          if (!new Set(["solana", "eth", "bsc", "robinhood", "base"]).has(chain)) continue;
-          const tokenAddress = normalizeAddress(chain, requiredString(row, "token_address"));
+          const eligibility = classifyHistoricalTokenEligibility({ chain, tokenAddress: requiredString(row, "token_address"), symbol: optionalString(row, "symbol") });
+          if (!eligibility.eligible) continue;
+          const tokenAddress = eligibility.tokenAddress;
           const supply = chain === "solana" ? solanaSupplies.get(tokenAddress) : undefined;
           if (chain === "solana" && supply === undefined) continue;
           const peakMarketCapUsd = chain === "solana"
@@ -133,7 +136,12 @@ export function createDuneHistoricalBackfillWorker(input: {
           if (chain === "solana" && (marketCapUsd < 100_000 || marketCapUsd > 1_000_000)) return null;
           return { eventId: `dune:${chain}:${transaction}:${eventIndex}`, economicKey: `${transaction}:${eventIndex}`, chain, tokenAddress, traderAddress: normalizeAddress(chain, requiredString(row, "trader_address")), side: requiredString(row, "side").toLowerCase() === "sell" ? "sell" as const : "buy" as const, amountUsd: requiredNumber(row, "amount_usd"), marketCapUsd, occurredAt, source: `dune:${page.executionId}:${index}` };
         }).filter((row): row is NonNullable<typeof row> => row !== null);
-        evidence.ingest(rows, partition.dayEnd);
+        const result = evidence.ingest(rows, partition.dayEnd);
+        for (const traderId of result.unresolvedTraderIds) {
+          const [, chain, ...addressParts] = traderId.split(":");
+          const address = addressParts.join(":");
+          if (chain && address) input.onAcceptedUnresolvedWallet?.({ traderId, chain, address, observedAt: partition.dayEnd });
+        }
       }
       const done = page.nextOffset === null;
       return Object.freeze({ executionId: page.executionId, nextOffset: page.nextOffset, rowCount: partition.rowCount + page.rows.length, watermark: done ? partition.dayEnd : Math.max(partition.watermark ?? partition.dayStart, ...observedAt), creditsUsed: partition.executionId ? 0 : 1, done });

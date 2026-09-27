@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { HistoricalBackfillPartition, HistoricalBackfillQueryKind } from "@address-radar/database";
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -18,13 +20,18 @@ export function createHistoricalPartitions(input: {
   const chains = [...new Set(input.chains.map(value => value.trim().toLowerCase()).filter(Boolean))].sort();
   for (const chain of chains) {
     const configured = input.tokenAddressesByChain?.[chain];
+    const canonicalAddresses = configured === undefined ? undefined : [...new Set(configured)].sort();
     const tokenPages: readonly (readonly string[])[] = configured === undefined
       ? [[]]
-      : Array.from({ length: Math.ceil(configured.length / tokenPageSize) }, (_, index) => configured.slice(index * tokenPageSize, (index + 1) * tokenPageSize));
+      : Array.from({ length: Math.ceil(canonicalAddresses!.length / tokenPageSize) }, (_, index) => canonicalAddresses!.slice(index * tokenPageSize, (index + 1) * tokenPageSize));
     for (let dayStart = input.from; dayStart < input.to; dayStart += DAY_MS) {
       const dayEnd = Math.min(dayStart + DAY_MS, input.to);
-      tokenPages.forEach((tokenAddresses, pageIndex) => partitions.push(Object.freeze({
-        partitionId: `${input.queryKind}:${chain}:${dayStart}:${pageIndex}`,
+      tokenPages.forEach((tokenAddresses, pageIndex) => {
+        const pageIdentity = tokenAddresses.length === 0
+          ? String(pageIndex)
+          : createHash("sha256").update(tokenAddresses.join("\0")).digest("hex").slice(0, 16);
+        partitions.push(Object.freeze({
+        partitionId: `${input.queryKind}:${chain}:${dayStart}:${pageIdentity}`,
         queryKind: input.queryKind,
         chain,
         dayStart,
@@ -42,7 +49,8 @@ export function createHistoricalPartitions(input: {
         createdAt: input.createdAt,
         updatedAt: input.createdAt,
         completedAt: null,
-      })));
+      }));
+      });
     }
   }
   return Object.freeze(partitions);

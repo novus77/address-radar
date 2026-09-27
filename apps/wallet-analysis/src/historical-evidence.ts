@@ -65,7 +65,6 @@ export function createHistoricalEvidenceService(input: {
         const first = trades[0]!.row;
         const tokenId = `${first.chain}:${first.tokenAddress}`;
         const traderId = input.resolveTraderId(first.chain, first.traderAddress) ?? `wallet:${first.chain}:${first.traderAddress}`;
-        if (traderId.startsWith("wallet:")) unresolvedTraderIds.add(traderId);
         let strongest: { readonly tier: NonNullable<ReturnType<typeof strongestSatisfiedTier>>; readonly milestoneId: string; readonly evidenceAt: number; readonly amount: number; readonly weightedEntry: number; readonly theoretical: number; readonly capturable: number | null; readonly realized: number | null; readonly sourceEventIds: readonly string[] } | null = null;
         for (const milestone of input.store.milestoneCrossings(tokenId)) {
           const crossedAt = milestone.crossedAt;
@@ -85,6 +84,7 @@ export function createHistoricalEvidenceService(input: {
         if (!strongest) continue;
         const evidenceId = hash(`${traderId}\0${tokenId}\0${strongest.milestoneId}\0${strongest.tier.type}\0${strongest.sourceEventIds.join(",")}`);
         input.store.saveEvidence({ evidenceId, traderId, tokenId, milestoneId: strongest.milestoneId, evidenceType: strongest.tier.type, admissionClass: strongest.tier.admissionClass, cumulativeBuyUsd: strongest.amount, weightedEntryMarketCapUsd: strongest.weightedEntry, theoreticalOpportunity: strongest.theoretical, capturableMultiple: strongest.capturable, realizedMultiple: strongest.realized, evidenceAt: strongest.evidenceAt, sourceEventIds: strongest.sourceEventIds, strategyVersion: input.strategyVersion });
+        if (traderId.startsWith("wallet:")) unresolvedTraderIds.add(traderId);
         affectedTraders.add(traderId);
         acceptedEvidence += 1;
       }

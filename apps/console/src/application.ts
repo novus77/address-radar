@@ -621,6 +621,14 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
           SUM(CASE WHEN status = 'unsupported' THEN 1 ELSE 0 END) AS unsupportedCount
         FROM historical_token_verifications
       `).get() as Record<string, number | null>;
+      const stage = database.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM historical_token_verifications WHERE status = 'queued' AND next_retry_at > ?) AS activeFomoLookupCount,
+          (SELECT COUNT(*) FROM historical_token_verifications WHERE status = 'confirmed' AND exact_ca_match = 1 AND history_available = 1) AS milestoneEligibleTokenCount,
+          (SELECT COUNT(DISTINCT token_id) FROM token_milestone_crossings WHERE crossed_at IS NOT NULL AND precision != 'unavailable') AS milestoneCompletedTokenCount,
+          (SELECT COUNT(DISTINCT e.token_id) FROM candidate_evidence_v3 e) AS earlyTradeCompletedTokenCount,
+          (SELECT COUNT(*) FROM trader_sources WHERE source_key = 'milestone') AS materializedHistoricalTraderCount
+      `).get(Date.now()) as Record<string, number | null>;
       return { status: 200, body: {
         creditsUsedToday: Number(credits?.creditsUsed ?? 0),
         pendingPartitionCount: Number(counts.pendingPartitionCount ?? 0),
@@ -632,6 +640,11 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
         fomoPendingCount: Number(verification.pendingCount ?? 0),
         fomoQuarantinedCount: Number(verification.quarantinedCount ?? 0),
         unsupportedTokenCount: Number(verification.unsupportedCount ?? 0),
+        activeFomoLookupCount: Number(stage.activeFomoLookupCount ?? 0),
+        milestoneEligibleTokenCount: Number(stage.milestoneEligibleTokenCount ?? 0),
+        milestoneCompletedTokenCount: Number(stage.milestoneCompletedTokenCount ?? 0),
+        earlyTradeCompletedTokenCount: Number(stage.earlyTradeCompletedTokenCount ?? 0),
+        materializedHistoricalTraderCount: Number(stage.materializedHistoricalTraderCount ?? 0),
         watermarks,
         updatedAt: Date.now(),
       } };

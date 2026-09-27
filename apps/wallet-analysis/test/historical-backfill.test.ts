@@ -29,15 +29,16 @@ describe("historical partition planning", () => {
     });
 
     expect(partitions).toHaveLength(6);
-    expect(partitions.map(item => item.partitionId)).toEqual([
-      `pre_milestone_trades:base:${START}:0`,
-      `pre_milestone_trades:base:${START + DAY}:0`,
-      `pre_milestone_trades:solana:${START}:0`,
-      `pre_milestone_trades:solana:${START}:1`,
-      `pre_milestone_trades:solana:${START + DAY}:0`,
-      `pre_milestone_trades:solana:${START + DAY}:1`,
-    ]);
+    expect(new Set(partitions.map(item => item.partitionId)).size).toBe(6);
+    expect(partitions.every(item => item.partitionId.startsWith(`${item.queryKind}:${item.chain}:${item.dayStart}:`))).toBe(true);
     expect(partitions[3]).toMatchObject({ chain: "solana", dayStart: START, dayEnd: START + DAY, tokenAddresses: ["C"], nextOffset: 0 });
+  });
+
+  it("changes partition identity when the token page content changes", () => {
+    const first = createHistoricalPartitions({ queryKind: "milestone_crossings", chains: ["base"], from: START, to: START + DAY, tokenAddressesByChain: { base: ["0xa"] }, createdAt: 1 });
+    const second = createHistoricalPartitions({ queryKind: "milestone_crossings", chains: ["base"], from: START, to: START + DAY, tokenAddressesByChain: { base: ["0xb"] }, createdAt: 2 });
+
+    expect(first[0]?.partitionId).not.toBe(second[0]?.partitionId);
   });
 });
 
@@ -68,6 +69,36 @@ describe("Solana historical valuation", () => {
     await worker.execute(partition!, new AbortController().signal);
 
     expect(historyStore.historicalToken("solana:MintA")).toMatchObject({ peakMarketCapUsd: 2_000_000, firstReached1mAt: Date.parse("2026-08-10T01:00:00.000Z") });
+    database.close();
+    repository.close();
+  });
+
+  it("does not persist a canonical quote asset from the token universe", async () => {
+    const path = await databasePath();
+    const repository = openAddressRadarRepository(path);
+    const database = new DatabaseSync(path);
+    const historyStore = createCandidateHistoryStore(database);
+    const tokenAddress = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    const worker = createDuneHistoricalBackfillWorker({
+      client: { runSavedQueryPage: vi.fn(async () => ({
+        queryId: 11,
+        executionId: "exec-usdc",
+        rows: [{ chain: "solana", token_address: tokenAddress, symbol: "USDC", peak_price_at: "2026-08-10T01:00:00.000Z", peak_price_usd: 1 }],
+        nextOffset: null,
+        totalRowCount: 1,
+      })) } as never,
+      repository,
+      historyStore,
+      queryIds: { token_universe: 11, milestone_crossings: 12, pre_milestone_trades: 13 },
+      pageSize: 100,
+      strategyVersion: "candidate-history-v3",
+      solanaSupply: { resolveMany: async () => new Map([[tokenAddress, 1_000_000_000]]) },
+    });
+    const [partition] = createHistoricalPartitions({ queryKind: "token_universe", chains: ["solana"], from: START, to: START + DAY, createdAt: 1 });
+
+    await worker.execute(partition!, new AbortController().signal);
+
+    expect(historyStore.historicalToken(`solana:${tokenAddress}`)).toBeNull();
     database.close();
     repository.close();
   });
