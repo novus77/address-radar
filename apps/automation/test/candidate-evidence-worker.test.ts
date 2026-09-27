@@ -94,6 +94,38 @@ async function evaluate(worker: ReturnType<typeof createCandidateEvidenceWorker>
 }
 
 describe("candidate evidence worker", () => {
+  it("derives an estimated milestone from observed trader market cap", async () => {
+    const { database, history, worker } = setup();
+    addTrader(database, "trader-derived");
+    database.prepare(`
+      INSERT INTO fomo_accounts(account_id, handle, first_seen_at, last_seen_at)
+      VALUES ('account-derived', 'derived', 1, 1)
+    `).run();
+    addBuy({ database, eventId: "buy-derived", traderId: "trader-derived", tokenId: "base:token-derived", amountUsd: 60 });
+    database.prepare(`
+      INSERT INTO trader_events(
+        event_id, account_id, entity_id, chain, token_address, side,
+        amount_usd, price_usd, market_cap_usd, token_age_ms,
+        occurred_at, collected_at, source
+      ) VALUES ('event-derived', 'account-derived', 'trader-derived', 'base', 'token-derived', 'buy', 60, 5, 300000, NULL, 200, 200, 'fomo_stream')
+    `).run();
+    database.prepare(`
+      INSERT INTO market_observations(chain, token_address, observed_at, price_usd, source)
+      VALUES ('base', 'token-derived', 100, 1, 'test'), ('base', 'token-derived', 200, 5, 'test')
+    `).run();
+
+    await expect(evaluate(worker, "base:token-derived")).resolves.toMatchObject({ status: "completed" });
+    expect(history.evidenceForTrader("trader-derived")).toEqual([
+      expect.objectContaining({ evidenceType: "market_cap_300k_5x" }),
+    ]);
+    expect(database.prepare(`
+      SELECT precision, source
+      FROM token_milestone_crossings
+      WHERE token_id = 'base:token-derived' AND market_cap_usd = 300000
+    `).get()).toEqual({ precision: "estimated", source: "trader_event_market_cap" });
+    database.close();
+  });
+
   it("admits FOMO-only strong evidence without wallet identity and upgrades it in place", async () => {
     const { database, history, worker } = setup();
     addTrader(database, "fomo:trader-a");

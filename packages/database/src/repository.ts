@@ -735,6 +735,20 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
           occurred_at, collected_at, source
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(event.eventId, event.accountId, event.entityId, event.chain, event.tokenAddress, event.side, event.amountUsd, event.priceUsd, event.marketCapUsd, event.tokenAgeMs, event.occurredAt, event.collectedAt, event.source);
+      if (event.priceUsd !== null && event.priceUsd > 0) {
+        database.prepare(`
+          INSERT INTO market_observations(chain, token_address, observed_at, price_usd, source)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(chain, token_address, observed_at, source)
+          DO UPDATE SET price_usd = excluded.price_usd
+        `).run(
+          event.chain.toLowerCase(),
+          normalizeAddressRadarTokenAddress(event.chain, event.tokenAddress),
+          event.occurredAt,
+          event.priceUsd,
+          `trader_event:${event.source}`,
+        );
+      }
       const sourceFamily = event.source === "onchain_wallet" ? "onchain" : "fomo";
       const sourceStatus = sourceFamily === "onchain" ? "ONCHAIN_ONLY" : "FOMO_ONLY";
       const observationId = sourceFamily === "fomo"

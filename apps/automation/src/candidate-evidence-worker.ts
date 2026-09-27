@@ -281,12 +281,54 @@ async function evaluateToken(input: {
     };
   }
 
-  const milestones = input.database.prepare(`
+  let milestones = input.database.prepare(`
     SELECT milestone_id AS milestoneId, market_cap_usd AS marketCapUsd, crossed_at AS crossedAt
     FROM token_milestone_crossings
     WHERE token_id = ?
     ORDER BY market_cap_usd, crossed_at
   `).all(token.tokenId) as unknown as MilestoneRow[];
+  if (milestones.length === 0) {
+    const historyStore = createCandidateHistoryStore(input.database);
+    for (const milestone of CANDIDATE_MILESTONES) {
+      const marketCapUsd = milestone.marketCapUsd;
+      const observed = input.database.prepare(`
+        SELECT event_id AS eventId, occurred_at AS crossedAt
+        FROM trader_events
+        WHERE LOWER(chain) = LOWER(?)
+          AND (
+            (LOWER(?) = 'solana' AND token_address = ?)
+            OR (LOWER(?) <> 'solana' AND LOWER(token_address) = LOWER(?))
+          )
+          AND market_cap_usd >= ?
+        ORDER BY occurred_at, event_id
+        LIMIT 1
+      `).get(
+        token.chain,
+        token.chain,
+        token.tokenAddress,
+        token.chain,
+        token.tokenAddress,
+        marketCapUsd,
+      ) as { eventId: string; crossedAt: number } | undefined;
+      if (!observed) continue;
+      historyStore.saveMilestoneCrossing({
+        milestoneId: `${token.tokenId}:${marketCapUsd}`,
+        tokenId: token.tokenId,
+        marketCapUsd,
+        crossedAt: observed.crossedAt,
+        precision: "estimated",
+        source: "trader_event_market_cap",
+        sourceEventIds: [observed.eventId],
+        strategyVersion: "candidate-event-facts-v1",
+      });
+    }
+    milestones = input.database.prepare(`
+      SELECT milestone_id AS milestoneId, market_cap_usd AS marketCapUsd, crossed_at AS crossedAt
+      FROM token_milestone_crossings
+      WHERE token_id = ?
+      ORDER BY market_cap_usd, crossed_at
+    `).all(token.tokenId) as unknown as MilestoneRow[];
+  }
   if (milestones.length === 0) {
     const recoveryJobIds = input.recovery?.plan({
       reasonCode: "missing_milestone",

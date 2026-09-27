@@ -24,10 +24,15 @@ describe("canonical trader events", () => {
     const database = new DatabaseSync(databasePath);
     const canonical = database.prepare("SELECT source_status AS sourceStatus FROM canonical_trader_events").all();
     const observations = database.prepare("SELECT COUNT(*) AS count FROM canonical_trader_event_observations").get() as { count: number };
+    const marketObservations = database.prepare("SELECT source, price_usd AS priceUsd FROM market_observations ORDER BY observed_at").all();
     database.close();
 
     expect(canonical).toEqual([{ sourceStatus: "FOMO_AND_ONCHAIN" }]);
     expect(observations.count).toBe(2);
+    expect(marketObservations).toEqual([
+      { source: "trader_event:fomo_stream", priceUsd: 0.01 },
+      { source: "trader_event:onchain_wallet", priceUsd: 0.01 },
+    ]);
   });
 });
 
