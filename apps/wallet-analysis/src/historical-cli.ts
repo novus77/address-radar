@@ -1,4 +1,4 @@
-import { createDuneDataApiClient, FomoTokenLookupProducer, FomoTokenLookupResultConsumer } from "@address-radar/collectors";
+import { createDuneDataApiClient, createGeckoTerminalClient, FomoTokenLookupProducer, FomoTokenLookupResultConsumer, type DiscoveryChain } from "@address-radar/collectors";
 import { createCandidateHistoryStore, migrateAddressRadarDatabase, openAddressRadarDatabase, openAddressRadarRepository } from "@address-radar/database";
 
 import { loadHistoricalBackfillConfig } from "./config.js";
@@ -9,6 +9,12 @@ import { createHistoricalPartitions } from "./historical-partitions.js";
 import { createHistoricalStagePlanner } from "./historical-stage-planner.js";
 import { runWalletAnalysisService } from "./service.js";
 import { createSolanaTokenSupplyProvider } from "./solana-token-supply.js";
+import { createGeckoMilestoneProvider } from "./gecko-milestone-provider.js";
+import { createGeckoEarlyTradeProvider } from "./gecko-early-trade-provider.js";
+import type { EarlyTradeProvider } from "./gecko-early-trade-provider.js";
+import { createBlockscoutEarlyTradeProvider, createFallbackEarlyTradeProvider, createSolanaPoolEarlyTradeProvider } from "./indexed-early-trade-providers.js";
+import { createConfiguredAnalysisRpcClient } from "./rpc.js";
+import { createHistoricalProviderRouter } from "./historical-provider-router.js";
 
 const config = loadHistoricalBackfillConfig(process.env);
 const repository = openAddressRadarRepository(config.databasePath);
@@ -21,14 +27,35 @@ const verification = createFomoHistoricalVerificationService({
   consumer: new FomoTokenLookupResultConsumer({ filePath: config.fomoLookupResultPath, cursorPath: config.fomoLookupResultCursorPath }),
   maximumActiveLookups: config.fomoMaximumActiveLookups,
 });
-const client = createDuneDataApiClient({ apiKey: config.apiKey, timeoutMs: config.timeoutMs, pollIntervalMs: config.pollIntervalMs });
+const client = config.apiKey ? createDuneDataApiClient({ apiKey: config.apiKey, timeoutMs: config.timeoutMs, pollIntervalMs: config.pollIntervalMs }) : undefined;
+const geckoClient = createGeckoTerminalClient({ baseUrl: config.geckoTerminal.baseUrl, timeoutMs: config.geckoTerminal.timeoutMs, minimumRequestIntervalMs: config.geckoTerminal.minimumRequestIntervalMs });
+const milestoneRouter = createHistoricalProviderRouter({
+  primary: {
+    id: "gecko_terminal",
+    provider: createGeckoMilestoneProvider({ client: geckoClient, maxPages: config.geckoTerminal.maxPages }),
+  },
+});
+const geckoEarlyTrades = createGeckoEarlyTradeProvider({ client: geckoClient });
+const blockscoutEarlyTrades = createBlockscoutEarlyTradeProvider({ gecko: geckoClient, endpoints: config.blockscoutEndpoints });
+const fallbackByChain: Partial<Record<DiscoveryChain, EarlyTradeProvider>> = {};
+for (const chain of ["eth", "base", "bsc"] as const) if (config.blockscoutEndpoints[chain]) fallbackByChain[chain] = blockscoutEarlyTrades;
+if (config.solanaRpc) {
+  fallbackByChain.solana = createSolanaPoolEarlyTradeProvider({
+    gecko: geckoClient,
+    rpc: createConfiguredAnalysisRpcClient({ endpoints: { solana: config.solanaRpc } }),
+  });
+}
+const earlyTradeProvider = createFallbackEarlyTradeProvider({ primary: geckoEarlyTrades, fallbackByChain });
 const worker = createDuneHistoricalBackfillWorker({
-  client,
+  ...(client ? { client } : {}),
   repository,
   historyStore,
   queryIds: config.queryIds,
   pageSize: config.pageSize,
   strategyVersion: config.strategyVersion,
+  milestoneRouter,
+  earlyTradeProvider,
+  duneFallbackEnabled: config.duneFallbackEnabled,
   ...(config.solanaRpc ? { solanaSupply: createSolanaTokenSupplyProvider({ endpoint: config.solanaRpc.primary, ...(config.solanaRpc.fallback ? { fallbackEndpoint: config.solanaRpc.fallback } : {}) }) } : {}),
   resolveVerifiedTokenAddresses: verification.resolveEligibleAddresses,
   resolveTraderId(chain, address) {
@@ -48,7 +75,7 @@ const seedStage = (queryKind: "token_universe" | "milestone_crossings" | "pre_mi
   for (const partition of createHistoricalPartitions({ queryKind, chains: config.chains, from: config.startAt, to: endAt, ...(tokenAddressesByChain ? { tokenAddressesByChain } : {}), createdAt: Date.now() })) repository.enqueueHistoricalBackfillPartition(partition);
 };
 const seed = (): void => {
-  seedStage("token_universe");
+  if (config.duneFallbackEnabled && config.queryIds.token_universe !== undefined) seedStage("token_universe");
   stagePlanner.plan();
 };
 

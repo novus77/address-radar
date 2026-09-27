@@ -7,6 +7,15 @@ export type {
 } from "./multi-source-candidate-discovery.js";
 export { createHistoricalBackfillScheduler, runHistoricalBackfillCycle } from "./historical-backfill.js";
 export { createDuneHistoricalBackfillWorker } from "./dune-historical-worker.js";
+export { createGeckoMilestoneProvider, DEFAULT_MARKET_CAP_THRESHOLDS_USD } from "./gecko-milestone-provider.js";
+export { createGeckoEarlyTradeProvider } from "./gecko-early-trade-provider.js";
+export type { EarlyTradeProvider, EarlyTradeRecoveryResult } from "./gecko-early-trade-provider.js";
+export { createBlockscoutEarlyTradeProvider, createFallbackEarlyTradeProvider, createSolanaPoolEarlyTradeProvider } from "./indexed-early-trade-providers.js";
+export type { GeckoMilestoneProvider, MilestoneReconstructionResult, ReconstructedMilestone } from "./gecko-milestone-provider.js";
+export { createHistoricalProviderRouter } from "./historical-provider-router.js";
+export type { HistoricalMilestoneProvider, HistoricalProviderRoute, HistoricalProviderRouter } from "./historical-provider-router.js";
+export { createHistoricalMilestoneWorker } from "./historical-milestone-worker.js";
+export type { HistoricalMilestoneJob, HistoricalMilestoneQueue, HistoricalMilestoneRecord, HistoricalMilestoneRepository, HistoricalMilestoneWorker } from "./historical-milestone-worker.js";
 export { createFomoHistoricalVerificationService, FOMO_HISTORICAL_CHAINS } from "./fomo-token-verification.js";
 export type { HistoricalBackfillWorker, HistoricalBackfillWorkerResult } from "./historical-backfill.js";
 export { createHistoricalEvidenceService } from "./historical-evidence.js";

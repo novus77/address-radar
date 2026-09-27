@@ -209,6 +209,65 @@ describe("historical backfill scheduler", () => {
 });
 
 describe("Dune historical backfill worker", () => {
+  it("completes milestone partitions through GeckoTerminal without Dune credits", async () => {
+    const path = await databasePath();
+    const repository = openAddressRadarRepository(path);
+    const database = new DatabaseSync(path);
+    const historyStore = createCandidateHistoryStore(database);
+    const worker = createDuneHistoricalBackfillWorker({
+      repository,
+      historyStore,
+      queryIds: {},
+      pageSize: 100,
+      strategyVersion: "candidate-history-v3",
+      milestoneRouter: {
+        fallbackCircuit: () => ({ open: false, retryAt: null }),
+        reconstruct: async () => ({
+          provider: "gecko_terminal",
+          result: { status: "available", poolAddress: "pool", supplyEstimate: 1_000_000, supplyBasis: "market_cap", candleCount: 10, milestones: [{ thresholdUsd: 500_000, crossedAt: START + 1_000, estimatedMarketCapUsd: 550_000, source: "gecko_terminal_ohlcv", precision: "estimated_market_cap" }] },
+          attempts: [{ provider: "gecko_terminal", outcome: "available", retryable: false, message: null }],
+        }),
+      },
+      duneFallbackEnabled: false,
+    });
+    const [partition] = createHistoricalPartitions({ queryKind: "milestone_crossings", chains: ["base"], from: START, to: START + DAY, tokenAddressesByChain: { base: ["0xABC"] }, createdAt: 1 });
+
+    await expect(worker.execute(partition!, new AbortController().signal)).resolves.toMatchObject({ creditsUsed: 0, done: true, rowCount: 1 });
+    expect(historyStore.milestoneCrossings("base:0xabc")).toEqual([expect.objectContaining({ marketCapUsd: 500_000, source: "gecko_terminal_ohlcv" })]);
+    database.close();
+    repository.close();
+  });
+
+  it("completes recent early-trade partitions without Dune credits", async () => {
+    const path = await databasePath();
+    const repository = openAddressRadarRepository(path);
+    const database = new DatabaseSync(path);
+    const historyStore = createCandidateHistoryStore(database);
+    historyStore.saveMilestoneCrossing({ milestoneId: "base:0xabc:500000", tokenId: "base:0xabc", marketCapUsd: 500_000, crossedAt: START + 10_000, precision: "estimated", source: "gecko_terminal_ohlcv", sourceEventIds: ["pool:1"], strategyVersion: "candidate-history-v3" });
+    const worker = createDuneHistoricalBackfillWorker({
+      repository,
+      historyStore,
+      queryIds: {},
+      pageSize: 100,
+      strategyVersion: "candidate-history-v3",
+      resolveTraderId: () => "entity-1",
+      earlyTradeProvider: { recover: async () => ({
+        status: "available",
+        poolAddress: "pool",
+        coverageStartAt: START,
+        coverageEndAt: START + 10_000,
+        trades: [{ eventId: "trade-1", economicKey: "tx-1", chain: "base", tokenAddress: "0xabc", traderAddress: "0xwallet", side: "buy", amountUsd: 100, marketCapUsd: 100_000, occurredAt: START + 1_000, source: "gecko_terminal:pool" }],
+      }) },
+      duneFallbackEnabled: false,
+    });
+    const [partition] = createHistoricalPartitions({ queryKind: "pre_milestone_trades", chains: ["base"], from: START, to: START + DAY, tokenAddressesByChain: { base: ["0xabc"] }, createdAt: 1 });
+
+    await expect(worker.execute(partition!, new AbortController().signal)).resolves.toMatchObject({ creditsUsed: 0, done: true, rowCount: 1 });
+    expect(historyStore.evidenceForTrader("entity-1")).toHaveLength(1);
+    database.close();
+    repository.close();
+  });
+
   it("resumes a persisted execution page and normalizes token inventory", async () => {
     const path = await databasePath();
     const repository = openAddressRadarRepository(path);

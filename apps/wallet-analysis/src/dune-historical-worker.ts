@@ -1,4 +1,4 @@
-import type { DuneDataApiClient } from "@address-radar/collectors";
+import type { DiscoveryChain, DuneDataApiClient } from "@address-radar/collectors";
 import type { AddressRadarRepository, CandidateHistoryStore, HistoricalBackfillQueryKind } from "@address-radar/database";
 import type { HistoricalBackfillPartition } from "@address-radar/database";
 
@@ -6,6 +6,8 @@ import { createHistoricalEvidenceService } from "./historical-evidence.js";
 import type { HistoricalBackfillWorker } from "./historical-backfill.js";
 import { classifyHistoricalTokenEligibility } from "./historical-token-eligibility.js";
 import type { SolanaTokenSupplyProvider } from "./solana-token-supply.js";
+import type { HistoricalProviderRouter } from "./historical-provider-router.js";
+import type { EarlyTradeProvider } from "./gecko-early-trade-provider.js";
 
 type Row = Readonly<Record<string, unknown>>;
 
@@ -30,16 +32,19 @@ const normalizeAddress = (chain: string, address: string): string => chain === "
 const normalizeChain = (chain: string): string => chain === "ethereum" ? "eth" : chain === "bnb" || chain === "binance" ? "bsc" : chain;
 
 export function createDuneHistoricalBackfillWorker(input: {
-  readonly client: DuneDataApiClient;
+  readonly client?: DuneDataApiClient;
   readonly repository: AddressRadarRepository;
   readonly historyStore: CandidateHistoryStore;
-  readonly queryIds: Readonly<Record<HistoricalBackfillQueryKind, number>>;
+  readonly queryIds: Readonly<Partial<Record<HistoricalBackfillQueryKind, number>>>;
   readonly pageSize: number;
   readonly strategyVersion: string;
   readonly resolveTraderId?: (chain: string, address: string) => string | null;
   readonly resolveVerifiedTokenAddresses?: (chain: string, addresses: readonly string[]) => { readonly pending: number; readonly eligible: readonly string[] };
   readonly onAcceptedUnresolvedWallet?: (input: { readonly traderId: string; readonly chain: string; readonly address: string; readonly observedAt: number }) => void;
   readonly solanaSupply?: SolanaTokenSupplyProvider;
+  readonly milestoneRouter?: HistoricalProviderRouter;
+  readonly earlyTradeProvider?: EarlyTradeProvider;
+  readonly duneFallbackEnabled?: boolean;
 }): HistoricalBackfillWorker {
   const evidence = createHistoricalEvidenceService({
     store: input.historyStore,
@@ -55,7 +60,77 @@ export function createDuneHistoricalBackfillWorker(input: {
         tokenAddresses = verification.eligible;
         if (!tokenAddresses.length) return Object.freeze({ executionId: partition.executionId ?? "fomo-filtered", nextOffset: null, rowCount: partition.rowCount, watermark: partition.dayEnd, creditsUsed: 0, done: true });
       }
+      if (partition.queryKind === "milestone_crossings" && input.milestoneRouter) {
+        let reconstructed = 0;
+        let unavailable = 0;
+        for (const tokenAddress of tokenAddresses) {
+          const route = await input.milestoneRouter.reconstruct({
+            chain: normalizeChain(partition.chain) as DiscoveryChain,
+            tokenAddress: normalizeAddress(partition.chain, tokenAddress),
+            fromTimestamp: partition.dayStart,
+            toTimestamp: partition.dayEnd,
+            signal,
+          });
+          if (route.result.status !== "available") {
+            unavailable += 1;
+            continue;
+          }
+          reconstructed += 1;
+          const normalized = normalizeAddress(partition.chain, tokenAddress);
+          for (const milestone of route.result.milestones) input.historyStore.saveMilestoneCrossing({
+            milestoneId: `${partition.chain}:${normalized}:${milestone.thresholdUsd}`,
+            tokenId: `${partition.chain}:${normalized}`,
+            marketCapUsd: milestone.thresholdUsd,
+            crossedAt: milestone.crossedAt,
+            precision: "estimated",
+            source: milestone.source,
+            sourceEventIds: [`${route.result.poolAddress ?? "unknown-pool"}:${milestone.crossedAt}`],
+            strategyVersion: input.strategyVersion,
+          });
+        }
+        if (unavailable === 0) return Object.freeze({
+          executionId: partition.executionId ?? `gecko-terminal:${partition.partitionId}`,
+          nextOffset: null,
+          rowCount: partition.rowCount + reconstructed,
+          watermark: partition.dayEnd,
+          creditsUsed: 0,
+          done: true,
+        });
+        if (!input.duneFallbackEnabled) throw new Error(`gecko_milestone_unavailable:${unavailable}`);
+      }
+      if (partition.queryKind === "pre_milestone_trades" && input.earlyTradeProvider) {
+        let incomplete = 0;
+        let recovered = 0;
+        for (const tokenAddress of tokenAddresses) {
+          const normalized = normalizeAddress(partition.chain, tokenAddress);
+          const result = await input.earlyTradeProvider.recover({
+            chain: normalizeChain(partition.chain) as DiscoveryChain,
+            tokenAddress: normalized,
+            fromTimestamp: partition.dayStart,
+            toTimestamp: partition.dayEnd,
+            signal,
+          });
+          if (result.status !== "available") incomplete += 1;
+          const ingested = evidence.ingest(result.trades, partition.dayEnd);
+          recovered += result.trades.length;
+          for (const traderId of ingested.unresolvedTraderIds) {
+            const [, chain, ...addressParts] = traderId.split(":");
+            const address = addressParts.join(":");
+            if (chain && address) input.onAcceptedUnresolvedWallet?.({ traderId, chain, address, observedAt: partition.dayEnd });
+          }
+        }
+        if (incomplete === 0) return Object.freeze({
+          executionId: partition.executionId ?? `gecko-terminal-trades:${partition.partitionId}`,
+          nextOffset: null,
+          rowCount: partition.rowCount + recovered,
+          watermark: partition.dayEnd,
+          creditsUsed: 0,
+          done: true,
+        });
+        if (!input.duneFallbackEnabled) throw new Error(`gecko_trade_history_incomplete:${incomplete}`);
+      }
       const queryId = input.queryIds[partition.queryKind];
+      if (!input.client || queryId === undefined) throw new Error(`dune_unavailable:${partition.queryKind}`);
       const page = await input.client.runSavedQueryPage<Row>(queryId, {
         ...(partition.lastError ? {} : { executionId: partition.executionId }),
         offset: partition.nextOffset ?? 0,

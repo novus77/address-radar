@@ -8,8 +8,11 @@ export interface WalletAnalysisConfig {
 
 export interface HistoricalBackfillConfig {
   readonly databasePath: string;
-  readonly apiKey: string;
-  readonly queryIds: Readonly<Record<"token_universe" | "milestone_crossings" | "pre_milestone_trades", number>>;
+  readonly apiKey: string | null;
+  readonly queryIds: Readonly<Partial<Record<"token_universe" | "milestone_crossings" | "pre_milestone_trades", number>>>;
+  readonly duneFallbackEnabled: boolean;
+  readonly geckoTerminal: { readonly baseUrl: string; readonly timeoutMs: number; readonly maxPages: number; readonly minimumRequestIntervalMs: number };
+  readonly blockscoutEndpoints: Readonly<Partial<Record<Exclude<DiscoveryChain, "solana">, string>>>;
   readonly chains: readonly string[];
   readonly startAt: number;
   readonly intervalMs: number;
@@ -46,8 +49,7 @@ function ensureHttpUrl(value: string, chain: string): void { const url = new URL
 
 export function loadHistoricalBackfillConfig(env: Readonly<Record<string, string | undefined>>): HistoricalBackfillConfig {
   if (env.ADDRESS_RADAR_GATEWAY_DELIVERY_ENABLED === "true") throw new Error("Historical backfill requires gateway delivery to remain disabled");
-  const apiKey = env.DUNE_API_KEY?.trim();
-  if (!apiKey) throw new Error("DUNE_API_KEY is required");
+  const apiKey = env.DUNE_API_KEY?.trim() || null;
   const positiveInteger = (key: string, fallback?: number): number => {
     const raw = env[key];
     const value = raw === undefined && fallback !== undefined ? fallback : Number(raw);
@@ -67,10 +69,32 @@ export function loadHistoricalBackfillConfig(env: Readonly<Record<string, string
   if (unsupported.length) throw new Error(`DUNE_HISTORICAL_CHAINS contains unsupported chains: ${unsupported.join(",")}`);
   if (chains.includes("solana") && !solanaPrimary) throw new Error("RADAR_RPC_SOLANA_HTTP_URL is required when Solana historical backfill is enabled");
   const databasePath = env.ADDRESS_RADAR_DATABASE_PATH?.trim() || ".address-radar/address-radar.sqlite";
+  const optionalPositiveInteger = (key: string): number | undefined => env[key] === undefined ? undefined : positiveInteger(key);
+  const tokenUniverseQueryId = optionalPositiveInteger("DUNE_TOKEN_UNIVERSE_QUERY_ID");
+  const milestoneCrossingsQueryId = optionalPositiveInteger("DUNE_MILESTONE_CROSSINGS_QUERY_ID");
+  const preMilestoneTradesQueryId = optionalPositiveInteger("DUNE_PRE_MILESTONE_TRADES_QUERY_ID");
+  const queryIds = Object.freeze({
+    ...(tokenUniverseQueryId !== undefined ? { token_universe: tokenUniverseQueryId } : {}),
+    ...(milestoneCrossingsQueryId !== undefined ? { milestone_crossings: milestoneCrossingsQueryId } : {}),
+    ...(preMilestoneTradesQueryId !== undefined ? { pre_milestone_trades: preMilestoneTradesQueryId } : {}),
+  });
+  const duneFallbackEnabled = env.ADDRESS_RADAR_DUNE_FALLBACK_ENABLED !== "false" && apiKey !== null;
+  if (duneFallbackEnabled && Object.values(queryIds).some(value => value === undefined)) throw new Error("All Dune query IDs are required when Dune fallback is enabled");
+  const geckoBaseUrl = env.ADDRESS_RADAR_GECKO_TERMINAL_BASE_URL?.trim() || "https://api.geckoterminal.com/api/v2";
+  ensureHttpUrl(geckoBaseUrl, "gecko-terminal");
+  const blockscoutEndpoints = Object.freeze({
+    eth: env.ADDRESS_RADAR_BLOCKSCOUT_ETH_URL?.trim() || "https://eth.blockscout.com",
+    base: env.ADDRESS_RADAR_BLOCKSCOUT_BASE_URL?.trim() || "https://base.blockscout.com",
+    bsc: env.ADDRESS_RADAR_BLOCKSCOUT_BSC_URL?.trim() || "https://bsc.blockscout.com",
+  });
+  for (const [chain, endpoint] of Object.entries(blockscoutEndpoints)) ensureHttpUrl(endpoint, `blockscout-${chain}`);
   return Object.freeze({
     databasePath,
     apiKey,
-    queryIds: Object.freeze({ token_universe: positiveInteger("DUNE_TOKEN_UNIVERSE_QUERY_ID"), milestone_crossings: positiveInteger("DUNE_MILESTONE_CROSSINGS_QUERY_ID"), pre_milestone_trades: positiveInteger("DUNE_PRE_MILESTONE_TRADES_QUERY_ID") }),
+    queryIds,
+    duneFallbackEnabled,
+    geckoTerminal: Object.freeze({ baseUrl: geckoBaseUrl, timeoutMs: positiveInteger("ADDRESS_RADAR_GECKO_TERMINAL_TIMEOUT_MS", 10_000), maxPages: positiveInteger("ADDRESS_RADAR_GECKO_TERMINAL_MAX_PAGES", 4), minimumRequestIntervalMs: positiveInteger("ADDRESS_RADAR_GECKO_TERMINAL_MIN_REQUEST_INTERVAL_MS", 2_100) }),
+    blockscoutEndpoints,
     chains: Object.freeze(chains),
     startAt,
     intervalMs: positiveInteger("DUNE_WORKER_INTERVAL_MS", 5_000),
