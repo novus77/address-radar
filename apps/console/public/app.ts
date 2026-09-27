@@ -58,6 +58,7 @@ const candidateReasonLabel = value => ({ strong_evidence_in_30d: "30天内命中
 const sourceStateLabel = value => ({ healthy: "运行正常", degraded: "推进变慢", rate_limited: "等待限流恢复", stale: "数据陈旧", unavailable: "当前不可用", misconfigured: "配置不完整" })[value] || value;
 const recoveryStatusLabel = value => ({ pending: "等待执行", running: "正在执行", failed: "等待重试", completed: "已经完成", dead_letter: "需要人工处理" })[value] || value;
 const automationStatusLabel = value => ({ pending: "等待执行", leased: "已领取", running: "正在执行", waiting_source: "旧版等待数据", blocked_source: "缺少前置数据", retryable: "等待重试", completed: "已经完成", terminal: "需要人工处理", cancelled: "已取消", queued: "已排队", verification_pending: "等待 Fomo 验证", evidence_pending: "等待候选证据", quarantined: "已隔离" })[value] || value;
+const sourceBlockReasonLabel = value => ({ missing_token_identity: "缺少代币身份", missing_market_history: "缺少历史价格", missing_milestone: "缺少市值里程碑", missing_early_trades: "缺少里程碑前买入", missing_wallet_mapping: "缺少钱包身份映射", insufficient_coverage: "历史覆盖不足" })[value] || value;
 
 const traderLabels = trader => {
   const typed = [...splitValues(trader.sourceTags), ...splitValues(trader.abilityTags), ...splitValues(trader.styleTags)];
@@ -314,11 +315,14 @@ const renderAutomationOperations = () => {
   $("#automation-diagnostics").innerHTML = [
     ["缺前置数据", queue.byStatus?.blocked_source || 0],
     ["旧版等待任务", queue.byStatus?.waiting_source || 0],
+    ["补数后已唤醒", queue.blockedToWoken || 0],
     ["数据冲突类型", conflict.distinctConflicts || 0],
     ["冲突累计次数", conflict.occurrences || 0],
   ].map(([label, value]) => `<article><span>${escapeHtml(label)}</span><strong>${escapeHtml(text(value, 0))}</strong></article>`).join("");
-  $("#automation-blocked-reasons").innerHTML = queue.blockedReasons?.length ? `<table class="operator-table"><thead><tr><th>缺失原因</th><th>任务数</th></tr></thead><tbody>${queue.blockedReasons.map(item => `<tr><td>${escapeHtml(text(item.reason, "未知前置数据"))}</td><td><strong>${text(item.count, 0)}</strong></td></tr>`).join("")}</tbody></table>` : empty("当前没有因前置数据缺失而阻塞的任务。");
-  $("#automation-job-progress").innerHTML = queue.jobTypeProgress?.length ? `<table class="operator-table"><thead><tr><th>任务类型</th><th>活跃</th><th>完成</th><th>最后推进</th></tr></thead><tbody>${queue.jobTypeProgress.map(item => `<tr><td><strong>${escapeHtml(item.jobType)}</strong></td><td>${text(item.active, 0)}</td><td>${text(item.completed, 0)}</td><td>${time(item.lastUpdatedAt)}</td></tr>`).join("")}</tbody></table>` : empty("暂无自动化任务进度。");
+  $("#automation-blocked-reasons").innerHTML = queue.blockedReasons?.length ? `<table class="operator-table"><thead><tr><th>缺失原因</th><th>任务数</th><th>最早阻塞</th></tr></thead><tbody>${queue.blockedReasons.map(item => `<tr><td>${escapeHtml(sourceBlockReasonLabel(item.reasonCode))}</td><td><strong>${text(item.count, 0)}</strong></td><td>${time(item.oldestBlockedAt)}</td></tr>`).join("")}</tbody></table>` : empty("当前没有因前置数据缺失而阻塞的任务。");
+  const automationProgress = queue.jobTypeProgress?.length ? `<table class="operator-table"><thead><tr><th>任务类型</th><th>活跃</th><th>完成</th><th>最后推进</th></tr></thead><tbody>${queue.jobTypeProgress.map(item => `<tr><td><strong>${escapeHtml(item.jobType)}</strong></td><td>${text(item.active, 0)}</td><td>${text(item.completed, 0)}</td><td>${time(item.lastUpdatedAt)}</td></tr>`).join("")}</tbody></table>` : empty("暂无自动化任务进度。");
+  const recoveryProgress = queue.recoveryJobProgress?.length ? `<h4>补数任务进度</h4><table class="operator-table"><thead><tr><th>补数类型</th><th>状态</th><th>任务数</th><th>最后推进</th></tr></thead><tbody>${queue.recoveryJobProgress.map(item => `<tr><td><strong>${escapeHtml(item.jobType)}</strong></td><td><span class="tag ${escapeHtml(item.status)}">${escapeHtml(recoveryStatusLabel(item.status))}</span></td><td>${text(item.count, 0)}</td><td>${time(item.lastUpdatedAt)}</td></tr>`).join("")}</tbody></table>` : empty("暂无补数任务进度。");
+  $("#automation-job-progress").innerHTML = `${automationProgress}${recoveryProgress}`;
 
   const backfills = state.automationBackfills.filter(item => (!lane || item.lane === lane)
     && (!status || item.status === status) && (!tier || item.tier === tier) && (!minimumAge || Number(item.ageMs) >= minimumAge));

@@ -2,7 +2,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { migrateAddressRadarDatabase, openAddressRadarDatabase } from "@address-radar/database";
+import {
+  createAutomationJobStore,
+  createSourceLedgerStore,
+  migrateAddressRadarDatabase,
+  openAddressRadarDatabase,
+} from "@address-radar/database";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createAddressConsoleApplication } from "../src/application.js";
@@ -16,6 +21,33 @@ afterEach(() => {
 });
 
 describe("automation funnel", () => {
+  it("reports stable source block reasons and recovery queue progress", () => {
+    const directory = mkdtempSync(join(tmpdir(), "address-radar-source-recovery-"));
+    directories.push(directory);
+    const databasePath = join(directory, "radar.sqlite");
+    const database = openAddressRadarDatabase(databasePath);
+    migrateAddressRadarDatabase(database);
+    const jobs = createAutomationJobStore(database);
+    jobs.enqueue({ jobId: "candidate-1", idempotencyKey: "candidate-1", lane: "trader_backfill", jobType: "candidate_evidence", subjectKey: "base:0xabc", priority: 10, cursor: null, nextAttemptAt: 0, payload: "{}", createdAt: 1 });
+    jobs.claim("trader_backfill", 2, 100, "worker");
+    jobs.waitForSource("candidate-1", "worker", { diagnostic: "token milestone data is not available", reasonCode: "missing_milestone", context: { tokenId: "base:0xabc" }, recoveryJobIds: ["recovery:historical_research:base:0xabc"], retryAt: 3, updatedAt: 2 });
+    createSourceLedgerStore(database).enqueueRecoveryJob({ jobId: "recovery:historical_research:base:0xabc", jobType: "historical_research", chain: "base", subjectKey: "base:0xabc", priority: 60, cursor: null, nextAttemptAt: 2, createdAt: 2 });
+    database.close();
+
+    const application = createAddressConsoleApplication(databasePath);
+    expect(application.handle("GET", "/api/v2/automation/overview")).toMatchObject({
+      status: 200,
+      body: {
+        queue: {
+          blockedReasons: [{ reasonCode: "missing_milestone", count: 1, oldestBlockedAt: 2 }],
+          recoveryJobProgress: [{ jobType: "historical_research", status: "pending", count: 1, lastUpdatedAt: 2 }],
+          blockedToWoken: 0,
+        },
+      },
+    });
+    application.close();
+  });
+
   it("reports account, wallet, monitoring, backfill, and evidence states separately", () => {
     const directory = mkdtempSync(join(tmpdir(), "address-radar-automation-funnel-"));
     directories.push(directory);

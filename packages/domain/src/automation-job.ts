@@ -11,6 +11,24 @@ export type AutomationJobStatus =
   | "terminal"
   | "cancelled";
 
+export type CandidateSourceBlockReason =
+  | "missing_token_identity"
+  | "missing_market_history"
+  | "missing_milestone"
+  | "missing_early_trades"
+  | "missing_wallet_mapping"
+  | "insufficient_coverage";
+
+export interface AutomationJobSourceBlock {
+  readonly jobId: string;
+  readonly reasonCode: CandidateSourceBlockReason;
+  readonly context: Readonly<Record<string, unknown>>;
+  readonly recoveryJobIds: readonly string[];
+  readonly blockedAt: number;
+  readonly updatedAt: number;
+  readonly resolvedAt: number | null;
+}
+
 export interface AutomationJob {
   readonly jobId: string;
   readonly idempotencyKey: string;

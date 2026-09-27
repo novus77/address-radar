@@ -168,7 +168,30 @@ Never delete the failed release, the pre-deploy backup, pending jobs, source obs
 
 Jobs missing token metadata, milestone crossings, or price history use `blocked_source`. This state is not polled by the scheduler. A matching prerequisite write wakes the affected candidate-evidence job by moving it back to `pending`.
 
-The developer console shows blocked reasons, active and completed counts by job type, and source-observation conflict totals. `waiting_source` is retained only as a legacy label and is migrated to `blocked_source` during startup migration.
+Each blocked job records a stable reason code in `automation_job_blocks`:
+
+```text
+missing_token_identity
+missing_market_history
+missing_milestone
+missing_early_trades
+missing_wallet_mapping
+insufficient_coverage
+```
+
+The candidate worker must enqueue the matching recovery job before it blocks. Missing early trades use `milestone_early_buyers`, missing wallet mappings use `identity_resolution`, and missing market or milestone facts use `market_enrichment` or `historical_research`. Recovery completion resolves the block record and wakes the candidate job atomically; a retryable provider failure leaves the candidate blocked and applies the recovery queue backoff instead of creating repeated candidate attempts.
+
+The scanner owns the production recovery handlers. It writes Fomo milestone lookups to `ADDRESS_RADAR_FOMO_LOOKUP_QUEUE_PATH`, which defaults to `<database path>.fomo-lookups.ndjson`. The browser collector must consume this queue and persist canonical milestone-before trade events. Market enrichment writes provider observations and market snapshots; it must not invent a one-million-dollar crossing when the provider has no historical crossing evidence.
+
+The developer console shows stable blocked-reason counts, the oldest block, active and completed counts by automation job type, recovery counts by type/status, the number of blocks woken after recovery, and source-observation conflict totals. `waiting_source` is retained only as a legacy label and is migrated to `blocked_source` during startup migration.
+
+Before enabling recovery in production, verify all of the following:
+
+- Scanner starts without `handler_unavailable` recovery failures.
+- A test `missing_early_trades` block creates one idempotent Fomo milestone lookup.
+- Persisting matching canonical buy events wakes the blocked candidate job.
+- A missing or rate-limited provider produces bounded retryable work rather than log growth.
+- `ADDRESS_RADAR_GATEWAY_DELIVERY_ENABLED=false` remains unchanged.
 
 Claiming is fair across job types inside each weighted lane. A large lightweight-evaluation backlog therefore cannot permanently starve candidate evidence or ability evaluation. Candidate-evidence dispatch stops at 2,000 active jobs and lightweight planning stops at 5,000 active jobs; both retain their durable cursor or coverage state until capacity is available.
 

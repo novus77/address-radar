@@ -13,6 +13,7 @@ import {
 } from "@address-radar/scoring";
 
 import type { AutomationExecutionResult, AutomationHandler } from "./scheduler.js";
+import type { CandidateSourceRecoveryPlanner } from "./candidate-source-recovery.js";
 import { enqueueTraderAbilityEvaluation } from "./trader-ability-worker.js";
 
 const STRATEGY_VERSION = "candidate-evidence-v1";
@@ -250,15 +251,21 @@ async function dispatchChanges(input: {
 async function evaluateToken(input: {
   readonly database: DatabaseSync;
   readonly jobs?: AutomationJobStore;
+  readonly recovery?: CandidateSourceRecoveryPlanner;
   readonly payload: CandidateEvidencePayload;
   readonly evaluatedAt: number;
 }): Promise<AutomationExecutionResult> {
   const token = resolveToken(input.database, input.payload);
   if (!token) {
+    const tokenId = input.payload.tokenId ?? `${input.payload.chain ?? "unknown"}:${input.payload.tokenAddress ?? "unknown"}`;
+    const recoveryJobIds = input.recovery && input.payload.chain && input.payload.tokenAddress
+      ? input.recovery.plan({ reasonCode: "missing_token_identity", tokenId, chain: input.payload.chain, tokenAddress: input.payload.tokenAddress }).recoveryJobIds
+      : [];
     return {
       status: "waiting_source",
       retryAt: input.evaluatedAt + SOURCE_RETRY_MS,
       diagnostic: "historical token metadata is not available",
+      sourceBlock: { reasonCode: "missing_token_identity", context: { tokenId }, recoveryJobIds },
     };
   }
 
@@ -269,10 +276,17 @@ async function evaluateToken(input: {
     ORDER BY market_cap_usd, crossed_at
   `).all(token.tokenId) as unknown as MilestoneRow[];
   if (milestones.length === 0) {
+    const recoveryJobIds = input.recovery?.plan({
+      reasonCode: "missing_milestone",
+      tokenId: token.tokenId,
+      chain: token.chain,
+      tokenAddress: token.tokenAddress,
+    }).recoveryJobIds ?? [];
     return {
       status: "waiting_source",
       retryAt: input.evaluatedAt + SOURCE_RETRY_MS,
       diagnostic: "token milestone data is not available",
+      sourceBlock: { reasonCode: "missing_milestone", context: { tokenId: token.tokenId }, recoveryJobIds },
     };
   }
 
@@ -285,7 +299,18 @@ async function evaluateToken(input: {
     ORDER BY entity_id, occurred_at, canonical_event_id
   `).all(token.chain, token.tokenAddress, input.payload.traderId ?? null, input.payload.traderId ?? null) as unknown as BuyEventRow[];
   if (events.length === 0) {
-    return { status: "completed", diagnostic: "no canonical buy events for token" };
+    const recoveryJobIds = input.recovery?.plan({
+      reasonCode: "missing_early_trades",
+      tokenId: token.tokenId,
+      chain: token.chain,
+      tokenAddress: token.tokenAddress,
+    }).recoveryJobIds ?? [];
+    return {
+      status: "waiting_source",
+      retryAt: input.evaluatedAt + SOURCE_RETRY_MS,
+      diagnostic: "canonical early buy events are not available",
+      sourceBlock: { reasonCode: "missing_early_trades", context: { tokenId: token.tokenId }, recoveryJobIds },
+    };
   }
 
   const prices = input.database.prepare(`
@@ -295,10 +320,17 @@ async function evaluateToken(input: {
     ORDER BY observed_at
   `).all(token.chain, token.tokenAddress, input.evaluatedAt) as unknown as PriceRow[];
   if (prices.length === 0) {
+    const recoveryJobIds = input.recovery?.plan({
+      reasonCode: "missing_market_history",
+      tokenId: token.tokenId,
+      chain: token.chain,
+      tokenAddress: token.tokenAddress,
+    }).recoveryJobIds ?? [];
     return {
       status: "waiting_source",
       retryAt: input.evaluatedAt + SOURCE_RETRY_MS,
       diagnostic: "token price history is not available",
+      sourceBlock: { reasonCode: "missing_market_history", context: { tokenId: token.tokenId }, recoveryJobIds },
     };
   }
 
@@ -417,6 +449,7 @@ export function enqueueCandidateEvidenceDispatcher(jobs: AutomationJobStore, now
 export function createCandidateEvidenceWorker(input: {
   readonly database: DatabaseSync;
   readonly jobs?: AutomationJobStore;
+  readonly recovery?: CandidateSourceRecoveryPlanner;
   readonly now?: () => number;
 }): AutomationHandler {
   const now = input.now ?? Date.now;
@@ -432,6 +465,7 @@ export function createCandidateEvidenceWorker(input: {
       return evaluateToken({
         database: input.database,
         ...(input.jobs ? { jobs: input.jobs } : {}),
+        ...(input.recovery ? { recovery: input.recovery } : {}),
         payload,
         evaluatedAt,
       });

@@ -10,6 +10,8 @@ export {
 } from "./token-partition-planner.js";
 export { createTokenMiningWorker } from "./token-mining-worker.js";
 export { createCandidateEvidenceWorker, enqueueCandidateEvidenceDispatcher } from "./candidate-evidence-worker.js";
+export { createCandidateSourceRecoveryPlanner } from "./candidate-source-recovery.js";
+export type { CandidateSourceRecoveryPlan, CandidateSourceRecoveryPlanner, CandidateSourceRecoveryRequest } from "./candidate-source-recovery.js";
 export { detectRepeatedBundleRisk } from "./bundle-risk-detector.js";
 export { createTraderAbilityWorker, enqueueTraderAbilityDispatcher, enqueueTraderAbilityEvaluation } from "./trader-ability-worker.js";
 export {

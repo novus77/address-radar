@@ -1,6 +1,11 @@
 import type { DatabaseSync } from "node:sqlite";
 
-import type { AutomationJob, AutomationLane } from "@address-radar/domain";
+import type {
+  AutomationJob,
+  AutomationJobSourceBlock,
+  AutomationLane,
+  CandidateSourceBlockReason,
+} from "@address-radar/domain";
 import { withAddressRadarWriteTransaction } from "./connection.js";
 
 const LANE_WEIGHTS = Object.freeze({
@@ -49,11 +54,19 @@ export interface AutomationJobStore {
   enqueue(input: AutomationJobInput): { readonly inserted: boolean; readonly job: AutomationJob };
   activeCount(jobType: string): number;
   job(jobId: string): AutomationJob | null;
+  sourceBlock(jobId: string): AutomationJobSourceBlock | null;
   claim(lane: AutomationLane, now: number, leaseMs: number, owner: string, enabledJobTypes?: readonly string[]): AutomationJob | null;
   checkpoint(jobId: string, owner: string, result: { readonly cursor: string | null; readonly nextAttemptAt: number; readonly updatedAt: number }): void;
   complete(jobId: string, owner: string, result: { readonly cursor: string | null; readonly completedAt: number }): void;
   retry(jobId: string, owner: string, result: { readonly error: string; readonly now: number; readonly retryAfterAt?: number }): void;
-  waitForSource(jobId: string, owner: string, result: { readonly diagnostic: string; readonly retryAt: number; readonly updatedAt: number }): void;
+  waitForSource(jobId: string, owner: string, result: {
+    readonly diagnostic: string;
+    readonly reasonCode?: CandidateSourceBlockReason;
+    readonly context?: Readonly<Record<string, unknown>>;
+    readonly recoveryJobIds?: readonly string[];
+    readonly retryAt: number;
+    readonly updatedAt: number;
+  }): void;
   wakeBlockedSource(subjectKey: string, updatedAt: number, jobType?: string): number;
   terminate(jobId: string, owner: string, result: { readonly reason: string; readonly terminatedAt: number }): void;
   dueLanes(now: number, enabledJobTypes?: readonly string[]): readonly AutomationLane[];
@@ -78,6 +91,16 @@ const toJob = (row: Record<string, unknown>): AutomationJob => Object.freeze({
   createdAt: Number(row.created_at),
   updatedAt: Number(row.updated_at),
   completedAt: row.completed_at as number | null,
+});
+
+const toSourceBlock = (row: Record<string, unknown>): AutomationJobSourceBlock => Object.freeze({
+  jobId: String(row.job_id),
+  reasonCode: row.reason_code as CandidateSourceBlockReason,
+  context: Object.freeze(JSON.parse(String(row.context)) as Record<string, unknown>),
+  recoveryJobIds: Object.freeze(JSON.parse(String(row.recovery_job_ids)) as string[]),
+  blockedAt: Number(row.blocked_at),
+  updatedAt: Number(row.updated_at),
+  resolvedAt: row.resolved_at as number | null,
 });
 
 export function createAutomationJobStore(
@@ -150,6 +173,11 @@ export function createAutomationJobStore(
       return Number(row.count);
     },
     job: readJob,
+    sourceBlock(jobId) {
+      const row = database.prepare("SELECT * FROM automation_job_blocks WHERE job_id = ?")
+        .get(jobId) as Record<string, unknown> | undefined;
+      return row ? toSourceBlock(row) : null;
+    },
     claim(lane, now, leaseMs, owner, enabledJobTypes) {
       if (!owner.trim()) throw new Error("Automation worker owner is required");
       if (!Number.isSafeInteger(leaseMs) || leaseMs <= 0) throw new Error("leaseMs must be positive");
@@ -249,21 +277,46 @@ export function createAutomationJobStore(
             last_error = ?, next_attempt_at = ?, updated_at = ?
           WHERE job_id = ?
         `).run(result.diagnostic, result.retryAt, result.updatedAt, jobId);
+        database.prepare(`
+          INSERT INTO automation_job_blocks(
+            job_id, reason_code, context, recovery_job_ids, blocked_at, updated_at, resolved_at
+          ) VALUES (?, ?, ?, ?, ?, ?, NULL)
+          ON CONFLICT(job_id) DO UPDATE SET
+            reason_code = excluded.reason_code,
+            context = excluded.context,
+            recovery_job_ids = excluded.recovery_job_ids,
+            updated_at = excluded.updated_at,
+            resolved_at = NULL
+        `).run(
+          jobId,
+          result.reasonCode ?? "insufficient_coverage",
+          JSON.stringify(result.context ?? {}),
+          JSON.stringify(result.recoveryJobIds ?? []),
+          result.updatedAt,
+          result.updatedAt,
+        );
       });
     },
     wakeBlockedSource(subjectKey, updatedAt, jobType) {
-      const result = jobType
-        ? database.prepare(`
-            UPDATE automation_jobs
-            SET status = 'pending', next_attempt_at = ?, last_error = NULL, updated_at = ?
-            WHERE subject_key = ? AND job_type = ? AND status IN ('blocked_source', 'waiting_source')
-          `).run(updatedAt, updatedAt, subjectKey, jobType)
-        : database.prepare(`
-            UPDATE automation_jobs
-            SET status = 'pending', next_attempt_at = ?, last_error = NULL, updated_at = ?
-            WHERE subject_key = ? AND status IN ('blocked_source', 'waiting_source')
-          `).run(updatedAt, updatedAt, subjectKey);
-      return Number(result.changes);
+      return transaction(() => {
+        const typeClause = jobType ? " AND job_type = ?" : "";
+        const values = jobType ? [subjectKey, jobType] : [subjectKey];
+        database.prepare(`
+          UPDATE automation_job_blocks SET resolved_at = ?, updated_at = ?
+          WHERE resolved_at IS NULL AND job_id IN (
+            SELECT job_id FROM automation_jobs
+            WHERE subject_key = ?${typeClause}
+              AND status IN ('blocked_source', 'waiting_source')
+          )
+        `).run(updatedAt, updatedAt, ...values);
+        const result = database.prepare(`
+          UPDATE automation_jobs
+          SET status = 'pending', next_attempt_at = ?, last_error = NULL, updated_at = ?
+          WHERE subject_key = ?${typeClause}
+            AND status IN ('blocked_source', 'waiting_source')
+        `).run(updatedAt, updatedAt, ...values);
+        return Number(result.changes);
+      });
     },
     terminate(jobId, owner, result) {
       transaction(() => {

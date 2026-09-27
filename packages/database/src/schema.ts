@@ -71,6 +71,20 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       ON automation_jobs(lane, status, next_attempt_at, priority, created_at);
     CREATE INDEX IF NOT EXISTS automation_jobs_subject
       ON automation_jobs(job_type, subject_key, status);
+    CREATE TABLE IF NOT EXISTS automation_job_blocks (
+      job_id TEXT PRIMARY KEY REFERENCES automation_jobs(job_id) ON DELETE CASCADE,
+      reason_code TEXT NOT NULL CHECK(reason_code IN (
+        'missing_token_identity', 'missing_market_history', 'missing_milestone',
+        'missing_early_trades', 'missing_wallet_mapping', 'insufficient_coverage'
+      )),
+      context TEXT NOT NULL,
+      recovery_job_ids TEXT NOT NULL,
+      blocked_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      resolved_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS automation_job_blocks_reason
+      ON automation_job_blocks(reason_code, resolved_at, blocked_at);
     CREATE TABLE IF NOT EXISTS automation_job_type_state (
       job_type TEXT PRIMARY KEY,
       last_claimed_at INTEGER NOT NULL,

@@ -1,13 +1,14 @@
 import { addressRadarTokenId } from "@address-radar/domain";
 import {
   createCandidateHistoryStore,
+  createAutomationJobStore,
   createSourceLedgerStore,
   initializeCandidateHistorySchema,
   initializeSourceLedgerSchema,
   openAddressRadarDatabase,
   openAddressRadarRepository,
 } from "@address-radar/database";
-import { createDexScreenerClient } from "@address-radar/collectors";
+import { createDexScreenerClient, FomoTokenLookupProducer } from "@address-radar/collectors";
 import { createTokenLifecycleResolver } from "@address-radar/aggregation";
 import { openMonitoringRegistry } from "@address-radar/identity";
 import { createGatewayClient, createGatewayDeliveryWorker } from "@address-radar/delivery";
@@ -17,6 +18,7 @@ import { createPollingRuntimeJob, createScannerRuntime } from "./runtime.js";
 import { createRecoveryRuntime } from "./recovery-runtime.js";
 import { createConfiguredCollectors } from "./collectors.js";
 import { createDiskHeadroomGuard, createRateLimitedErrorReporter } from "./resilience.js";
+import { createSourceRecoveryHandlers } from "./source-recovery-handlers.js";
 
 export async function main(env: Readonly<Record<string, string | undefined>> = process.env): Promise<void> {
   const config = parseScannerConfig(env);
@@ -29,6 +31,7 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
   initializeSourceLedgerSchema(historyDatabase);
   const historyStore = createCandidateHistoryStore(historyDatabase);
   const sourceLedger = createSourceLedgerStore(historyDatabase);
+  const automationJobs = createAutomationJobStore(historyDatabase);
   const monitoringRegistry = openMonitoringRegistry(config.databasePath);
   const marketProvider = createDexScreenerClient({ ...(config.marketBaseUrl ? { baseUrl: config.marketBaseUrl } : {}) });
   const lifecycleResolver = createTokenLifecycleResolver({});
@@ -107,10 +110,21 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
   }) : null;
   const recovery = config.recoveryEnabled ? createRecoveryRuntime({
     ledger: sourceLedger,
-    handlers: {},
+    handlers: createSourceRecoveryHandlers({
+      database: historyDatabase,
+      ledger: sourceLedger,
+      jobs: automationJobs,
+      history: historyStore,
+      marketProvider,
+      fomoProducer: new FomoTokenLookupProducer({ filePath: config.fomoLookupQueuePath }),
+      now: Date.now,
+    }),
     clock: { now: Date.now },
     leaseMs: config.recoveryLeaseMs,
     retryBaseMs: config.recoveryRetryBaseMs,
+    onReEvaluate: request => {
+      if (request.kind === "token") automationJobs.wakeBlockedSource(request.key, Date.now(), "candidate_evidence");
+    },
   }) : null;
   const recoveryPolling = recovery ? createPollingRuntimeJob({
     runOnce: () => recovery.runOnce(),

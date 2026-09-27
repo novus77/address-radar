@@ -1,5 +1,5 @@
 import type { AutomationJobStore, AutomationQueueSnapshot } from "@address-radar/database";
-import type { AutomationJob, AutomationLane } from "@address-radar/domain";
+import type { AutomationJob, AutomationLane, CandidateSourceBlockReason } from "@address-radar/domain";
 
 export interface AutomationHandler {
   readonly jobType: string;
@@ -11,6 +11,11 @@ export interface AutomationExecutionResult {
   readonly cursor?: string | null;
   readonly retryAt?: number;
   readonly diagnostic?: string;
+  readonly sourceBlock?: {
+    readonly reasonCode: CandidateSourceBlockReason;
+    readonly context: Readonly<Record<string, unknown>>;
+    readonly recoveryJobIds: readonly string[];
+  };
 }
 
 export interface AutomationSchedulerResult {
@@ -90,6 +95,7 @@ export function createAutomationScheduler(input: {
       } else if (result.status === "waiting_source") {
         input.store.waitForSource(job.jobId, input.workerId, {
           diagnostic: result.diagnostic ?? "waiting_source",
+          ...(result.sourceBlock ?? {}),
           retryAt: result.retryAt ?? finishedAt + 60_000,
           updatedAt: finishedAt,
         });

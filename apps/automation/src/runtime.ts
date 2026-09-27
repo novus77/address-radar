@@ -1,5 +1,6 @@
 import {
   createAutomationJobStore,
+  createSourceLedgerStore,
   createTraderAutomationStore,
   initializeCandidateHistorySchema,
   migrateAddressRadarDatabase,
@@ -15,6 +16,7 @@ import { createInitialWalletBackfillWorker } from "./initial-wallet-backfill-wor
 import { createTokenPartitionPlanner } from "./token-partition-planner.js";
 import { createTokenMiningWorker } from "./token-mining-worker.js";
 import { createCandidateEvidenceWorker, enqueueCandidateEvidenceDispatcher } from "./candidate-evidence-worker.js";
+import { createCandidateSourceRecoveryPlanner } from "./candidate-source-recovery.js";
 import { createTraderAbilityWorker, enqueueTraderAbilityDispatcher } from "./trader-ability-worker.js";
 import { createSqliteHistoricalTokenSource } from "./token-source-adapters.js";
 
@@ -78,6 +80,7 @@ export function createAutomationRuntime(input: {
   const candidateEvidenceWorker = createCandidateEvidenceWorker({
     database,
     jobs: store,
+    recovery: createCandidateSourceRecoveryPlanner({ ledger: createSourceLedgerStore(database), now }),
     now,
   });
   enqueueCandidateEvidenceDispatcher(store, now());

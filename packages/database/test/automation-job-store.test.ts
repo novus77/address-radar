@@ -73,11 +73,25 @@ describe("automation job store", () => {
     const { database, store } = setup();
     store.enqueue(job("blocked", "trader_backfill", { subjectKey: "base:0xabc", jobType: "candidate_evidence" }));
     store.claim("trader_backfill", 10, 100, "worker-a");
-    store.waitForSource("blocked", "worker-a", { diagnostic: "price history missing", retryAt: 20, updatedAt: 10 });
+    store.waitForSource("blocked", "worker-a", {
+      diagnostic: "price history missing",
+      reasonCode: "missing_market_history",
+      context: { tokenId: "base:0xabc" },
+      recoveryJobIds: ["recovery:market_enrichment:base:0xabc"],
+      retryAt: 20,
+      updatedAt: 10,
+    });
 
     expect(store.job("blocked")).toMatchObject({ status: "blocked_source" });
+    expect(store.sourceBlock("blocked")).toMatchObject({
+      reasonCode: "missing_market_history",
+      context: { tokenId: "base:0xabc" },
+      recoveryJobIds: ["recovery:market_enrichment:base:0xabc"],
+      resolvedAt: null,
+    });
     expect(store.claim("trader_backfill", 1_000, 100, "worker-a")).toBeNull();
     expect(store.wakeBlockedSource("base:0xabc", 1_001, "candidate_evidence")).toBe(1);
+    expect(store.sourceBlock("blocked")).toMatchObject({ resolvedAt: 1_001 });
     expect(store.claim("trader_backfill", 1_001, 100, "worker-a")).toMatchObject({ jobId: "blocked" });
     database.close();
   });

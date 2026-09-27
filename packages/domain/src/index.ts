@@ -1,6 +1,12 @@
 export { createCanonicalTrader } from "./canonical-trader.js";
 export type { CanonicalTrader, CanonicalTraderWallet, MonitoringCoverage } from "./canonical-trader.js";
-export type { AutomationJob, AutomationJobStatus, AutomationLane } from "./automation-job.js";
+export type {
+  AutomationJob,
+  AutomationJobSourceBlock,
+  AutomationJobStatus,
+  AutomationLane,
+  CandidateSourceBlockReason,
+} from "./automation-job.js";
 export type {
   CandidateEvidenceV3,
   HistoricalToken,

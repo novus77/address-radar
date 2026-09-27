@@ -113,11 +113,19 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
         WHERE status IN ('pending', 'waiting_source', 'blocked_source', 'retryable')
       `).get() as { createdAt: number | null };
       const blockedReasons = rows(`
-        SELECT COALESCE(last_error, 'unknown_source_dependency') AS reason, COUNT(*) AS count
-        FROM automation_jobs WHERE status = 'blocked_source'
-        GROUP BY COALESCE(last_error, 'unknown_source_dependency')
-        ORDER BY count DESC, reason LIMIT 20
+        SELECT reason_code AS reasonCode, COUNT(*) AS count, MIN(blocked_at) AS oldestBlockedAt
+        FROM automation_job_blocks
+        WHERE resolved_at IS NULL
+        GROUP BY reason_code
+        ORDER BY count DESC, reason_code LIMIT 20
       `);
+      const recoveryJobProgress = rows(`
+        SELECT job_type AS jobType, status, COUNT(*) AS count, MAX(updated_at) AS lastUpdatedAt
+        FROM recovery_jobs
+        GROUP BY job_type, status
+        ORDER BY job_type, status
+      `);
+      const blockedToWoken = scalar("SELECT COUNT(*) AS count FROM automation_job_blocks WHERE resolved_at IS NOT NULL");
       const jobTypeProgress = rows(`
         SELECT job_type AS jobType,
           SUM(CASE WHEN status IN ('pending', 'leased', 'running', 'waiting_source', 'blocked_source', 'retryable') THEN 1 ELSE 0 END) AS active,
@@ -183,6 +191,8 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
             failureRate24h: completed24h + failed24h === 0 ? 0 : failed24h / (completed24h + failed24h),
             estimatedDrainMs: completed24h === 0 ? null : Math.round(backlog / completed24h * 24 * 60 * 60_000),
             blockedReasons,
+            blockedToWoken,
+            recoveryJobProgress,
             jobTypeProgress,
             sourceConflicts,
           },

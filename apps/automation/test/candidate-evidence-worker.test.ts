@@ -3,12 +3,16 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 
 import {
+  createAutomationJobStore,
   createCandidateHistoryStore,
+  createSourceLedgerStore,
   initializeCandidateHistorySchema,
+  initializeSourceLedgerSchema,
   migrateAddressRadarDatabase,
 } from "@address-radar/database";
 
 import { createCandidateEvidenceWorker } from "../src/candidate-evidence-worker.js";
+import { createCandidateSourceRecoveryPlanner } from "../src/candidate-source-recovery.js";
 
 const NOW = 10_000;
 
@@ -169,6 +173,29 @@ describe("candidate evidence worker", () => {
     expect(history.evidenceForTrader("trader-small")).toEqual([]);
     expect(history.admissionSnapshots("trader-small")).toHaveLength(1);
     expect(history.latestAdmissionSnapshot("trader-small")).toMatchObject({ status: "no_evidence" });
+    database.close();
+  });
+
+  it("blocks and schedules early-trade recovery when a milestone has no canonical buys", async () => {
+    const database = new DatabaseSync(":memory:");
+    migrateAddressRadarDatabase(database);
+    initializeCandidateHistorySchema(database);
+    initializeSourceLedgerSchema(database);
+    addToken({ database, tokenId: "base:token-empty", milestoneMarketCapUsd: 300_000, crossingPrice: 5 });
+    const jobs = createAutomationJobStore(database);
+    const recovery = createCandidateSourceRecoveryPlanner({
+      ledger: createSourceLedgerStore(database),
+      now: () => NOW,
+    });
+    const worker = createCandidateEvidenceWorker({ database, jobs, recovery, now: () => NOW });
+
+    await expect(evaluate(worker, "base:token-empty")).resolves.toMatchObject({
+      status: "waiting_source",
+      sourceBlock: {
+        reasonCode: "missing_early_trades",
+        recoveryJobIds: ["recovery:milestone_early_buyers:base:token-empty"],
+      },
+    });
     database.close();
   });
 });
