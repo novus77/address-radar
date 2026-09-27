@@ -93,7 +93,7 @@ export function loadHistoricalBackfillConfig(env: Readonly<Record<string, string
     apiKey,
     queryIds,
     duneFallbackEnabled,
-    geckoTerminal: Object.freeze({ baseUrl: geckoBaseUrl, timeoutMs: positiveInteger("ADDRESS_RADAR_GECKO_TERMINAL_TIMEOUT_MS", 10_000), maxPages: positiveInteger("ADDRESS_RADAR_GECKO_TERMINAL_MAX_PAGES", 4), minimumRequestIntervalMs: positiveInteger("ADDRESS_RADAR_GECKO_TERMINAL_MIN_REQUEST_INTERVAL_MS", 2_100) }),
+    geckoTerminal: Object.freeze({ baseUrl: geckoBaseUrl, timeoutMs: positiveInteger("ADDRESS_RADAR_GECKO_TERMINAL_TIMEOUT_MS", 10_000), maxPages: positiveInteger("ADDRESS_RADAR_GECKO_TERMINAL_MAX_PAGES", 4), minimumRequestIntervalMs: positiveInteger("ADDRESS_RADAR_GECKO_TERMINAL_MIN_REQUEST_INTERVAL_MS", 3_100) }),
     blockscoutEndpoints,
     chains: Object.freeze(chains),
     startAt,

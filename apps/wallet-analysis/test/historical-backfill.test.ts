@@ -209,6 +209,19 @@ describe("historical backfill scheduler", () => {
 });
 
 describe("Dune historical backfill worker", () => {
+  it("completes legacy token-universe partitions without calling Dune when it is disabled", async () => {
+    const path = await databasePath();
+    const repository = openAddressRadarRepository(path);
+    const database = new DatabaseSync(path);
+    const historyStore = createCandidateHistoryStore(database);
+    const worker = createDuneHistoricalBackfillWorker({ repository, historyStore, queryIds: {}, pageSize: 100, strategyVersion: "candidate-history-v3" });
+    const [partition] = createHistoricalPartitions({ queryKind: "token_universe", chains: ["base"], from: START, to: START + DAY, createdAt: 1 });
+
+    await expect(worker.execute(partition!, new AbortController().signal)).resolves.toMatchObject({ creditsUsed: 0, done: true, rowCount: 0 });
+    database.close();
+    repository.close();
+  });
+
   it("completes milestone partitions through GeckoTerminal without Dune credits", async () => {
     const path = await databasePath();
     const repository = openAddressRadarRepository(path);

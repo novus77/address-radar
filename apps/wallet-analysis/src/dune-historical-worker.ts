@@ -53,6 +53,14 @@ export function createDuneHistoricalBackfillWorker(input: {
   });
   return Object.freeze({
     async execute(partition: HistoricalBackfillPartition, signal: AbortSignal) {
+      if (partition.queryKind === "token_universe" && !input.client) return Object.freeze({
+        executionId: partition.executionId ?? `dune-disabled:${partition.partitionId}`,
+        nextOffset: null,
+        rowCount: partition.rowCount,
+        watermark: partition.dayEnd,
+        creditsUsed: 0,
+        done: true,
+      });
       let tokenAddresses = partition.tokenAddresses;
       if (partition.queryKind !== "token_universe" && input.resolveVerifiedTokenAddresses) {
         const verification = input.resolveVerifiedTokenAddresses(partition.chain, partition.tokenAddresses);

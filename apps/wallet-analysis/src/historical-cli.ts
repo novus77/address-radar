@@ -27,7 +27,7 @@ const verification = createFomoHistoricalVerificationService({
   consumer: new FomoTokenLookupResultConsumer({ filePath: config.fomoLookupResultPath, cursorPath: config.fomoLookupResultCursorPath }),
   maximumActiveLookups: config.fomoMaximumActiveLookups,
 });
-const client = config.apiKey ? createDuneDataApiClient({ apiKey: config.apiKey, timeoutMs: config.timeoutMs, pollIntervalMs: config.pollIntervalMs }) : undefined;
+const client = config.duneFallbackEnabled && config.apiKey ? createDuneDataApiClient({ apiKey: config.apiKey, timeoutMs: config.timeoutMs, pollIntervalMs: config.pollIntervalMs }) : undefined;
 const geckoClient = createGeckoTerminalClient({ baseUrl: config.geckoTerminal.baseUrl, timeoutMs: config.geckoTerminal.timeoutMs, minimumRequestIntervalMs: config.geckoTerminal.minimumRequestIntervalMs });
 const milestoneRouter = createHistoricalProviderRouter({
   primary: {
