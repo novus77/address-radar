@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 
-export const ADDRESS_RADAR_BUSY_TIMEOUT_MS = 10_000;
+export const ADDRESS_RADAR_BUSY_TIMEOUT_MS = 1_000;
 
 export interface WriteTransactionOptions {
   readonly maximumAttempts?: number;

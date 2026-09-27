@@ -25,13 +25,13 @@ describe("GeckoMilestoneProvider", () => {
     });
   });
 
-  it("falls back to FDV", async () => {
+  it("uses FDV for supply estimation while reporting missing price history", async () => {
     const client: GeckoTerminalClient = {
       topPool: async () => ({ network: "solana", poolAddress: "pool", tokenAddress: "token", tokenSide: "quote", tokenPriceUsd: 0.5, reserveUsd: null, marketCapUsd: null, fdvUsd: 500_000, createdAt: null }),
       ohlcv: async () => [],
     };
     const provider = createGeckoMilestoneProvider({ client });
-    await expect(provider.reconstruct({ chain: "solana", tokenAddress: "token", fromTimestamp: 0, toTimestamp: 1 })).resolves.toMatchObject({ status: "available", supplyEstimate: 1_000_000, supplyBasis: "fdv", milestones: [] });
+    await expect(provider.reconstruct({ chain: "solana", tokenAddress: "token", fromTimestamp: 0, toTimestamp: 1 })).resolves.toMatchObject({ status: "insufficient_market_data", supplyEstimate: 1_000_000, supplyBasis: "fdv", milestones: [] });
   });
 
   it("returns not_found when no pool exists", async () => {

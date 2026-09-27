@@ -360,6 +360,70 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
         updatedAt: Date.now(),
       } };
     }
+    if (pathname === "/api/v2/discovery/fact-coverage") {
+      const now = Date.now();
+      const factCounts = rows(`
+        SELECT fact_type AS factType, status, COUNT(*) AS count,
+          MAX(CASE
+            WHEN status IN ('available', 'partial') THEN COALESCE(observed_at, updated_at)
+            ELSE NULL
+          END) AS lastSuccessAt,
+          MAX(updated_at) AS updatedAt
+        FROM token_fact_status
+        GROUP BY fact_type, status
+        ORDER BY fact_type, status
+      `);
+      const attempts = rows(`
+        SELECT provider, fact_type AS factType, outcome, COUNT(*) AS count,
+          MAX(finished_at) AS lastFinishedAt
+        FROM token_fact_attempts
+        WHERE finished_at >= ?
+        GROUP BY provider, fact_type, outcome
+        ORDER BY provider, fact_type, outcome
+      `, now - 24 * 60 * 60_000);
+      const walletSources = rows(`
+        SELECT status.source, status.status,
+          status.last_error AS lastError, status.updated_at AS updatedAt,
+          COUNT(observation.event_id) AS observationCount,
+          MAX(observation.occurred_at) AS lastObservationAt,
+          COUNT(DISTINCT observation.wallet_address) AS observedWalletCount
+        FROM wallet_monitor_provider_status status
+        LEFT JOIN wallet_monitor_observations observation ON observation.source = status.source
+          AND observation.orphaned_at IS NULL
+        GROUP BY status.source, status.status, status.last_error, status.updated_at
+        ORDER BY status.source
+      `);
+      const walletAnalyses = rows(`
+        SELECT status, COUNT(*) AS count,
+          SUM(valid_sample_count) AS validSamples,
+          AVG(coverage_rate) AS averageCoverage,
+          MAX(updated_at) AS updatedAt
+        FROM wallet_analysis_jobs GROUP BY status ORDER BY status
+      `);
+      const abilities = rows(`
+        SELECT ability_stage AS abilityStage, COUNT(*) AS count,
+          AVG(CASE WHEN total_samples > 0 THEN valid_samples * 1.0 / total_samples ELSE 0 END) AS averageCoverage,
+          MAX(evaluated_at) AS evaluatedAt
+        FROM trader_repeatable_ability_snapshots snapshot
+        WHERE window = '30d' AND NOT EXISTS (
+          SELECT 1 FROM trader_repeatable_ability_snapshots newer
+          WHERE newer.entity_id = snapshot.entity_id AND newer.window = snapshot.window
+            AND (newer.evaluated_at > snapshot.evaluated_at OR (newer.evaluated_at = snapshot.evaluated_at AND newer.snapshot_id > snapshot.snapshot_id))
+        )
+        GROUP BY ability_stage ORDER BY ability_stage
+      `);
+      const scalar = (sql: string): number => Number((database.prepare(sql).get() as { count: number | null }).count ?? 0);
+      return { status: 200, body: {
+        updatedAt: now,
+        factCounts,
+        attempts,
+        walletSources,
+        walletAnalyses,
+        abilities,
+        unresolvedDependencies: scalar("SELECT COUNT(*) AS count FROM token_fact_dependencies WHERE resolved_at IS NULL"),
+        unresolvedConflicts: scalar("SELECT COUNT(*) AS count FROM token_fact_conflicts WHERE resolved_at IS NULL"),
+      } };
+    }
     if (pathname === "/api/v2/discovery/trader-funnel") {
       const scalar = (sql: string): number => Number((database.prepare(sql).get() as { count: number | null }).count ?? 0);
       return { status: 200, body: {

@@ -96,6 +96,7 @@ export function evaluateTokenSignal({
   const policy = TOKEN_SIGNAL_ROUTE_POLICIES[stage];
   const qualified = snapshot.traders.filter(item => item.contribution >= 0.55);
   const missing: string[] = [];
+  if (stage === "created") missing.push("token_not_launched");
   if (qualified.length < policy.minimumTraders) missing.push(`distinct_traders:${policy.minimumTraders}`);
 
   if (stage === "launched_0_2h" || stage === "launched_2_12h") {

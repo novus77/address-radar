@@ -203,3 +203,44 @@ export function drainResolvedWalletAutomationOutbox(
     return events.length;
   });
 }
+
+export function materializeLegacyWalletIdentities(database: DatabaseSync): { readonly inserted: number; readonly conflicts: number } {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS wallet_identity_materialization_conflicts (
+      conflict_id TEXT PRIMARY KEY,
+      chain_family TEXT NOT NULL,
+      address TEXT NOT NULL,
+      canonical_entity_id TEXT NOT NULL,
+      conflicting_entity_id TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+  `);
+  const rows = database.prepare(`
+    SELECT ea.entity_id AS entityId, ea.account_id AS accountId,
+      w.chain_family AS chainFamily, w.address, w.confidence, w.source,
+      w.first_observed_at AS firstObservedAt, w.last_observed_at AS lastObservedAt
+    FROM entity_accounts ea
+    JOIN wallet_identities w ON w.account_id = ea.account_id
+    ORDER BY w.last_observed_at, ea.entity_id, w.chain_family, w.address
+  `).all() as Array<{ entityId: string; accountId: string; chainFamily: "evm" | "solana"; address: string; confidence: string; source: string; firstObservedAt: number; lastObservedAt: number }>;
+  const findOwner = database.prepare("SELECT entity_id AS entityId FROM entity_wallet_identities WHERE chain_family=? AND address=? ORDER BY first_observed_at, entity_id LIMIT 1");
+  const insert = database.prepare(`INSERT OR IGNORE INTO entity_wallet_identities(entity_id, chain_family, address, confidence, source, first_observed_at, last_observed_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  const conflict = database.prepare(`INSERT OR IGNORE INTO wallet_identity_materialization_conflicts(conflict_id, chain_family, address, canonical_entity_id, conflicting_entity_id, account_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  let inserted = 0;
+  let conflicts = 0;
+  for (const row of rows) {
+    const address = normalizeAddress(row.chainFamily, row.address);
+    const owner = findOwner.get(row.chainFamily, address) as { entityId: string } | undefined;
+    if (owner && owner.entityId !== row.entityId) {
+      const result = conflict.run(`wallet-materialization:${row.chainFamily}:${address}:${row.entityId}`, row.chainFamily, address, owner.entityId, row.entityId, row.accountId, row.lastObservedAt);
+      conflicts += Number(result.changes);
+      continue;
+    }
+    const result = insert.run(row.entityId, row.chainFamily, address, row.confidence, `legacy:${row.source}`, row.firstObservedAt, row.lastObservedAt);
+    if (Number(result.changes) === 0) continue;
+    inserted += 1;
+    recordResolvedWalletAutomation(database, { traderId: row.entityId, accountId: row.accountId, chainFamily: row.chainFamily, address, occurredAt: row.lastObservedAt });
+  }
+  return Object.freeze({ inserted, conflicts });
+}

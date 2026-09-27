@@ -3,8 +3,10 @@ import {
   createCandidateHistoryStore,
   createAutomationJobStore,
   createSourceLedgerStore,
+  createTokenFactStore,
   initializeCandidateHistorySchema,
   initializeSourceLedgerSchema,
+  initializeTokenFactSchema,
   openAddressRadarDatabase,
   openAddressRadarRepository,
 } from "@address-radar/database";
@@ -29,8 +31,10 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
   const historyDatabase = openAddressRadarDatabase(config.databasePath);
   initializeCandidateHistorySchema(historyDatabase);
   initializeSourceLedgerSchema(historyDatabase);
+  initializeTokenFactSchema(historyDatabase);
   const historyStore = createCandidateHistoryStore(historyDatabase);
   const sourceLedger = createSourceLedgerStore(historyDatabase);
+  const tokenFacts = createTokenFactStore(historyDatabase);
   const automationJobs = createAutomationJobStore(historyDatabase);
   const monitoringRegistry = openMonitoringRegistry(config.databasePath);
   const marketProvider = createDexScreenerClient({ ...(config.marketBaseUrl ? { baseUrl: config.marketBaseUrl } : {}) });
@@ -59,6 +63,11 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
       const marketCapUsd = observation.market.marketCapUsd;
       if (marketCapUsd == null || !Number.isFinite(marketCapUsd) || marketCapUsd <= 0) return;
       const tokenId = addressRadarTokenId(observation.chain, observation.tokenAddress);
+      tokenFacts.ensure(tokenId, "market_identity", "token-facts-v1", observation.observedAt);
+      tokenFacts.transition({ tokenId, factType: "market_identity", status: "available", precision: "page_observed", primarySource: "scanner_market", observedAt: observation.observedAt, knownAt: observation.observedAt, strategyVersion: "token-facts-v1", updatedAt: observation.observedAt });
+      tokenFacts.ensure(tokenId, "price_history", "token-facts-v1", observation.observedAt);
+      const priceFact = tokenFacts.fact(tokenId, "price_history")!;
+      if (priceFact.status !== "available") tokenFacts.transition({ tokenId, factType: "price_history", status: "partial", precision: "page_observed", primarySource: "scanner_market", coverageStartAt: observation.observedAt, coverageEndAt: observation.observedAt, observedAt: observation.observedAt, knownAt: observation.observedAt, strategyVersion: "token-facts-v1", updatedAt: observation.observedAt });
       for (const milestoneMarketCapUsd of [100_000, 200_000, 300_000, 500_000, 1_000_000]) {
         if (marketCapUsd < milestoneMarketCapUsd) continue;
         historyStore.saveMilestoneCrossing({
@@ -71,6 +80,9 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
           sourceEventIds: observation.sourceEventIds,
           strategyVersion: "candidate-history-v3",
         });
+        tokenFacts.ensure(tokenId, "milestone_crossings", "token-facts-v1", observation.observedAt);
+        const milestoneFact = tokenFacts.fact(tokenId, "milestone_crossings")!;
+        if (milestoneFact.status !== "available") tokenFacts.transition({ tokenId, factType: "milestone_crossings", status: "partial", precision: "estimated", primarySource: "fomo_realtime_dexscreener", coverageStartAt: observation.observedAt, coverageEndAt: observation.observedAt, observedAt: observation.observedAt, knownAt: observation.observedAt, strategyVersion: "token-facts-v1", updatedAt: observation.observedAt });
       }
       if (marketCapUsd < 1_000_000) return;
       historyStore.saveHistoricalToken({
@@ -115,6 +127,7 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
       ledger: sourceLedger,
       jobs: automationJobs,
       history: historyStore,
+      facts: tokenFacts,
       marketProvider,
       fomoProducer: new FomoTokenLookupProducer({ filePath: config.fomoLookupQueuePath }),
       now: Date.now,

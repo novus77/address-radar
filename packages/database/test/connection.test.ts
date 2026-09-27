@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 
-import { openAddressRadarDatabase } from "../src/index.js";
+import { ADDRESS_RADAR_BUSY_TIMEOUT_MS, openAddressRadarDatabase } from "../src/index.js";
 
 const directories: string[] = [];
 
@@ -17,7 +17,7 @@ test("shared database connections enable WAL and a production busy timeout", () 
   const database = openAddressRadarDatabase(join(directory, "radar.sqlite"));
 
   expect(database.prepare("PRAGMA journal_mode").get()).toMatchObject({ journal_mode: "wal" });
-  expect(database.prepare("PRAGMA busy_timeout").get()).toMatchObject({ timeout: 10_000 });
+  expect(database.prepare("PRAGMA busy_timeout").get()).toMatchObject({ timeout: ADDRESS_RADAR_BUSY_TIMEOUT_MS });
 
   database.close();
 });

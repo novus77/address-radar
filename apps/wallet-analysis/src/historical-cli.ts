@@ -1,5 +1,5 @@
 import { createDuneDataApiClient, createGeckoTerminalClient, FomoTokenLookupProducer, FomoTokenLookupResultConsumer, type DiscoveryChain } from "@address-radar/collectors";
-import { createCandidateHistoryStore, migrateAddressRadarDatabase, openAddressRadarDatabase, openAddressRadarRepository } from "@address-radar/database";
+import { createAutomationJobStore, createCandidateHistoryStore, createTokenFactStore, migrateAddressRadarDatabase, openAddressRadarDatabase, openAddressRadarRepository } from "@address-radar/database";
 
 import { loadHistoricalBackfillConfig } from "./config.js";
 import { createDuneHistoricalBackfillWorker } from "./dune-historical-worker.js";
@@ -21,11 +21,15 @@ const repository = openAddressRadarRepository(config.databasePath);
 const database = openAddressRadarDatabase(config.databasePath);
 migrateAddressRadarDatabase(database);
 const historyStore = createCandidateHistoryStore(database);
+const tokenFacts = createTokenFactStore(database);
+const automationJobs = createAutomationJobStore(database);
 const verification = createFomoHistoricalVerificationService({
   database,
   producer: new FomoTokenLookupProducer({ filePath: config.fomoLookupQueuePath }),
   consumer: new FomoTokenLookupResultConsumer({ filePath: config.fomoLookupResultPath, cursorPath: config.fomoLookupResultCursorPath }),
   maximumActiveLookups: config.fomoMaximumActiveLookups,
+  facts: tokenFacts,
+  onFactUpdated: tokenId => automationJobs.wakeBlockedSource(tokenId, Date.now(), "candidate_evidence"),
 });
 const client = config.duneFallbackEnabled && config.apiKey ? createDuneDataApiClient({ apiKey: config.apiKey, timeoutMs: config.timeoutMs, pollIntervalMs: config.pollIntervalMs }) : undefined;
 const geckoClient = createGeckoTerminalClient({ baseUrl: config.geckoTerminal.baseUrl, timeoutMs: config.geckoTerminal.timeoutMs, minimumRequestIntervalMs: config.geckoTerminal.minimumRequestIntervalMs });

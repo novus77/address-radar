@@ -112,6 +112,7 @@ export function evaluateRepeatableTraderAbility(input: {
   const gains = valid.map(outcome => Math.max(0, (outcome.closeMultiple ?? 0) - 1));
   const totalGain = gains.reduce((sum, gain) => sum + gain, 0);
   const maximumSingleTokenProfitShare = totalGain <= 0 ? 1 : Math.max(...gains) / totalGain;
+  const outcomeCoverageRate = samples.length === 0 ? 0 : valid.length / samples.length;
   const metrics = Object.freeze({
     totalSamples: samples.length,
     validSamples: valid.length,
@@ -121,6 +122,7 @@ export function evaluateRepeatableTraderAbility(input: {
     maximumSingleTokenProfitShare,
   });
   const stable = metrics.validSamples >= 8
+    && outcomeCoverageRate >= 0.7
     && metrics.successfulDistinctTokens >= 3
     && metrics.sampleSpanMs >= 14 * 24 * 60 * 60_000
     && metrics.maximumSingleTokenProfitShare <= 0.5;
@@ -136,6 +138,7 @@ export function evaluateRepeatableTraderAbility(input: {
     ? ["repeatable_ability_confirmed"]
     : [
       ...(metrics.validSamples < 8 ? ["valid_samples_below_8"] : []),
+      ...(outcomeCoverageRate < 0.7 ? ["outcome_coverage_below_70pct"] : []),
       ...(metrics.successfulDistinctTokens < 3 ? ["successful_tokens_below_3"] : []),
       ...(metrics.sampleSpanMs < 14 * 24 * 60 * 60_000 ? ["sample_span_below_14d"] : []),
       ...(metrics.maximumSingleTokenProfitShare > 0.5 ? ["single_token_profit_concentration"] : []),

@@ -4,6 +4,7 @@ import {
   createAutomationJobStore,
   createCandidateHistoryStore,
   createSourceLedgerStore,
+  createTokenFactStore,
   initializeCandidateHistorySchema,
   migrateAddressRadarDatabase,
 } from "@address-radar/database";
@@ -59,6 +60,7 @@ describe("source recovery handlers", () => {
       ledger,
       jobs,
       history: createCandidateHistoryStore(database),
+      facts: createTokenFactStore(database),
       marketProvider: {
         async lookup() {
           return { chain: "base", tokenAddress: "0xabc", priceUsd: 0.25, marketCapUsd: 250_000, liquidityUsd: 50_000, symbol: "ABC", observedAt: new Date(NOW).toISOString() };
@@ -101,6 +103,7 @@ describe("source recovery handlers", () => {
       ledger,
       jobs: createAutomationJobStore(database),
       history,
+      facts: createTokenFactStore(database),
       marketProvider: { async lookup() { return null; } },
       fomoProducer: { async enqueue(request) { requests.push(request); return { enqueued: true, request: request as never }; } },
       now: () => NOW,

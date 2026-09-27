@@ -17,6 +17,7 @@ const state = {
   sourceHealth: [],
   sourceCursors: [],
   tokenFunnel: {},
+  factCoverage: {},
   traderFunnel: {},
   recoveryJobs: [],
   automationOverview: {},
@@ -59,6 +60,8 @@ const sourceStateLabel = value => ({ healthy: "运行正常", degraded: "推进�
 const recoveryStatusLabel = value => ({ pending: "等待执行", running: "正在执行", failed: "等待重试", completed: "已经完成", dead_letter: "需要人工处理" })[value] || value;
 const automationStatusLabel = value => ({ pending: "等待执行", leased: "已领取", running: "正在执行", waiting_source: "旧版等待数据", blocked_source: "缺少前置数据", retryable: "等待重试", completed: "已经完成", terminal: "需要人工处理", cancelled: "已取消", queued: "已排队", verification_pending: "等待 Fomo 验证", evidence_pending: "等待候选证据", quarantined: "已隔离" })[value] || value;
 const sourceBlockReasonLabel = value => ({ missing_token_identity: "缺少代币身份", missing_market_history: "缺少历史价格", missing_milestone: "缺少市值里程碑", missing_early_trades: "缺少里程碑前买入", missing_wallet_mapping: "缺少钱包身份映射", insufficient_coverage: "历史覆盖不足" })[value] || value;
+const factStatusLabel = value => ({ missing: "尚未采集", queued: "等待采集", collecting: "采集中", partial: "部分可用", available: "已经可用", stale: "需要刷新", terminal_unavailable: "确认不可获得" })[value] || value;
+const factTypeLabel = value => ({ token_identity: "代币身份", fomo_presence: "Fomo 存在性", market_identity: "交易市场", price_history: "历史价格", supply_history: "供应量历史", milestone_crossings: "市值里程碑", early_trades: "早期交易", trader_attribution: "交易员归因", candidate_evidence: "候选证据", ability_outcomes: "能力结果" })[value] || value;
 
 const traderLabels = trader => {
   const typed = [...splitValues(trader.sourceTags), ...splitValues(trader.abilityTags), ...splitValues(trader.styleTags)];
@@ -289,6 +292,12 @@ const renderMilestones = () => {
 const renderSourceOperations = () => {
   const funnelCards = (target, items) => { $(target).innerHTML = items.map(([label, value]) => `<article><span>${escapeHtml(label)}</span><strong>${text(value, 0)}</strong></article>`).join(""); };
   funnelCards("#token-funnel-summary", [["原始代币", state.tokenFunnel.raw], ["身份已解析", state.tokenFunnel.identityResolved], ["市场已补全", state.tokenFunnel.marketResolved], ["Fomo 已确认", state.tokenFunnel.fomoConfirmed], ["里程碑命中", state.tokenFunnel.milestoneObserved], ["早期买家证据", state.tokenFunnel.candidateEvidence], ["进入聚合", state.tokenFunnel.aggregation], ["本地信号合格", state.tokenFunnel.qualifiedSignal]]);
+  const facts = state.factCoverage || {};
+  const availableFacts = (facts.factCounts || []).filter(item => item.status === "available").reduce((sum, item) => sum + Number(item.count || 0), 0);
+  const partialFacts = (facts.factCounts || []).filter(item => item.status === "partial").reduce((sum, item) => sum + Number(item.count || 0), 0);
+  funnelCards("#fact-coverage-summary", [["完整事实", availableFacts], ["部分事实", partialFacts], ["未解决依赖", facts.unresolvedDependencies], ["未解决冲突", facts.unresolvedConflicts], ["24h Provider 尝试", (facts.attempts || []).reduce((sum, item) => sum + Number(item.count || 0), 0)], ["稳定能力交易员", (facts.abilities || []).filter(item => item.abilityStage === "stable").reduce((sum, item) => sum + Number(item.count || 0), 0)]]);
+  $("#fact-coverage-grid").innerHTML = facts.factCounts?.length ? `<table class="operator-table"><thead><tr><th>事实类型</th><th>状态</th><th>代币数</th><th>最后成功</th><th>更新时间</th></tr></thead><tbody>${facts.factCounts.map(item => `<tr><td><strong>${escapeHtml(factTypeLabel(item.factType))}</strong><small>${escapeHtml(item.factType)}</small></td><td><span class="tag ${escapeHtml(item.status)}">${escapeHtml(factStatusLabel(item.status))}</span></td><td><strong>${text(item.count, 0)}</strong></td><td>${time(item.lastSuccessAt)}</td><td>${time(item.updatedAt)}</td></tr>`).join("")}</tbody></table>` : empty("尚无事实账本数据，等待扫描器首次写入。");
+  $("#wallet-source-grid").innerHTML = facts.walletSources?.length ? `<table class="operator-table"><thead><tr><th>采集器</th><th>Provider 状态</th><th>业务观察</th><th>已观察钱包</th><th>最后业务事件</th><th>诊断</th></tr></thead><tbody>${facts.walletSources.map(item => `<tr><td><strong>${escapeHtml(item.source)}</strong></td><td><span class="tag ${escapeHtml(item.status)}">${escapeHtml(sourceStateLabel(item.status))}</span></td><td><strong>${text(item.observationCount, 0)}</strong></td><td>${text(item.observedWalletCount, 0)}</td><td>${time(item.lastObservationAt)}</td><td>${item.observationCount > 0 ? "链路已有真实事件" : escapeHtml(text(item.lastError, "Provider 可达，但尚无业务事件"))}</td></tr>`).join("")}</tbody></table>` : empty("尚无钱包采集器运行记录。");
   funnelCards("#trader-funnel-summary", [["已观察 Fomo 用户", state.traderFunnel.observedFomoHandles], ["规范交易员", state.traderFunnel.canonicalTraders], ["钱包已解析", state.traderFunnel.walletResolvedTraders], ["已进入监控", state.traderFunnel.monitoringEligibleTraders], ["首次回补", `${text(state.traderFunnel.initialBackfillCompleted, 0)}/${text(state.traderFunnel.initialBackfillQueued, 0)}`], ["覆盖已更新", state.traderFunnel.periodicCoverageCurrent], ["候选证据", state.traderFunnel.candidateEvidenceTraders], ["候选准入", state.traderFunnel.admittedTraders]]);
   $("#source-health-grid").innerHTML = state.sourceHealth.length ? `<table class="operator-table"><thead><tr><th>数据源</th><th>链</th><th>状态</th><th>最后成功</th><th>最后事件</th><th>延迟</th><th>连续失败</th><th>诊断</th></tr></thead><tbody>${state.sourceHealth.map(item => `<tr><td><strong>${escapeHtml(item.source)}</strong></td><td><span class="tag chain">${escapeHtml(item.chain)}</span></td><td><span class="tag ${escapeHtml(item.state)}">${escapeHtml(sourceStateLabel(item.state))}</span></td><td>${time(item.lastSuccessAt)}</td><td>${time(item.lastEventAt)}</td><td>${item.latencyMs == null ? "--" : `${text(item.latencyMs)} ms`}</td><td>${text(item.consecutiveFailures, 0)}</td><td><strong>${escapeHtml(item.diagnosticZh)}</strong><details><summary>技术详情</summary><small>${escapeHtml(text(item.lastErrorCode, "无错误"))}</small></details></td></tr>`).join("")}</tbody></table>` : empty("暂无数据源健康记录，等待扫描器首次运行。");
   $("#source-cursor-grid").innerHTML = state.sourceCursors.length ? `<table class="operator-table"><thead><tr><th>数据源</th><th>链</th><th>当前位置</th><th>游标</th><th>更新时间</th></tr></thead><tbody>${state.sourceCursors.map(item => `<tr><td>${escapeHtml(item.source)}</td><td>${escapeHtml(item.chain)}</td><td><strong>${text(item.position, 0)}</strong></td><td><code>${escapeHtml(item.cursor)}</code></td><td>${time(item.updatedAt)}</td></tr>`).join("")}</tbody></table>` : empty("暂无持久游标。");
@@ -365,7 +374,7 @@ const refreshAutomationOperations = async () => {
 };
 
 const load = async () => {
-  const [overview, chainPage, aggregationPage, candidateFunnel, candidatePage, historicalTokenPage, historicalPartitionPage, historicalOperations, tokenCoverage, sourceHealth, sourceCursors, tokenFunnel, automationOverview, recoveryJobs, automationBackfills, automationPartitions, automationTokens, automationCoverage, automationSources] = await Promise.all([apiV2("workbench/summary"), apiV2("chains"), apiV2("token-aggregates"), apiV2("candidate-funnel"), apiV2("candidates"), apiV2("historical-tokens"), apiV2("historical-partitions"), apiV2("historical-operations"), apiV2("token-coverage"), apiV2("sources/health"), apiV2("sources/cursors"), apiV2("discovery/token-funnel"), apiV2("automation/overview"), apiV2("recovery/jobs"), apiV2("backfill/traders"), apiV2("mining/partitions"), apiV2("mining/tokens"), apiV2("coverage/traders"), apiV2("coverage/sources")]);
+  const [overview, chainPage, aggregationPage, candidateFunnel, candidatePage, historicalTokenPage, historicalPartitionPage, historicalOperations, tokenCoverage, sourceHealth, sourceCursors, tokenFunnel, factCoverage, automationOverview, recoveryJobs, automationBackfills, automationPartitions, automationTokens, automationCoverage, automationSources] = await Promise.all([apiV2("workbench/summary"), apiV2("chains"), apiV2("token-aggregates"), apiV2("candidate-funnel"), apiV2("candidates"), apiV2("historical-tokens"), apiV2("historical-partitions"), apiV2("historical-operations"), apiV2("token-coverage"), apiV2("sources/health"), apiV2("sources/cursors"), apiV2("discovery/token-funnel"), apiV2("discovery/fact-coverage"), apiV2("automation/overview"), apiV2("recovery/jobs"), apiV2("backfill/traders"), apiV2("mining/partitions"), apiV2("mining/tokens"), apiV2("coverage/traders"), apiV2("coverage/sources")]);
   const metrics = { traders: overview.addressLibraryCount, candidates: candidateFunnel.currentAdmittedCount, aggregations: overview.aggregatedTokenCount, broadcasts: overview.deliveredSignalCount };
   for (const [key, value] of Object.entries(metrics)) { const node = $(`#metric-${key}`); if (node) node.textContent = text(value, "0"); }
   for (const selector of ["#aggregation-chain", "#signal-chain"]) $(selector).insertAdjacentHTML("beforeend", chainPage.items.map(chain => `<option value="${escapeHtml(chain.id)}">${escapeHtml(chain.labelZh)}</option>`).join(""));
@@ -389,6 +398,7 @@ const load = async () => {
   state.sourceHealth = sourceHealth.items;
   state.sourceCursors = sourceCursors.items;
   state.tokenFunnel = tokenFunnel;
+  state.factCoverage = factCoverage;
   state.traderFunnel = automationOverview.funnel;
   state.recoveryJobs = recoveryJobs.items;
   state.automationOverview = automationOverview;

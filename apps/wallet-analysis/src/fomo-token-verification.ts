@@ -1,10 +1,13 @@
 import type { DatabaseSync } from "node:sqlite";
 
 import type {
+  DiscoveryChain,
   FomoTokenLookupProducer,
   FomoTokenLookupResult,
   FomoTokenLookupResultConsumer,
 } from "@address-radar/collectors";
+import type { TokenFactStore } from "@address-radar/database";
+import { addressRadarTokenId } from "@address-radar/domain";
 
 export const FOMO_HISTORICAL_CHAINS = Object.freeze(["solana", "eth", "bsc", "robinhood", "base"] as const);
 
@@ -40,6 +43,8 @@ export function createFomoHistoricalVerificationService(input: {
   readonly producer: FomoTokenLookupProducer;
   readonly consumer: FomoTokenLookupResultConsumer;
   readonly maximumActiveLookups?: number;
+  readonly facts?: TokenFactStore;
+  readonly onFactUpdated?: (tokenId: string) => void;
   readonly now?: () => number;
 }) {
   const now = input.now ?? Date.now;
@@ -47,8 +52,24 @@ export function createFomoHistoricalVerificationService(input: {
   if (!Number.isSafeInteger(maximumActiveLookups) || maximumActiveLookups <= 0) throw new Error("maximumActiveLookups must be a positive integer");
 
   const applyResult = (result: FomoTokenLookupResult): boolean => {
-    const chain = canonicalChain(result.chainId);
+    const chain = canonicalChain(result.chainId) as DiscoveryChain;
     const tokenAddress = canonicalAddress(chain, result.tokenAddress);
+    const tokenId = addressRadarTokenId(chain, tokenAddress);
+    if (result.purpose === "milestone_backfill") {
+      const completedAt = result.completedAt;
+      input.facts?.ensure(tokenId, "early_trades", "token-facts-v1", completedAt);
+      const current = input.facts?.fact(tokenId, "early_trades") ?? null;
+      if ((result.eventIds?.length ?? 0) > 0 || result.observationCount > 0) {
+        if (current?.status === "terminal_unavailable") input.facts?.transition({ tokenId, factType: "early_trades", status: "scheduled", reopenTerminal: true, terminalReason: null, nextAttemptAt: completedAt, strategyVersion: "token-facts-v1", updatedAt: completedAt });
+        input.facts?.transition({ tokenId, factType: "early_trades", status: "available", precision: "exact", primarySource: "fomo_lookup", coverageStartAt: null, coverageEndAt: result.beforeAt ?? completedAt, observedAt: completedAt, knownAt: completedAt, nextAttemptAt: null, terminalReason: null, strategyVersion: "token-facts-v1", updatedAt: completedAt });
+        input.onFactUpdated?.(tokenId);
+      } else if (current && current.status !== "available" && current.status !== "terminal_unavailable") {
+        const nextAttemptAt = completedAt + retryDelayMs(current.attemptCount);
+        const target = current.status === "missing" ? "scheduled" : "retry_scheduled";
+        input.facts?.transition({ tokenId, factType: "early_trades", status: target, nextAttemptAt, strategyVersion: "token-facts-v1", updatedAt: completedAt });
+      }
+      return true;
+    }
     const row = input.database.prepare(`
       SELECT h.token_id AS tokenId, h.chain, h.token_address AS tokenAddress
       FROM historical_tokens h

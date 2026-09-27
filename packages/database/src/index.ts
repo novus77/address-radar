@@ -17,6 +17,7 @@ export { openAddressRadarRepository } from "./repository.js";
 export {
   drainResolvedWalletAutomationOutbox,
   IDENTITY_WALLET_BACKFILL_STRATEGY_VERSION,
+  materializeLegacyWalletIdentities,
   recordResolvedWalletAutomation,
 } from "./identity-automation.js";
 export type { ResolvedWalletAutomationInput } from "./identity-automation.js";
@@ -74,6 +75,27 @@ export type {
   SourceHealthRecord,
   SourceLedgerStore,
 } from "./source-ledger-store.js";
+export { createTokenFactStore, initializeTokenFactSchema } from "./token-fact-store.js";
+export type {
+  TokenFactAttempt,
+  TokenFactAttemptOutcome,
+  TokenFactPrecision,
+  TokenFactRecord,
+  TokenFactStatus,
+  TokenFactStore,
+  TokenFactTransition,
+  TokenFactType,
+} from "./token-fact-store.js";
+export { createCanonicalRegistryStore, initializeCanonicalRegistrySchema, SUPPORTED_CHAIN_IDS } from "./canonical-registry-store.js";
+export type {
+  CanonicalChainId,
+  CanonicalChainRecord,
+  CanonicalMarketInput,
+  CanonicalRegistryStore,
+  CanonicalTokenInput,
+  ChainFamily,
+  MarketType,
+} from "./canonical-registry-store.js";
 export { createTraderAutomationStore } from "./trader-automation-store.js";
 export type {
   TraderAutomationStateInput,

@@ -4,17 +4,25 @@ import { decodePersistedRadarSignal } from "@address-radar/signal-engine";
 import { initializeAddressRadarSchema } from "./schema.js";
 import { initializeCandidateHistorySchema } from "./candidate-history-store.js";
 import { initializeSourceLedgerSchema } from "./source-ledger-store.js";
+import { ADDRESS_RADAR_BUSY_TIMEOUT_MS } from "./connection.js";
+import { initializeTokenFactSchema } from "./token-fact-store.js";
+import { initializeCanonicalRegistrySchema } from "./canonical-registry-store.js";
+import { materializeLegacyWalletIdentities } from "./identity-automation.js";
 
 export function migrateAddressRadarDatabase(database: DatabaseSync): void {
-  database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
+  database.exec(`PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${ADDRESS_RADAR_BUSY_TIMEOUT_MS};`);
   database.exec("BEGIN IMMEDIATE");
   try {
     initializeAddressRadarSchema(database);
     initializeCandidateHistorySchema(database);
     initializeSourceLedgerSchema(database);
+    initializeTokenFactSchema(database);
+    initializeCanonicalRegistrySchema(database);
+    backfillLegacyTokenFacts(database);
     migrateAutomationJobStatusConstraint(database);
     migrateWaitingSourceJobs(database);
     backfillTraderAutomationState(database);
+    materializeLegacyWalletIdentities(database);
     ensureColumn(database, "signal_outbox", "claim_token", "TEXT");
     ensureColumn(database, "signal_outbox", "claim_generation", "INTEGER NOT NULL DEFAULT 0");
     ensureColumn(database, "signal_outbox", "lease_expires_at", "INTEGER");
@@ -45,6 +53,71 @@ export function migrateAddressRadarDatabase(database: DatabaseSync): void {
     }
     throw error;
   }
+}
+
+function backfillLegacyTokenFacts(database: DatabaseSync): void {
+  const version = "legacy-fact-projection-v1";
+  const insert = (selectSql: string, factType: string): void => {
+    database.exec(`
+      INSERT OR IGNORE INTO token_fact_status(token_id, fact_type, status, strategy_version, updated_at)
+      SELECT token_id, '${factType}', 'missing', '${version}', updated_at FROM (${selectSql});
+    `);
+  };
+  const promote = (selectSql: string, factType: string, status: "available" | "partial"): void => {
+    database.exec(`
+      UPDATE token_fact_status
+      SET status = '${status}',
+        primary_source = COALESCE(primary_source, 'legacy_projection'),
+        observed_at = COALESCE(observed_at, updated_at),
+        known_at = COALESCE(known_at, updated_at),
+        strategy_version = '${version}'
+      WHERE fact_type = '${factType}' AND status IN ('missing', 'queued', 'collecting')
+        AND token_id IN (SELECT token_id FROM (${selectSql}));
+    `);
+  };
+  const historicalTokens = `
+    SELECT token_id, COALESCE(first_trade_at, first_reached_1m_at, 0) AS updated_at
+    FROM historical_tokens
+  `;
+  insert(historicalTokens, "token_identity");
+  promote(historicalTokens, "token_identity", "available");
+
+  const priceHistory = `
+    SELECT LOWER(chain) || ':' || CASE WHEN LOWER(chain) = 'solana' THEN token_address ELSE LOWER(token_address) END AS token_id,
+      MAX(observed_at) AS updated_at
+    FROM market_observations GROUP BY LOWER(chain), token_address
+  `;
+  insert(priceHistory, "price_history");
+  promote(priceHistory, "price_history", "partial");
+
+  const exactMilestones = `
+    SELECT token_id, MAX(crossed_at) AS updated_at FROM token_milestone_crossings
+    WHERE precision = 'exact' GROUP BY token_id
+  `;
+  const partialMilestones = `
+    SELECT token_id, MAX(crossed_at) AS updated_at FROM token_milestone_crossings
+    WHERE precision != 'unavailable' GROUP BY token_id
+  `;
+  insert(partialMilestones, "milestone_crossings");
+  promote(partialMilestones, "milestone_crossings", "partial");
+  promote(exactMilestones, "milestone_crossings", "available");
+
+  const candidateEvidence = `
+    SELECT token_id, MAX(evidence_at) AS updated_at FROM candidate_evidence_v3 GROUP BY token_id
+  `;
+  insert(candidateEvidence, "candidate_evidence");
+  promote(candidateEvidence, "candidate_evidence", "available");
+
+  const abilityOutcomes = `
+    SELECT LOWER(sample.chain) || ':' || CASE WHEN LOWER(sample.chain) = 'solana' THEN sample.token_address ELSE LOWER(sample.token_address) END AS token_id,
+      MAX(outcome.computed_at) AS updated_at
+    FROM trader_token_samples sample
+    JOIN trader_token_outcomes outcome ON outcome.sample_id = sample.sample_id
+    WHERE outcome.coverage_status = 'complete'
+    GROUP BY LOWER(sample.chain), sample.token_address
+  `;
+  insert(abilityOutcomes, "ability_outcomes");
+  promote(abilityOutcomes, "ability_outcomes", "available");
 }
 
 function migrateWaitingSourceJobs(database: DatabaseSync): void {

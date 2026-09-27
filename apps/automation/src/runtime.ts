@@ -17,7 +17,7 @@ import { createTokenPartitionPlanner } from "./token-partition-planner.js";
 import { createTokenMiningWorker } from "./token-mining-worker.js";
 import { createCandidateEvidenceWorker, enqueueCandidateEvidenceDispatcher } from "./candidate-evidence-worker.js";
 import { createCandidateSourceRecoveryPlanner } from "./candidate-source-recovery.js";
-import { createTraderAbilityWorker, enqueueTraderAbilityDispatcher } from "./trader-ability-worker.js";
+import { createTraderAbilityWorker, enqueueTraderAbilityDispatcher, enqueueTraderAbilityEvaluation } from "./trader-ability-worker.js";
 import { createSqliteHistoricalTokenSource } from "./token-source-adapters.js";
 
 export interface PlanningGateOptions {
@@ -96,6 +96,8 @@ export function createAutomationRuntime(input: {
   const initialWalletBackfillWorker = createInitialWalletBackfillWorker({
     store: walletAnalysis,
     now,
+    onCompleted: ({ traderId, analysisId, completedAt }) =>
+      enqueueTraderAbilityEvaluation(store, traderId, completedAt, completedAt, `wallet-analysis:${analysisId}`),
   });
   const scheduler = createAutomationScheduler({
     enabled: input.config.enabled,

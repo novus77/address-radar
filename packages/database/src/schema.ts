@@ -639,6 +639,25 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       reviewed_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS wallet_analysis_jobs_status ON wallet_analysis_jobs(status, created_at DESC);
+    CREATE TABLE IF NOT EXISTS wallet_analysis_positions (
+      analysis_id TEXT NOT NULL REFERENCES wallet_analysis_jobs(analysis_id),
+      token_id TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      entered_at INTEGER NOT NULL,
+      PRIMARY KEY(analysis_id, token_id)
+    );
+    CREATE TABLE IF NOT EXISTS wallet_analysis_provenance (
+      analysis_id TEXT NOT NULL REFERENCES wallet_analysis_jobs(analysis_id),
+      source TEXT NOT NULL,
+      observed_at INTEGER NOT NULL,
+      PRIMARY KEY(analysis_id, source)
+    );
+    CREATE TABLE IF NOT EXISTS wallet_analysis_job_bounds (
+      analysis_id TEXT PRIMARY KEY REFERENCES wallet_analysis_jobs(analysis_id),
+      from_at INTEGER NOT NULL,
+      to_at INTEGER NOT NULL,
+      max_tokens INTEGER NOT NULL CHECK(max_tokens BETWEEN 1 AND 300)
+    );
     CREATE TABLE IF NOT EXISTS wallet_analysis_checkpoints (
       analysis_id TEXT NOT NULL REFERENCES wallet_analysis_jobs(analysis_id),
       scope TEXT NOT NULL,

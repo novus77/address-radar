@@ -34,6 +34,14 @@ interface OutcomeRow {
   readonly computedAt: number;
 }
 
+interface WalletPositionPayload {
+  readonly tokenId: string;
+  readonly enteredAt: number;
+  readonly investedUsd: number;
+  readonly realizedValueUsd: number;
+  readonly remainingValueUsd: number;
+}
+
 function stableId(prefix: string, parts: readonly unknown[]): string {
   return `${prefix}-${createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 32)}`;
 }
@@ -99,6 +107,40 @@ async function evaluateTrader(input: {
     JOIN trader_token_samples s ON s.sample_id = o.sample_id
     WHERE s.entity_id = ? AND o.horizon = '24h'
   `).all(input.traderId) as unknown as OutcomeRow[];
+  const walletRows = input.database.prepare(`
+    SELECT p.analysis_id AS analysisId, p.token_id AS tokenId, p.payload,
+      j.updated_at AS computedAt
+    FROM wallet_analysis_positions p
+    JOIN wallet_analysis_jobs j ON j.analysis_id = p.analysis_id
+    JOIN automation_jobs a ON a.idempotency_key = p.analysis_id
+    WHERE a.job_type = 'initial_wallet_backfill'
+      AND a.subject_key = ?
+      AND j.status IN ('review_required', 'accepted', 'insufficient_data')
+    ORDER BY j.updated_at DESC, p.entered_at DESC
+  `).all(input.traderId) as Array<{ analysisId: string; tokenId: string; payload: string; computedAt: number }>;
+  const existingTokens = new Set(samples.map((sample) => `${sample.chain.toLowerCase()}:${sample.tokenAddress.toLowerCase()}`));
+  const walletTokens = new Set<string>();
+  for (const row of walletRows) {
+    const position = parseWalletPosition(row.payload);
+    if (!position || position.investedUsd <= 0) continue;
+    const identity = splitTokenId(position.tokenId || row.tokenId);
+    if (!identity || existingTokens.has(identity.tokenKey) || walletTokens.has(identity.tokenKey)) continue;
+    walletTokens.add(identity.tokenKey);
+    const sampleId = `wallet-analysis:${input.traderId}:${identity.tokenKey}`;
+    samples.push(Object.freeze({
+      sampleId,
+      chain: identity.chain,
+      tokenAddress: identity.tokenAddress,
+      firstBuyAt: position.enteredAt,
+      sampleStatus: "included",
+    }));
+    outcomes.push(Object.freeze({
+      sampleId,
+      closeMultiple: (position.realizedValueUsd + position.remainingValueUsd) / position.investedUsd,
+      coverageStatus: "complete",
+      computedAt: row.computedAt,
+    }));
+  }
   const riskResult = bundleRisk(input.database, input.evaluatedAt);
   const risk = riskResult.traders.get(input.traderId) ?? Object.freeze({
     traderId: input.traderId,
@@ -151,7 +193,32 @@ async function evaluateTrader(input: {
       VALUES (?, 'ability', 'bundle_risk', ?)
     `).run(input.traderId, input.evaluatedAt);
   }
-  return { status: "completed", diagnostic: `ability evaluated with ${samples.length} samples` };
+  return {
+    status: "completed",
+    diagnostic: `ability evaluated with ${samples.length} samples (${walletTokens.size} wallet-history samples)`,
+  };
+}
+
+function parseWalletPosition(payload: string): WalletPositionPayload | null {
+  try {
+    const value = JSON.parse(payload) as Partial<WalletPositionPayload>;
+    if (typeof value.tokenId !== "string"
+      || !Number.isFinite(value.enteredAt)
+      || !Number.isFinite(value.investedUsd)
+      || !Number.isFinite(value.realizedValueUsd)
+      || !Number.isFinite(value.remainingValueUsd)) return null;
+    return value as WalletPositionPayload;
+  } catch {
+    return null;
+  }
+}
+
+function splitTokenId(tokenId: string): { readonly chain: string; readonly tokenAddress: string; readonly tokenKey: string } | null {
+  const separator = tokenId.indexOf(":");
+  if (separator <= 0 || separator === tokenId.length - 1) return null;
+  const chain = tokenId.slice(0, separator).toLowerCase();
+  const tokenAddress = tokenId.slice(separator + 1).toLowerCase();
+  return Object.freeze({ chain, tokenAddress, tokenKey: `${chain}:${tokenAddress}` });
 }
 
 async function dispatch(input: {
@@ -245,4 +312,3 @@ export function createTraderAbilityWorker(input: {
     },
   };
 }
-

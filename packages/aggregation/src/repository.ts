@@ -10,6 +10,9 @@ export interface SignalTraderProfile {
   readonly monitoringEnabled: boolean;
   readonly fomoMonitoringEnabled: boolean;
   readonly onchainMonitoringEnabled: boolean;
+  readonly abilityStage?: "discovered" | "candidate" | "stable" | "degraded" | undefined;
+  readonly signalContribution?: number | undefined;
+  readonly abilityTags?: readonly string[] | undefined;
 }
 
 export interface TokenAggregationState {

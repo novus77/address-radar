@@ -45,25 +45,6 @@ export function openWalletAnalysisStore(databasePath: string): WalletAnalysisSto
   const database = openAddressRadarDatabase(databasePath);
   migrateAddressRadarDatabase(database);
   database.exec(`
-    CREATE TABLE IF NOT EXISTS wallet_analysis_positions (
-      analysis_id TEXT NOT NULL REFERENCES wallet_analysis_jobs(analysis_id),
-      token_id TEXT NOT NULL,
-      payload TEXT NOT NULL,
-      entered_at INTEGER NOT NULL,
-      PRIMARY KEY(analysis_id, token_id)
-    );
-    CREATE TABLE IF NOT EXISTS wallet_analysis_provenance (
-      analysis_id TEXT NOT NULL REFERENCES wallet_analysis_jobs(analysis_id),
-      source TEXT NOT NULL,
-      observed_at INTEGER NOT NULL,
-      PRIMARY KEY(analysis_id, source)
-    );
-    CREATE TABLE IF NOT EXISTS wallet_analysis_job_bounds (
-      analysis_id TEXT PRIMARY KEY REFERENCES wallet_analysis_jobs(analysis_id),
-      from_at INTEGER NOT NULL,
-      to_at INTEGER NOT NULL,
-      max_tokens INTEGER NOT NULL CHECK(max_tokens BETWEEN 1 AND 300)
-    );
     INSERT OR IGNORE INTO wallet_analysis_job_bounds(analysis_id, from_at, to_at, max_tokens)
     SELECT analysis_id,
       created_at - 60 * 24 * 60 * 60 * 1000,

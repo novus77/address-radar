@@ -1,5 +1,6 @@
 export { createWalletMonitorRuntime } from "./runtime.js";
 export { createEvmBlockWalletCollector, createSolanaWalletCollector } from "./collectors.js";
+export { createIndexedEvmWalletCollector } from "./indexed-wallet-collector.js";
 export { loadWalletMonitorConfig } from "./config.js";
 export type { WalletMonitorConfig } from "./config.js";
 export { createConfiguredWalletRpcClient } from "./rpc.js";

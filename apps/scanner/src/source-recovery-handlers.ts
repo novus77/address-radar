@@ -5,6 +5,10 @@ import type {
   AutomationJobStore,
   CandidateHistoryStore,
   SourceLedgerStore,
+  TokenFactPrecision,
+  TokenFactStatus,
+  TokenFactStore,
+  TokenFactType,
 } from "@address-radar/database";
 import { CANDIDATE_MILESTONES } from "@address-radar/scoring";
 
@@ -41,11 +45,22 @@ export function createSourceRecoveryHandlers(input: {
   readonly ledger: SourceLedgerStore;
   readonly jobs: AutomationJobStore;
   readonly history: CandidateHistoryStore;
+  readonly facts: TokenFactStore;
   readonly marketProvider: TokenMarketProvider;
   readonly fomoProducer: FomoMilestoneLookupProducer;
   readonly now?: () => number;
 }): RecoveryHandlers {
   const now = input.now ?? Date.now;
+
+  const saveFact = (factType: TokenFactType, tokenId: string, status: TokenFactStatus, precision: TokenFactPrecision, source: string, observedAt: number, coverageStartAt: number | null = null, coverageEndAt: number | null = null): void => {
+    input.facts.ensure(tokenId, factType, "token-facts-v1", observedAt);
+    let current = input.facts.fact(tokenId, factType)!;
+    if (current.status === "available" && status !== "available") return;
+    if (current.status === "terminal_unavailable") {
+      current = input.facts.transition({ tokenId, factType, status: "scheduled", reopenTerminal: true, terminalReason: null, nextAttemptAt: observedAt, strategyVersion: "token-facts-v1", updatedAt: observedAt });
+    }
+    input.facts.transition({ tokenId, factType, status, precision, primarySource: source, coverageStartAt, coverageEndAt, observedAt, knownAt: observedAt, nextAttemptAt: null, terminalReason: null, strategyVersion: "token-facts-v1", updatedAt: observedAt });
+  };
 
   const prerequisiteReady = (tokenId: string): boolean => {
     const token = tokenParts(tokenId, "");
@@ -92,6 +107,8 @@ export function createSourceRecoveryHandlers(input: {
         liquidityUsd: market.liquidityUsd,
         payload: market,
       });
+      saveFact("market_identity", job.subjectKey, "available", "page_observed", "dexscreener", observedAt);
+      saveFact("price_history", job.subjectKey, "partial", "page_observed", "dexscreener", observedAt, observedAt, observedAt);
       const snapshotId = `recovery:market:${job.subjectKey}:${observedAt}`;
       input.database.prepare(`
         INSERT INTO market_observations(chain, token_address, observed_at, price_usd, source)
@@ -100,6 +117,7 @@ export function createSourceRecoveryHandlers(input: {
         DO UPDATE SET price_usd = excluded.price_usd
       `).run(token.chain, token.tokenAddress, observedAt, market.priceUsd);
       if (market.marketCapUsd != null && Number.isFinite(market.marketCapUsd) && market.marketCapUsd > 0) {
+        let milestoneWritten = false;
         for (const milestone of CANDIDATE_MILESTONES) {
           if (market.marketCapUsd < milestone.marketCapUsd) continue;
           input.history.saveMilestoneCrossing({
@@ -112,7 +130,9 @@ export function createSourceRecoveryHandlers(input: {
             sourceEventIds: [snapshotId],
             strategyVersion: "candidate-market-recovery-v1",
           });
+          milestoneWritten = true;
         }
+        if (milestoneWritten) saveFact("milestone_crossings", job.subjectKey, "partial", "estimated", "recovery_market_snapshot", observedAt, observedAt, observedAt);
       }
       if (market.marketCapUsd != null && market.marketCapUsd >= 1_000_000) {
         input.history.saveHistoricalToken({
@@ -146,7 +166,10 @@ export function createSourceRecoveryHandlers(input: {
         WHERE chain = ? AND token_address = ? AND side = 'buy' AND occurred_at <= ?
         LIMIT 1
       `).get(token.chain, token.tokenAddress, milestone.crossedAt);
-      if (event) return { reEvaluate: { kind: "token" as const, key: job.subjectKey } };
+      if (event) {
+        saveFact("early_trades", job.subjectKey, "available", "exact", "canonical_trader_events", now(), null, milestone.crossedAt);
+        return { reEvaluate: { kind: "token" as const, key: job.subjectKey } };
+      }
       await input.fomoProducer.enqueue({
         chainId: token.chain,
         tokenAddress: token.tokenAddress,
@@ -162,6 +185,12 @@ export function createSourceRecoveryHandlers(input: {
       if (!prerequisiteReady(job.subjectKey)) {
         throw new RetryableRecoveryError("historical_research_pending");
       }
+      const token = tokenParts(job.subjectKey, job.chain);
+      const observedAt = now();
+      const priceRange = input.database.prepare(`SELECT MIN(observed_at) AS coverageStartAt, MAX(observed_at) AS coverageEndAt FROM market_observations WHERE chain=? AND token_address=? AND price_usd>0`).get(token.chain, token.tokenAddress) as { coverageStartAt: number | null; coverageEndAt: number | null };
+      saveFact("price_history", job.subjectKey, "partial", "derived", "market_observations", observedAt, priceRange.coverageStartAt, priceRange.coverageEndAt);
+      const milestoneRange = input.database.prepare(`SELECT MIN(crossed_at) AS coverageStartAt, MAX(crossed_at) AS coverageEndAt FROM token_milestone_crossings WHERE token_id=? AND precision!='unavailable' AND crossed_at IS NOT NULL`).get(job.subjectKey) as { coverageStartAt: number | null; coverageEndAt: number | null };
+      saveFact("milestone_crossings", job.subjectKey, "partial", "estimated", "token_milestone_crossings", observedAt, milestoneRange.coverageStartAt, milestoneRange.coverageEndAt);
       return { reEvaluate: { kind: "token" as const, key: job.subjectKey } };
     },
 

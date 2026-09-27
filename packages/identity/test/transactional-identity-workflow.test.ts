@@ -112,6 +112,9 @@ describe("transactional identity completion", () => {
     repository.linkAccountToEntity({ entityId: "entity-b", accountId: "account-b", confidence: "high", source: "candidate", observedAt: 1 });
     repository.attachWallet({ accountId: "account-b", chainFamily: "solana", address: "11111111111111111111111111111111", confidence: "high", source: "test", observedAt: 1 });
     repository.enqueueIdentityResolution({ handle: "Alpha", accountId: "account-a", priority: 80, reason: "manual_resolution", observedAt: 1 });
+    const registryBefore = openMonitoringRegistry(path);
+    const registryVersionBefore = registryBefore.version();
+    registryBefore.close();
 
     expect(() => repository.completeIdentityResolution("Alpha", "account-b", 2)).toThrow(/account/i);
 
@@ -122,7 +125,7 @@ describe("transactional identity completion", () => {
     repository.close();
 
     const registry = openMonitoringRegistry(path);
-    expect(registry.version()).toBe(0);
+    expect(registry.version()).toBe(registryVersionBefore);
     registry.close();
   });
 

@@ -816,13 +816,49 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     traderSignalProfile(entityId) {
       const row = database.prepare(`
         SELECT e.entity_id AS entityId, e.lifecycle,
-          EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id AND ea.confidence = 'confirmed') AS mapped,
+          (EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id AND ea.confidence = 'confirmed')
+            OR EXISTS(SELECT 1 FROM entity_wallet_identities ew WHERE ew.entity_id = e.entity_id AND ew.confidence IN ('high', 'confirmed'))) AS mapped,
           COALESCE(p.monitoring_enabled, 0) AS monitoringEnabled,
           COALESCE(p.fomo_monitoring_enabled, 0) AS fomoMonitoringEnabled,
-          COALESCE(p.onchain_monitoring_enabled, 0) AS onchainMonitoringEnabled
-        FROM trader_entities e LEFT JOIN trader_profiles p ON p.entity_id = e.entity_id WHERE e.entity_id = ?
-      `).get(entityId) as { entityId: string; lifecycle: TraderLifecycle; mapped: number; monitoringEnabled: number; fomoMonitoringEnabled: number; onchainMonitoringEnabled: number } | undefined;
-      return row ? Object.freeze({ entityId: row.entityId, lifecycle: row.lifecycle, mapped: row.mapped === 1, monitoringEnabled: row.monitoringEnabled === 1, fomoMonitoringEnabled: row.fomoMonitoringEnabled === 1, onchainMonitoringEnabled: row.onchainMonitoringEnabled === 1 }) : null;
+          COALESCE(p.onchain_monitoring_enabled, 0) AS onchainMonitoringEnabled,
+          ability.ability_stage AS abilityStage,
+          ability.bundle_risk_state AS bundleRiskState,
+          ability.valid_samples AS validSamples,
+          ability.total_samples AS totalSamples,
+          ability.win_rate AS winRate
+        FROM trader_entities e
+        LEFT JOIN trader_profiles p ON p.entity_id = e.entity_id
+        LEFT JOIN trader_repeatable_ability_snapshots ability ON ability.snapshot_id = (
+          SELECT snapshot_id FROM trader_repeatable_ability_snapshots latest
+          WHERE latest.entity_id = e.entity_id AND latest.window = '30d'
+          ORDER BY latest.evaluated_at DESC, latest.snapshot_id DESC LIMIT 1
+        )
+        WHERE e.entity_id = ?
+      `).get(entityId) as { entityId: string; lifecycle: TraderLifecycle; mapped: number; monitoringEnabled: number; fomoMonitoringEnabled: number; onchainMonitoringEnabled: number; abilityStage: "discovered" | "candidate" | "stable" | "degraded" | null; bundleRiskState: "none" | "single_cluster" | "bundle_risk" | null; validSamples: number | null; totalSamples: number | null; winRate: number | null } | undefined;
+      if (!row) return null;
+      const coverage = row.totalSamples && row.totalSamples > 0 ? (row.validSamples ?? 0) / row.totalSamples : 0;
+      const stageBase = row.abilityStage === "stable" ? 0.72
+        : row.abilityStage === "candidate" ? 0.52
+          : row.abilityStage === "degraded" ? 0.42
+            : row.abilityStage === "discovered" ? 0.3 : null;
+      const signalContribution = stageBase === null ? undefined : Math.max(0, Math.min(1,
+        stageBase + 0.18 * Math.max(0, Math.min(1, row.winRate ?? 0)) + 0.1 * Math.max(0, Math.min(1, coverage)),
+      )) * (row.bundleRiskState === "bundle_risk" ? 0.45 : row.bundleRiskState === "single_cluster" ? 0.8 : 1);
+      const abilityTags = [
+        ...(row.abilityStage === "stable" ? ["REPEATABLE_ALPHA"] : []),
+        ...(row.bundleRiskState === "bundle_risk" ? ["BUNDLE_RISK"] : []),
+      ];
+      return Object.freeze({
+        entityId: row.entityId,
+        lifecycle: row.lifecycle,
+        mapped: row.mapped === 1,
+        monitoringEnabled: row.monitoringEnabled === 1,
+        fomoMonitoringEnabled: row.fomoMonitoringEnabled === 1,
+        onchainMonitoringEnabled: row.onchainMonitoringEnabled === 1,
+        ...(row.abilityStage ? { abilityStage: row.abilityStage } : {}),
+        ...(signalContribution === undefined ? {} : { signalContribution }),
+        abilityTags: Object.freeze(abilityTags),
+      });
     },
 
     traderEntityIdsWithEvents() {

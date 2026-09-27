@@ -15,6 +15,7 @@
     "test:e2e": "playwright test --pass-with-no-tests",
     "console": "tsx apps/console/src/cli.ts",
     "audit:candidate-history": "tsx scripts/audit-candidate-history.ts",
+    "audit:data-closure": "tsx scripts/audit-data-closure.ts",
     "check:boundaries": "tsx scripts/check-boundaries.ts"
   },
   "dependencies": {

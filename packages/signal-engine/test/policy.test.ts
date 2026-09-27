@@ -106,13 +106,14 @@ describe("token signal policy", () => {
     expect(decision).toMatchObject({ action: "rebroadcast", broadcastNumber: 2, consumeEvidenceIds: ["c", "d"] });
   });
 
-  it("qualifies created tokens with three traders inside ten minutes", () => {
+  it("keeps created tokens in observation even with three traders inside ten minutes", () => {
     const decision = evaluateTokenSignal({ previous: null, threshold: 0.7, evidence: [
       evidence("a", 0.8, "entity-a", { lifecycleStage: "created", occurredAt: 1_000_000 }),
       evidence("b", 0.8, "entity-b", { lifecycleStage: "created", occurredAt: 700_001 }),
       evidence("c", 0.8, "entity-c", { lifecycleStage: "created", occurredAt: 999_999 }),
     ] });
-    expect(decision).toMatchObject({ action: "broadcast", signalFamily: "NEW_TOKEN_DISCOVERY", windowMs: 600_000, participantCount: 3 });
+    expect(decision).toMatchObject({ action: "observe", signalFamily: "NEW_TOKEN_DISCOVERY", windowMs: 600_000, participantCount: 3 });
+    expect(decision.missingConditions).toContain("token_not_launched");
   });
 
   it("requires one actual ten-thousand-dollar buy", () => {

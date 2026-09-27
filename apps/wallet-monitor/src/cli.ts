@@ -2,6 +2,7 @@ import { createDexScreenerClient, type DiscoveryChain } from "@address-radar/col
 import { openMonitoringRegistry } from "@address-radar/identity";
 import { createEvmBlockWalletCollector, createSolanaWalletCollector } from "./collectors.js";
 import { loadWalletMonitorConfig } from "./config.js";
+import { createIndexedEvmWalletCollector } from "./indexed-wallet-collector.js";
 import { createConfiguredWalletRpcClient } from "./rpc.js";
 import { createWalletMonitorRuntime } from "./runtime.js";
 import { runWalletMonitorService } from "./service.js";
@@ -18,6 +19,16 @@ const market = createDexScreenerClient();
 const collectors = (Object.keys(config.endpoints) as DiscoveryChain[]).map(chain => chain === "solana"
   ? createSolanaWalletCollector({ rpc, market, batchSize: config.solanaBatchSize })
   : createEvmBlockWalletCollector({ chain, rpc, market }));
+for (const [chain, endpoint] of Object.entries(config.indexedEndpoints)) {
+  collectors.push(createIndexedEvmWalletCollector({
+    chain: chain as Exclude<DiscoveryChain, "solana">,
+    endpoint,
+    market,
+    walletBatchSize: config.indexedWalletBatchSize,
+    maxPagesPerWallet: config.indexedWalletMaxPages,
+    lookbackMs: config.indexedWalletLookbackMs,
+  }));
+}
 const runtime = createWalletMonitorRuntime({ registry, store, collectors, consumer: "wallet-monitor" });
 const controller = new AbortController();
 let stopping = false;

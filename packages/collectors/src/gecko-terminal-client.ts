@@ -64,6 +64,7 @@ export class GeckoTerminalError extends Error {
 }
 
 export interface GeckoTerminalClient {
+  pools?(chain: DiscoveryChain, tokenAddress: string, signal?: AbortSignal): Promise<GeckoTerminalPool[]>;
   topPool(chain: DiscoveryChain, tokenAddress: string, signal?: AbortSignal): Promise<GeckoTerminalPool | null>;
   ohlcv(
     chain: DiscoveryChain,
@@ -167,6 +168,31 @@ export function createGeckoTerminalClient(options: GeckoTerminalClientOptions = 
   }
 
   return {
+    async pools(chain, tokenAddress, signal) {
+      const network = NETWORKS[chain];
+      if (!network) return [];
+      const payload = await request(
+        `/networks/${encodeURIComponent(network)}/tokens/${encodeURIComponent(tokenAddress)}/pools?page=1`,
+        15 * 60 * 1000,
+        signal,
+      );
+      if (!payload || typeof payload !== "object") return [];
+      const data = (payload as { data?: unknown }).data;
+      if (!Array.isArray(data)) return [];
+      return data.flatMap((entry): GeckoTerminalPool[] => {
+        if (!entry || typeof entry !== "object") return [];
+        const item = entry as { attributes?: Record<string, unknown>; relationships?: Record<string, { data?: { id?: unknown } }> };
+        const attributes = item.attributes ?? {};
+        const baseAddress = relationshipAddress(item.relationships?.base_token?.data?.id, network);
+        const quoteAddress = relationshipAddress(item.relationships?.quote_token?.data?.id, network);
+        const tokenSide = baseAddress && sameAddress(chain, baseAddress, tokenAddress) ? "base" : quoteAddress && sameAddress(chain, quoteAddress, tokenAddress) ? "quote" : null;
+        const poolAddress = typeof attributes.address === "string" ? attributes.address : null;
+        const tokenPriceUsd = finiteNumber(tokenSide === "base" ? attributes.base_token_price_usd : attributes.quote_token_price_usd);
+        if (!tokenSide || !poolAddress || tokenPriceUsd === null || tokenPriceUsd <= 0) return [];
+        const createdAt = typeof attributes.pool_created_at === "string" ? Date.parse(attributes.pool_created_at) : Number.NaN;
+        return [{ network, poolAddress, tokenAddress, tokenSide, tokenPriceUsd, reserveUsd: finiteNumber(attributes.reserve_in_usd), marketCapUsd: finiteNumber(attributes.market_cap_usd), fdvUsd: finiteNumber(attributes.fdv_usd), createdAt: Number.isFinite(createdAt) ? createdAt : null }];
+      }).sort((left, right) => (right.reserveUsd ?? 0) - (left.reserveUsd ?? 0));
+    },
     async topPool(chain, tokenAddress, signal) {
       const network = NETWORKS[chain];
       if (!network) return null;
