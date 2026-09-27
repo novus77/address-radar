@@ -4,9 +4,6 @@ import {
   createAutomationJobStore,
   createSourceLedgerStore,
   createTokenFactStore,
-  initializeCandidateHistorySchema,
-  initializeSourceLedgerSchema,
-  initializeTokenFactSchema,
   openAddressRadarDatabase,
   openAddressRadarRepository,
 } from "@address-radar/database";
@@ -29,9 +26,6 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
 
   const repository = openAddressRadarRepository(config.databasePath);
   const historyDatabase = openAddressRadarDatabase(config.databasePath);
-  initializeCandidateHistorySchema(historyDatabase);
-  initializeSourceLedgerSchema(historyDatabase);
-  initializeTokenFactSchema(historyDatabase);
   const historyStore = createCandidateHistoryStore(historyDatabase);
   const sourceLedger = createSourceLedgerStore(historyDatabase);
   const tokenFacts = createTokenFactStore(historyDatabase);

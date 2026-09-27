@@ -44,7 +44,10 @@ export interface WalletAnalysisStore {
 export function openWalletAnalysisStore(databasePath: string): WalletAnalysisStore {
   const database = openAddressRadarDatabase(databasePath);
   migrateAddressRadarDatabase(database);
-  database.exec(`
+  const transaction = <T>(operation: () => T): T =>
+    withAddressRadarWriteTransaction(database, operation);
+
+  transaction(() => database.exec(`
     INSERT OR IGNORE INTO wallet_analysis_job_bounds(analysis_id, from_at, to_at, max_tokens)
     SELECT analysis_id,
       created_at - 60 * 24 * 60 * 60 * 1000,
@@ -55,10 +58,7 @@ export function openWalletAnalysisStore(databasePath: string): WalletAnalysisSto
         ELSE requested_sample_count
       END
     FROM wallet_analysis_jobs;
-  `);
-
-  const transaction = <T>(operation: () => T): T =>
-    withAddressRadarWriteTransaction(database, operation);
+  `));
 
   const savePage = (analysisId: string, positions: readonly WalletAnalysisPosition[], nextCursor: string | null, provenance: string, updatedAt: number): number => transaction(() => {
     const capacity = database.prepare(`
@@ -168,8 +168,10 @@ export function openWalletAnalysisStore(databasePath: string): WalletAnalysisSto
       return status;
     },
     review(analysisId, status, reviewedAt) {
-      const changed = database.prepare("UPDATE wallet_analysis_jobs SET status = ?, reviewed_at = ?, updated_at = ? WHERE analysis_id = ? AND status = 'review_required'").run(status, reviewedAt, reviewedAt, analysisId).changes;
-      if (Number(changed) !== 1) throw new Error("Wallet analysis is not pending review");
+      transaction(() => {
+        const changed = database.prepare("UPDATE wallet_analysis_jobs SET status = ?, reviewed_at = ?, updated_at = ? WHERE analysis_id = ? AND status = 'review_required'").run(status, reviewedAt, reviewedAt, analysisId).changes;
+        if (Number(changed) !== 1) throw new Error("Wallet analysis is not pending review");
+      });
     },
     fail(analysisId, error, updatedAt) {
       transaction(() => {
@@ -179,15 +181,17 @@ export function openWalletAnalysisStore(databasePath: string): WalletAnalysisSto
       });
     },
     heartbeat(analysisId, phase, updatedAt) {
-      database.prepare("UPDATE wallet_analysis_progress SET phase = ?, heartbeat_at = ?, updated_at = ? WHERE analysis_id = ?")
-        .run(phase, updatedAt, updatedAt, analysisId);
+      transaction(() => {
+        database.prepare("UPDATE wallet_analysis_progress SET phase = ?, heartbeat_at = ?, updated_at = ? WHERE analysis_id = ?")
+          .run(phase, updatedAt, updatedAt, analysisId);
+      });
     },
     blockStale(now, timeoutMs) {
       if (!Number.isSafeInteger(now) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("Invalid stale-job boundary");
-      return Number(database.prepare(`
-        UPDATE wallet_analysis_progress SET phase = 'blocked', updated_at = ?
-        WHERE phase IN ('queued', 'collecting', 'normalizing', 'pricing', 'evaluating', 'retrying') AND heartbeat_at < ?
-      `).run(now, now - timeoutMs).changes);
+      return transaction(() => Number(database.prepare(`
+          UPDATE wallet_analysis_progress SET phase = 'blocked', updated_at = ?
+          WHERE phase IN ('queued', 'collecting', 'normalizing', 'pricing', 'evaluating', 'retrying') AND heartbeat_at < ?
+        `).run(now, now - timeoutMs).changes));
     },
     retry(analysisId, updatedAt) {
       transaction(() => {
