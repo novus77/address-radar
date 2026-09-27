@@ -1,0 +1,16 @@
+[Unit]
+Description=Bridge Address Radar Fomo verification requests and results
+After=network-online.target fomo-radar-collector.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/bin/sh /opt/address-radar/current/scripts/sync-fomo-verification.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/fomo-radar/data
+ReadWritePaths=/var/lib/address-radar/fomo
+ReadWritePaths=-/var/lib/fomo-radar/data/fomo-token-lookups.jsonl

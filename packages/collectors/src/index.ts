@@ -4,6 +4,16 @@ export * from "./evm/index.js";
 export * from "./fomo/index.js";
 export { createTradeEventIngestor } from "./ingestion.js";
 export {
+  createSourceObservationIngestor,
+  sourceObservationForTraderEvent,
+} from "./source-observation-ingestor.js";
+export type {
+  SourceObservationIngestInput,
+  SourceObservationIngestResult,
+  SourceObservationIngestorOptions,
+  SourceObservationRepository,
+} from "./source-observation-ingestor.js";
+export {
   createJsonRpcClient,
   JsonRpcAbortError,
   JsonRpcRateLimitError,

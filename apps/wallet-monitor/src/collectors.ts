@@ -187,7 +187,7 @@ export function createSolanaWalletCollector(input: {
   readonly now?: () => number;
 }): WalletCollector {
   const signatureLimit = input.signatureLimit ?? 100;
-  const batchSize = input.batchSize ?? 25;
+  const batchSize = input.batchSize ?? 3;
   const now = input.now ?? Date.now;
 
   return {
@@ -197,7 +197,7 @@ export function createSolanaWalletCollector(input: {
       const ordered = [...request.wallets].sort((left, right) => left.address.localeCompare(right.address));
       const schedule = parseScheduleCheckpoint(request.checkpoint("schedule"));
       const selected = selectRotating(ordered, schedule.nextIndex, batchSize);
-      const nextIndex = ordered.length === 0 ? 0 : (schedule.nextIndex + selected.length) % ordered.length;
+      let nextIndex = ordered.length === 0 ? 0 : (schedule.nextIndex + selected.length) % ordered.length;
       const settled = await Promise.allSettled(selected.map((wallet) => collectSolanaWallet({
         wallet,
         rpc: input.rpc,
@@ -214,6 +214,18 @@ export function createSolanaWalletCollector(input: {
       }];
       const failures: Array<NonNullable<WalletCollectorResult["failures"]>[number]> = [];
       const diagnostics: Array<NonNullable<WalletCollectorResult["diagnostics"]>[number]> = [];
+      const firstRateLimitedIndex = settled.findIndex((result) =>
+        result.status === "rejected"
+        && result.reason instanceof Error
+        && result.reason.name === "WalletRpcRateLimitError");
+      if (firstRateLimitedIndex >= 0 && ordered.length > 0) {
+        nextIndex = (schedule.nextIndex + firstRateLimitedIndex) % ordered.length;
+        partitions[0] = {
+          partitionKey: "schedule",
+          nextCheckpoint: JSON.stringify({ nextIndex }),
+          events: [],
+        };
+      }
       settled.forEach((result, index) => {
         const wallet = selected[index]!;
         if (result.status === "fulfilled") {

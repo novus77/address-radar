@@ -22,6 +22,16 @@ describe("standalone systemd units", () => {
     expect(content).not.toContain("/var/lib/fomo-address-radar");
   });
 
+  it("runs the Fomo verification bridge through an explicit shell", async () => {
+    const content = await readFile(
+      resolve("deployment/systemd/address-radar-fomo-verification-sync.service"),
+      "utf8",
+    );
+    expect(content).toContain(
+      "ExecStart=/bin/sh /opt/address-radar/current/scripts/sync-fomo-verification.sh",
+    );
+  });
+
   it("bounds backup resource usage and publishes completed snapshots atomically", async () => {
     const content = await readFile(resolve("scripts/backup-production-state.sh"), "utf8");
     const unit = await readFile(resolve("deployment/systemd/address-radar-backup.service"), "utf8");

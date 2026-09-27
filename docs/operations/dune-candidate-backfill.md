@@ -23,13 +23,12 @@ The production runtime uses the Dune Data API. Dune MCP is restricted to dataset
 | `eth` | `ethereum` | query contract validated through the shared EVM path | `dex.trades`, `tokens.supply_latest` |
 | `base` | `base` | query contract validated through the shared EVM path | `dex.trades`, `tokens.supply_latest` |
 | `robinhood` | `robinhood` | indexed; enabled through the shared EVM path | `dex.trades`, `tokens.supply_latest` |
-| `monad` | `monad` | indexed; enabled through the shared EVM path | `dex.trades`, `tokens.supply_latest` |
 
 Market cap is reconstructed from a timestamp-aligned price and circulating/available supply. It must not be inferred from current supply without recording `precision = estimated`. A milestone crossing is the earliest qualifying observation, not the token creation time.
 
 The current EVM implementation uses a five-minute median price only when a bucket has at least `$250` volume, three trades, and two traders. Historical evidence rows require at least `$50` notional. Token discovery retains only tokens observed at or above `$1M`; candidate evidence can still be earned at the `$100K`, `$200K`, `$300K`, `$500K`, and `$1M` milestones.
 
-Solana historical discovery is deliberately excluded from `DUNE_HISTORICAL_CHAINS` until a bounded supply provider is available. This degradation does not disable Solana real-time Fomo or RPC monitoring and does not block EVM history partitions.
+Solana historical discovery is deliberately excluded from `DUNE_HISTORICAL_CHAINS` until a bounded supply provider is available. This degradation does not disable Solana real-time Fomo or RPC monitoring and does not block EVM history partitions. Production discovery is limited to Solana, Ethereum, BSC, Base, and Robinhood; observations from other chains are quarantined rather than deleted.
 
 Official references:
 

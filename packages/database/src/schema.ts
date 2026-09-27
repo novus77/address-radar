@@ -30,6 +30,99 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS trader_coverage_state (
+      trader_id TEXT PRIMARY KEY REFERENCES trader_entities(entity_id),
+      tier TEXT NOT NULL CHECK(tier IN ('T0', 'T1', 'T2', 'T3')),
+      coverage_state TEXT NOT NULL CHECK(coverage_state IN ('unseen', 'queued', 'backfilling', 'current', 'degraded', 'stale')),
+      last_covered_at INTEGER,
+      next_evaluation_at INTEGER NOT NULL,
+      strategy_version TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS trader_coverage_due
+      ON trader_coverage_state(coverage_state, next_evaluation_at, tier);
+    CREATE TABLE IF NOT EXISTS trader_monitoring_policy (
+      trader_id TEXT PRIMARY KEY REFERENCES trader_entities(entity_id),
+      policy TEXT NOT NULL CHECK(policy IN ('realtime', 'periodic', 'lightweight', 'off')),
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS trader_monitoring_policy_selection
+      ON trader_monitoring_policy(policy, updated_at, trader_id);
+    CREATE TABLE IF NOT EXISTS automation_jobs (
+      job_id TEXT PRIMARY KEY,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      lane TEXT NOT NULL CHECK(lane IN ('trader_backfill', 'token_mining', 'repair')),
+      job_type TEXT NOT NULL,
+      subject_key TEXT NOT NULL,
+      priority INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'leased', 'running', 'waiting_source', 'blocked_source', 'retryable', 'completed', 'terminal', 'cancelled')),
+      cursor TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at INTEGER NOT NULL,
+      lease_expires_at INTEGER,
+      lease_owner TEXT,
+      payload TEXT NOT NULL,
+      last_error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      completed_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS automation_jobs_claim
+      ON automation_jobs(lane, status, next_attempt_at, priority, created_at);
+    CREATE INDEX IF NOT EXISTS automation_jobs_subject
+      ON automation_jobs(job_type, subject_key, status);
+    CREATE TABLE IF NOT EXISTS automation_job_type_state (
+      job_type TEXT PRIMARY KEY,
+      last_claimed_at INTEGER NOT NULL,
+      claim_count INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS automation_lane_state (
+      lane TEXT PRIMARY KEY CHECK(lane IN ('trader_backfill', 'token_mining', 'repair')),
+      credit INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    INSERT OR IGNORE INTO automation_lane_state(lane, credit, updated_at) VALUES
+      ('trader_backfill', 0, 0),
+      ('token_mining', 0, 0),
+      ('repair', 0, 0);
+    CREATE TABLE IF NOT EXISTS automation_runtime_snapshots (
+      snapshot_id TEXT PRIMARY KEY,
+      captured_at INTEGER NOT NULL,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS automation_runtime_snapshots_time
+      ON automation_runtime_snapshots(captured_at DESC);
+    CREATE TABLE IF NOT EXISTS historical_token_partitions (
+      partition_id TEXT PRIMARY KEY,
+      chain TEXT NOT NULL CHECK(chain IN ('solana', 'bsc', 'eth', 'base', 'robinhood')),
+      week_start INTEGER NOT NULL,
+      week_end INTEGER NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'queued', 'running', 'waiting_source', 'retryable', 'completed')),
+      source_name TEXT,
+      cursor TEXT,
+      token_count INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at INTEGER NOT NULL,
+      last_error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      UNIQUE(chain, week_start)
+    );
+    CREATE INDEX IF NOT EXISTS historical_token_partitions_claim
+      ON historical_token_partitions(status, next_attempt_at, week_start, chain);
+    CREATE TABLE IF NOT EXISTS historical_token_mining_jobs (
+      mining_job_id TEXT PRIMARY KEY,
+      partition_id TEXT NOT NULL REFERENCES historical_token_partitions(partition_id),
+      token_id TEXT NOT NULL,
+      chain TEXT NOT NULL,
+      token_address TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('verification_pending', 'evidence_pending', 'completed', 'quarantined')),
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(token_id)
+    );
+    CREATE INDEX IF NOT EXISTS historical_token_mining_jobs_status
+      ON historical_token_mining_jobs(status, updated_at, chain);
     CREATE TABLE IF NOT EXISTS entity_wallet_identities (
       entity_id TEXT NOT NULL REFERENCES trader_entities(entity_id),
       chain_family TEXT NOT NULL CHECK(chain_family IN ('solana', 'evm')),
@@ -256,6 +349,25 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS trader_ability_snapshots_latest ON trader_ability_snapshots(entity_id, window, as_of DESC);
+    CREATE TABLE IF NOT EXISTS trader_repeatable_ability_snapshots (
+      snapshot_id TEXT PRIMARY KEY,
+      entity_id TEXT NOT NULL REFERENCES trader_entities(entity_id),
+      window TEXT NOT NULL CHECK(window IN ('24h', '7d', '30d')),
+      ability_stage TEXT NOT NULL CHECK(ability_stage IN ('discovered', 'candidate', 'stable', 'degraded')),
+      bundle_risk_state TEXT NOT NULL CHECK(bundle_risk_state IN ('none', 'single_cluster', 'bundle_risk')),
+      total_samples INTEGER NOT NULL,
+      valid_samples INTEGER NOT NULL,
+      successful_distinct_tokens INTEGER NOT NULL,
+      win_rate REAL NOT NULL,
+      sample_span_ms INTEGER NOT NULL,
+      maximum_single_token_profit_share REAL NOT NULL,
+      bundle_distinct_token_count INTEGER NOT NULL,
+      reason_codes TEXT NOT NULL,
+      strategy_version TEXT NOT NULL,
+      evaluated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS trader_repeatable_ability_latest
+      ON trader_repeatable_ability_snapshots(entity_id, window, evaluated_at DESC);
     CREATE TABLE IF NOT EXISTS trader_backfill_jobs (
       job_id TEXT PRIMARY KEY,
       entity_id TEXT NOT NULL REFERENCES trader_entities(entity_id),

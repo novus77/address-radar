@@ -23,6 +23,10 @@
         <article><span>代币聚合</span><strong id="metric-aggregations">0</strong></article>
         <article class="accent"><span>已投递用户</span><strong id="metric-broadcasts">0</strong></article>
       </section>
+      <section class="coverage-panel" aria-label="代币数据链路">
+        <header><p class="eyebrow">TOKEN PIPELINE</p><h2>代币数据链路</h2><span>按链区分原始发现、里程碑命中、历史准入与聚合信号，数字不再混用</span></header>
+        <div class="data-grid" id="token-coverage-grid"></div>
+      </section>
 
       <nav class="module-nav" aria-label="控制台模块">
         <button class="active" data-module="traders">地址库</button>
@@ -31,6 +35,8 @@
         <button data-module="aggregations">代币聚合</button>
         <button data-module="outcomes">信号结果</button>
         <button data-module="milestones">历史覆盖与重评估</button>
+        <button data-module="automation">自动化闭环</button>
+        <button data-module="operations">数据源与恢复</button>
         <button data-module="identity">身份解析</button>
         <button data-module="wallet-analysis">地址分析</button>
       </nav>
@@ -52,7 +58,7 @@
         <div class="filter-bar">
           <input id="candidate-search" type="search" placeholder="搜索候选用户名或地址">
           <select id="candidate-source" aria-label="候选来源"><option value="">全部证据等级</option><option value="market_cap_100k_3x">10万市值/3倍</option><option value="market_cap_100k_5x">10万市值/5倍</option><option value="market_cap_200k_3x">20万市值/3倍</option><option value="market_cap_200k_5x">20万市值/5倍</option><option value="market_cap_300k_5x">30万市值/5倍</option><option value="market_cap_500k_5x">50万市值/5倍</option><option value="market_cap_500k_10x">50万市值/10倍</option><option value="market_cap_1m_10x">100万市值/10倍</option><option value="market_cap_1m_20x">100万市值/20倍</option></select>
-          <select id="candidate-chain" aria-label="候选链"><option value="">全部链</option><option value="solana">Solana</option><option value="bsc">BSC</option><option value="ethereum">Ethereum</option><option value="base">Base</option><option value="robinhood">Robinhood</option></select>
+          <select id="candidate-chain" aria-label="候选链"><option value="">全部链</option><option value="solana">Solana</option><option value="bsc">BSC</option><option value="eth">Ethereum</option><option value="robinhood">Robinhood</option><option value="base">Base</option></select>
           <select id="candidate-identity" aria-label="身份状态"><option value="">全部身份状态</option><option value="resolved">已有地址</option><option value="unresolved">地址待解析</option><option value="solana">已有 Solana</option><option value="evm">已有 EVM</option></select>
         </div>
         <div class="table-shell" id="candidates-grid"></div>
@@ -66,6 +72,7 @@
         <div class="filter-bar history-filters">
           <input id="milestone-search" type="search" placeholder="搜索代币名称或合约地址">
           <select id="historical-chain" aria-label="历史链"><option value="">全部链</option></select>
+          <select id="historical-verification" aria-label="Fomo 验证状态"><option value="confirmed" selected>Fomo 已确认</option><option value="">全部验证状态</option><option value="pending">等待验证</option><option value="deferred">等待重试</option><option value="not_found">Fomo 未找到</option><option value="mismatch">CA 不匹配</option></select>
           <input id="historical-date" aria-label="达到 1M 日期" type="date">
           <select id="historical-milestone" aria-label="里程碑状态"><option value="">全部里程碑</option><option value="complete">已重建</option><option value="missing">缺失</option></select>
           <select id="historical-backfill" aria-label="回补状态"><option value="">全部回补状态</option><option value="not_scheduled">未安排</option><option value="pending">等待回补</option><option value="running">正在回补</option><option value="completed">回补完成</option><option value="failed">回补失败</option></select>
@@ -76,6 +83,33 @@
         <div class="table-shell" id="milestone-grid"></div>
         <h3 class="section-title">历史回补分区</h3>
         <div class="table-shell" id="historical-partitions-grid"></div>
+      </section>
+      <section class="module" data-panel="operations">
+        <header><p class="eyebrow">SOURCE OPERATIONS</p><h2>数据源与恢复</h2><span>按 Provider 与链查看新鲜度、游标推进、发现漏斗和异步恢复任务</span></header>
+        <h3 class="section-title">代币发现漏斗</h3><div class="coverage-summary" id="token-funnel-summary"></div>
+        <h3 class="section-title">交易员自动化漏斗</h3><div class="coverage-summary" id="trader-funnel-summary"></div>
+        <h3 class="section-title">数据源健康</h3><div class="table-shell" id="source-health-grid"></div>
+        <h3 class="section-title">持久游标</h3><div class="table-shell" id="source-cursor-grid"></div>
+        <h3 class="section-title">恢复任务</h3><div class="table-shell" id="recovery-jobs-grid"></div>
+      </section>
+      <section class="module" data-panel="automation" id="automation-operations">
+        <header><p class="eyebrow">AUTOMATION LOOP</p><h2>自动化闭环</h2><span>查看回补、历史挖掘、覆盖推进、Provider 降级与可操作积压</span></header>
+        <div class="coverage-summary" id="automation-summary"></div>
+        <div class="filter-bar">
+          <select id="automation-lane"><option value="">全部队列</option><option value="repair">修复</option><option value="trader_backfill">交易员回补</option><option value="token_mining">历史代币挖掘</option></select>
+          <select id="automation-status"><option value="">全部状态</option><option value="pending">等待执行</option><option value="running">正在执行</option><option value="blocked_source">缺少前置数据</option><option value="waiting_source">旧版等待数据</option><option value="retryable">等待重试</option><option value="completed">已经完成</option><option value="terminal">需要人工处理</option></select>
+          <select id="automation-chain"><option value="">全部链</option><option value="solana">Solana</option><option value="bsc">BSC</option><option value="eth">Ethereum</option><option value="base">Base</option><option value="robinhood">Robinhood</option></select>
+          <select id="automation-tier"><option value="">全部覆盖层级</option><option value="T0">T0</option><option value="T1">T1</option><option value="T2">T2</option><option value="T3">T3</option></select>
+          <input id="automation-source" type="search" placeholder="筛选数据源">
+          <select id="automation-age"><option value="">全部等待时长</option><option value="3600000">超过 1 小时</option><option value="86400000">超过 24 小时</option><option value="604800000">超过 7 天</option></select>
+        </div>
+        <h3 class="section-title">队列与冲突诊断</h3><div class="coverage-summary" id="automation-diagnostics"></div>
+        <div class="two-column"><div class="table-shell" id="automation-blocked-reasons"></div><div class="table-shell" id="automation-job-progress"></div></div>
+        <h3 class="section-title">交易员任务</h3><div class="table-shell" id="automation-backfill-grid"></div>
+        <h3 class="section-title">历史代币分区</h3><div class="table-shell" id="automation-partitions-grid"></div>
+        <h3 class="section-title">历史代币任务</h3><div class="table-shell" id="automation-tokens-grid"></div>
+        <h3 class="section-title">交易员覆盖</h3><div class="table-shell" id="automation-coverage-grid"></div>
+        <h3 class="section-title">Provider 与数据库遥测</h3><div class="coverage-summary" id="automation-runtime-summary"></div><div class="table-shell" id="automation-sources-grid"></div>
       </section>
       <section class="module identity-module" data-panel="identity">
         <header><p class="eyebrow">IDENTITY RESOLUTION</p><h2>身份解析</h2><span>处理待解析 Fomo 用户，或手动新增可监控交易员</span></header>

@@ -17,6 +17,7 @@ export interface ScannerConfig extends ScannerPolicyConfig {
   readonly fomoFilePaths: readonly string[];
   readonly onchainFilePath: string | null;
   readonly onchainRpcEndpoint: string | null;
+  readonly onchainRpcFallbackEndpoint: string | null;
   readonly onchainRpcMethod: string;
   readonly fileStartAtEnd: boolean;
   readonly marketBaseUrl: string | null;
@@ -26,6 +27,13 @@ export interface ScannerConfig extends ScannerPolicyConfig {
   readonly gatewaySharedSecret?: string | null;
   readonly gatewayDeliveryIntervalMs?: number;
   readonly gatewayTimeoutMs?: number;
+  readonly recoveryEnabled: boolean;
+  readonly recoveryPollIntervalMs: number;
+  readonly recoveryLeaseMs: number;
+  readonly recoveryRetryBaseMs: number;
+  readonly minimumFreeDiskBytes: number;
+  readonly diskCheckIntervalMs: number;
+  readonly errorLogWindowMs: number;
 }
 
 const required = (env: Readonly<Record<string, string | undefined>>, key: string): string => {
@@ -66,6 +74,7 @@ export function parseScannerConfig(env: Readonly<Record<string, string | undefin
     fomoFilePaths: Object.freeze([env.ADDRESS_RADAR_FOMO_EVENT_LOG_PATH, env.ADDRESS_RADAR_FOMO_JOURNAL_PATH, env.ADDRESS_RADAR_FOMO_HISTORY_PATH].filter((value): value is string => Boolean(value?.trim())).map(value => value.trim())),
     onchainFilePath: env.ADDRESS_RADAR_ONCHAIN_EVENT_LOG_PATH?.trim() || null,
     onchainRpcEndpoint: env.ADDRESS_RADAR_ONCHAIN_RPC_ENDPOINT?.trim() || null,
+    onchainRpcFallbackEndpoint: env.ADDRESS_RADAR_ONCHAIN_RPC_FALLBACK_ENDPOINT?.trim() || null,
     onchainRpcMethod: env.ADDRESS_RADAR_ONCHAIN_RPC_METHOD?.trim() || "address_radar_walletEvents",
     fileStartAtEnd: env.ADDRESS_RADAR_FILE_START_AT_END !== "false",
     marketBaseUrl: env.ADDRESS_RADAR_MARKET_BASE_URL?.trim() || null,
@@ -75,6 +84,13 @@ export function parseScannerConfig(env: Readonly<Record<string, string | undefin
     gatewaySharedSecret: env.ADDRESS_RADAR_GATEWAY_SHARED_SECRET?.trim() || null,
     gatewayDeliveryIntervalMs: finiteNumber(env.ADDRESS_RADAR_GATEWAY_DELIVERY_INTERVAL_MS, 1_000, "ADDRESS_RADAR_GATEWAY_DELIVERY_INTERVAL_MS"),
     gatewayTimeoutMs: finiteNumber(env.ADDRESS_RADAR_GATEWAY_TIMEOUT_MS, 5_000, "ADDRESS_RADAR_GATEWAY_TIMEOUT_MS"),
+    recoveryEnabled: env.ADDRESS_RADAR_RECOVERY_ENABLED === "true",
+    recoveryPollIntervalMs: finiteNumber(env.ADDRESS_RADAR_RECOVERY_POLL_INTERVAL_MS, 5_000, "ADDRESS_RADAR_RECOVERY_POLL_INTERVAL_MS"),
+    recoveryLeaseMs: finiteNumber(env.ADDRESS_RADAR_RECOVERY_LEASE_MS, 60_000, "ADDRESS_RADAR_RECOVERY_LEASE_MS"),
+    recoveryRetryBaseMs: finiteNumber(env.ADDRESS_RADAR_RECOVERY_RETRY_BASE_MS, 30_000, "ADDRESS_RADAR_RECOVERY_RETRY_BASE_MS"),
+    minimumFreeDiskBytes: finiteNumber(env.ADDRESS_RADAR_MINIMUM_FREE_DISK_BYTES, 2 * 1024 * 1024 * 1024, "ADDRESS_RADAR_MINIMUM_FREE_DISK_BYTES"),
+    diskCheckIntervalMs: finiteNumber(env.ADDRESS_RADAR_DISK_CHECK_INTERVAL_MS, 60_000, "ADDRESS_RADAR_DISK_CHECK_INTERVAL_MS"),
+    errorLogWindowMs: finiteNumber(env.ADDRESS_RADAR_ERROR_LOG_WINDOW_MS, 60_000, "ADDRESS_RADAR_ERROR_LOG_WINDOW_MS"),
   });
 }
 

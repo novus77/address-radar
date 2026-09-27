@@ -1,5 +1,10 @@
 import type { AddressRadarRepository } from "@address-radar/database";
-import type { TraderEvent } from "@address-radar/domain";
+import type {
+  RepeatableTraderAbilityEvaluation,
+  RepeatableTraderAbilityStage,
+  RepeatableTraderAbilityWindow,
+  TraderEvent,
+} from "@address-radar/domain";
 import { strongestCandidateEvidenceByToken } from "@address-radar/identity";
 import { buildTraderTokenSample, evaluateScheduledTraderOutcomes, evaluateTraderPerformance, scheduleTraderOutcomes } from "@address-radar/scoring";
 
@@ -59,4 +64,92 @@ function groupEvents(events: readonly TraderEvent[]): Map<string, TraderEvent[]>
 
 function parsePayload(payload: string): { readonly chain?: string; readonly tokenAddress?: string } {
   try { return JSON.parse(payload) as { readonly chain?: string; readonly tokenAddress?: string }; } catch { return {}; }
+}
+
+export interface RepeatableAbilitySample {
+  readonly sampleId: string;
+  readonly chain: string;
+  readonly tokenAddress: string;
+  readonly firstBuyAt: number;
+  readonly sampleStatus: string;
+}
+
+export interface RepeatableAbilityOutcome {
+  readonly sampleId: string;
+  readonly closeMultiple: number | null;
+  readonly coverageStatus: string;
+  readonly computedAt: number;
+}
+
+export function evaluateRepeatableTraderAbility(input: {
+  readonly samples: readonly RepeatableAbilitySample[];
+  readonly outcomes: readonly RepeatableAbilityOutcome[];
+  readonly asOf: number;
+  readonly window: RepeatableTraderAbilityWindow;
+  readonly previousStage?: RepeatableTraderAbilityStage | null;
+}): RepeatableTraderAbilityEvaluation {
+  const since = input.asOf - abilityWindowMs(input.window);
+  const samples = input.samples.filter(sample => sample.sampleStatus === "included"
+    && sample.firstBuyAt >= since
+    && sample.firstBuyAt <= input.asOf);
+  const sampleById = new Map(samples.map(sample => [sample.sampleId, sample]));
+  const latestBySample = new Map<string, RepeatableAbilityOutcome>();
+  for (const outcome of input.outcomes) {
+    if (!sampleById.has(outcome.sampleId)
+      || outcome.coverageStatus !== "complete"
+      || outcome.closeMultiple === null
+      || outcome.computedAt > input.asOf) continue;
+    const current = latestBySample.get(outcome.sampleId);
+    if (!current || outcome.computedAt >= current.computedAt) latestBySample.set(outcome.sampleId, outcome);
+  }
+  const valid = [...latestBySample.values()];
+  const successfulTokens = new Set(valid.flatMap(outcome => {
+    if ((outcome.closeMultiple ?? 0) <= 1) return [];
+    const sample = sampleById.get(outcome.sampleId)!;
+    return [`${sample.chain.toLowerCase()}:${sample.tokenAddress.toLowerCase()}`];
+  }));
+  const validTimes = valid.map(outcome => sampleById.get(outcome.sampleId)!.firstBuyAt).sort((left, right) => left - right);
+  const gains = valid.map(outcome => Math.max(0, (outcome.closeMultiple ?? 0) - 1));
+  const totalGain = gains.reduce((sum, gain) => sum + gain, 0);
+  const maximumSingleTokenProfitShare = totalGain <= 0 ? 1 : Math.max(...gains) / totalGain;
+  const metrics = Object.freeze({
+    totalSamples: samples.length,
+    validSamples: valid.length,
+    successfulDistinctTokens: successfulTokens.size,
+    winRate: valid.length === 0 ? 0 : valid.filter(outcome => (outcome.closeMultiple ?? 0) > 1).length / valid.length,
+    sampleSpanMs: validTimes.length < 2 ? 0 : validTimes.at(-1)! - validTimes[0]!,
+    maximumSingleTokenProfitShare,
+  });
+  const stable = metrics.validSamples >= 8
+    && metrics.successfulDistinctTokens >= 3
+    && metrics.sampleSpanMs >= 14 * 24 * 60 * 60_000
+    && metrics.maximumSingleTokenProfitShare <= 0.5;
+  const hadStableAbility = input.previousStage === "stable" || input.previousStage === "degraded";
+  const stage: RepeatableTraderAbilityStage = stable
+    ? "stable"
+    : hadStableAbility
+      ? "degraded"
+      : metrics.validSamples === 0
+        ? "discovered"
+        : "candidate";
+  const reasonCodes = stable
+    ? ["repeatable_ability_confirmed"]
+    : [
+      ...(metrics.validSamples < 8 ? ["valid_samples_below_8"] : []),
+      ...(metrics.successfulDistinctTokens < 3 ? ["successful_tokens_below_3"] : []),
+      ...(metrics.sampleSpanMs < 14 * 24 * 60 * 60_000 ? ["sample_span_below_14d"] : []),
+      ...(metrics.maximumSingleTokenProfitShare > 0.5 ? ["single_token_profit_concentration"] : []),
+    ];
+  return Object.freeze({
+    window: input.window,
+    stage,
+    stable,
+    metrics,
+    reasonCodes: Object.freeze(reasonCodes),
+  });
+}
+
+function abilityWindowMs(window: RepeatableTraderAbilityWindow): number {
+  if (window === "24h") return 24 * 60 * 60_000;
+  return Number.parseInt(window, 10) * 24 * 60 * 60_000;
 }

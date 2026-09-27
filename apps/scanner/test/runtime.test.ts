@@ -77,6 +77,30 @@ describe("scanner runtime", () => {
     });
   });
 
+  it("reports one market observation per token and collector batch", async () => {
+    repository = openAddressRadarRepository(":memory:");
+    for (const id of ["a", "b"]) {
+      repository.upsertFomoAccount({ accountId: id, handle: id, firstSeenAt: 1, lastSeenAt: 1 });
+      repository.upsertTraderEntity({ entityId: id, lifecycle: "active", manual: false, locked: false, createdAt: 1, updatedAt: 1 });
+      repository.linkAccountToEntity({ accountId: id, entityId: id, confidence: "confirmed", source: "test", observedAt: 1 });
+    }
+    const observed = vi.fn();
+    const event = (id: string, occurredAt: number) => ({ eventId: id, accountId: id, entityId: id, chain: "base", tokenAddress: "0xToken", side: "buy" as const, amountUsd: 1_000, priceUsd: null, marketCapUsd: null, tokenAgeMs: null, occurredAt, collectedAt: occurredAt, source: "fomo_stream" as const });
+    const runtime = createScannerRuntime({
+      repository,
+      collectors: [{ collect: async () => ({ observations: [{ event: event("a", 1_000) }, { event: event("b", 2_000) }], status: "ready" as const }) }],
+      clock: { now: () => 3_000 },
+      marketProvider: { lookup: async () => ({ chain: "base", tokenAddress: "0xToken", symbol: "TOK", name: "Token", imageUrl: null, priceUsd: 0.01, marketCapUsd: 1_100_000, liquidityUsd: 50_000, createdAt: 1, launchedAt: 1, observedAt: new Date(3_000).toISOString() }) },
+      onTokenMarketObserved: observed,
+      config: { strategyVersion: "address-v1", signalThreshold: 0.7, minimumPurchaseUsd: 0, minimumAggregateBuyUsd: 0, allowedChains: ["base"], excludedTokenIds: [] },
+    });
+
+    await runtime.runOnce();
+
+    expect(observed).toHaveBeenCalledTimes(1);
+    expect(observed).toHaveBeenCalledWith(expect.objectContaining({ chain: "base", tokenAddress: "0xToken", observedAt: 2_000, sourceEventIds: ["a", "b"] }));
+  });
+
   it("does not synthesize quality or style tags without an ability snapshot", async () => {
     repository = openAddressRadarRepository(":memory:");
     repository.upsertFomoAccount({ accountId: "a", handle: "a", firstSeenAt: 1, lastSeenAt: 1 });

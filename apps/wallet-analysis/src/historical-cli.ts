@@ -1,19 +1,24 @@
-import { DatabaseSync } from "node:sqlite";
-
-import { createDuneDataApiClient } from "@address-radar/collectors";
-import { createCandidateHistoryStore, migrateAddressRadarDatabase, openAddressRadarRepository } from "@address-radar/database";
+import { createDuneDataApiClient, FomoTokenLookupProducer, FomoTokenLookupResultConsumer } from "@address-radar/collectors";
+import { createCandidateHistoryStore, migrateAddressRadarDatabase, openAddressRadarDatabase, openAddressRadarRepository } from "@address-radar/database";
 
 import { loadHistoricalBackfillConfig } from "./config.js";
 import { createDuneHistoricalBackfillWorker } from "./dune-historical-worker.js";
-import { createHistoricalBackfillScheduler } from "./historical-backfill.js";
+import { createFomoHistoricalVerificationService } from "./fomo-token-verification.js";
+import { createHistoricalBackfillScheduler, runHistoricalBackfillCycle } from "./historical-backfill.js";
 import { createHistoricalPartitions } from "./historical-partitions.js";
 import { runWalletAnalysisService } from "./service.js";
+import { createSolanaTokenSupplyProvider } from "./solana-token-supply.js";
 
 const config = loadHistoricalBackfillConfig(process.env);
 const repository = openAddressRadarRepository(config.databasePath);
-const database = new DatabaseSync(config.databasePath);
+const database = openAddressRadarDatabase(config.databasePath);
 migrateAddressRadarDatabase(database);
 const historyStore = createCandidateHistoryStore(database);
+const verification = createFomoHistoricalVerificationService({
+  database,
+  producer: new FomoTokenLookupProducer({ filePath: config.fomoLookupQueuePath }),
+  consumer: new FomoTokenLookupResultConsumer({ filePath: config.fomoLookupResultPath, cursorPath: config.fomoLookupResultCursorPath }),
+});
 const client = createDuneDataApiClient({ apiKey: config.apiKey, timeoutMs: config.timeoutMs, pollIntervalMs: config.pollIntervalMs });
 const worker = createDuneHistoricalBackfillWorker({
   client,
@@ -22,6 +27,8 @@ const worker = createDuneHistoricalBackfillWorker({
   queryIds: config.queryIds,
   pageSize: config.pageSize,
   strategyVersion: config.strategyVersion,
+  ...(config.solanaRpc ? { solanaSupply: createSolanaTokenSupplyProvider({ endpoint: config.solanaRpc.primary, ...(config.solanaRpc.fallback ? { fallbackEndpoint: config.solanaRpc.fallback } : {}) }) } : {}),
+  resolveVerifiedTokenAddresses: verification.resolveEligibleAddresses,
   resolveTraderId(chain, address) {
     const family = chain === "solana" ? "solana" : "evm";
     const row = database.prepare("SELECT ea.entity_id AS entityId FROM wallet_identities w JOIN entity_accounts ea ON ea.account_id = w.account_id WHERE w.chain_family = ? AND w.address = ? ORDER BY ea.last_observed_at DESC LIMIT 1").get(family, family === "evm" ? address.toLowerCase() : address) as { entityId: string } | undefined;
@@ -50,7 +57,10 @@ const stop = () => controller.abort();
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);
 try {
-  await runWalletAnalysisService({ signal: controller.signal, intervalMs: config.intervalMs, runOnce: async () => { seed(); return scheduler.runOnce(controller.signal); } });
+  await runWalletAnalysisService({ signal: controller.signal, intervalMs: config.intervalMs, runOnce: async () => {
+    seed();
+    return runHistoricalBackfillCycle({ verification, scheduler, signal: controller.signal });
+  } });
 } finally {
   repository.close();
   database.close();

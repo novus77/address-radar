@@ -1,10 +1,21 @@
-import { addressRadarTokenId, type TraderEvent, type TraderLifecycle } from "@address-radar/domain";
-import type { AddressRadarRepository } from "@address-radar/database";
+import { addressRadarTokenId, normalizeDiscoveryChain, type TraderEvent, type TraderLifecycle } from "@address-radar/domain";
+import type { AddressRadarRepository, SourceLedgerStore } from "@address-radar/database";
 import type { AddressSignalEvidence, TokenLifecycleResolver } from "@address-radar/aggregation";
 import { createRuntimeQualitySnapshot, type ProviderStatus } from "@address-radar/observability";
 import { createTokenSignalService, type RadarSignalV1 } from "@address-radar/signal-engine";
-import type { TokenMarketProvider, TokenMarketSnapshot } from "@address-radar/collectors";
+import {
+  sourceObservationForTraderEvent,
+  type SourceObservationRepository,
+  type TokenMarketProvider,
+  type TokenMarketSnapshot,
+} from "@address-radar/collectors";
 import type { ScannerPolicyConfig } from "./config.js";
+import {
+  createSourceHealthRecorder,
+  type SourceHealthLedger,
+  type SourceHealthTarget,
+  type SourceSuccessAttempt,
+} from "./source-health.js";
 
 export interface ScannerObservation {
   readonly chain?: string;
@@ -19,12 +30,24 @@ export interface ScannerCollectorBatch {
   readonly status: ProviderStatus;
   readonly queueOldestAt?: number | null;
   readonly registryVersion?: number;
+  readonly sourceProgress?: readonly Omit<SourceSuccessAttempt, "startedAt">[];
   readonly commit?: () => void | Promise<void>;
 }
-export interface ScannerCollector { readonly name?: string; collect(): Promise<readonly ScannerObservation[] | ScannerCollectorBatch> }
+export interface ScannerCollector {
+  readonly name?: string;
+  readonly healthTargets?: readonly SourceHealthTarget[];
+  collect(): Promise<readonly ScannerObservation[] | ScannerCollectorBatch>;
+}
 export interface SignalCandidateSink { accept(candidates: readonly RadarSignalV1[]): void | Promise<void> }
 export interface ScannerRuntimeJob { start(): void | Promise<void>; stop(): void | Promise<void> }
 export interface ScannerRunResult { readonly collected: number; readonly accepted: number; readonly rejected: number; readonly candidateCount: number; readonly collectorFailures: number }
+export interface ObservedTokenMarket {
+  readonly chain: string;
+  readonly tokenAddress: string;
+  readonly observedAt: number;
+  readonly sourceEventIds: readonly string[];
+  readonly market: TokenMarketSnapshot;
+}
 export interface ScannerRuntimeOptions {
   readonly repository: AddressRadarRepository;
   readonly collectors: readonly ScannerCollector[];
@@ -34,6 +57,10 @@ export interface ScannerRuntimeOptions {
   readonly config: ScannerPolicyConfig;
   readonly lifecycleResolver?: Pick<TokenLifecycleResolver, "resolve">;
   readonly marketProvider?: TokenMarketProvider;
+  readonly sourceLedger?: SourceObservationRepository;
+  readonly sourceHealthLedger?: SourceHealthLedger;
+  readonly tokenStateStore?: Pick<SourceLedgerStore, "saveTokenObservation" | "saveTokenMarketSnapshot" | "enqueueRecoveryJob">;
+  readonly onTokenMarketObserved?: (observation: ObservedTokenMarket) => void | Promise<void>;
   readonly jobs?: readonly ScannerRuntimeJob[];
   readonly onCollectorError?: (error: unknown, collectorIndex: number) => void;
 }
@@ -43,6 +70,7 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
   const allowed = new Set(options.config.allowedChains.map(value => value.toLowerCase()));
   const excluded = new Set(options.config.excludedTokenIds);
   const jobs = [...(options.jobs ?? [])];
+  const sourceHealth = options.sourceHealthLedger ? createSourceHealthRecorder({ ledger: options.sourceHealthLedger, clock: options.clock }) : null;
   const previousQuality = options.repository.latestRuntimeQualitySnapshot();
   const startedAt = previousQuality?.startedAt ?? options.clock.now();
   let lastEventAt = previousQuality?.lastEventAt ?? (previousQuality?.eventFreshnessMs == null ? null : previousQuality.recordedAt - previousQuality.eventFreshnessMs);
@@ -54,6 +82,7 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
     async start() { if (closed) throw new Error("Scanner runtime is closed"); for (const job of jobs) await job.start(); },
     async runOnce(): Promise<ScannerRunResult> {
       if (closed) throw new Error("Scanner runtime is closed");
+      const attemptStartedAt = options.collectors.map(() => options.clock.now());
       const settled = await Promise.allSettled(options.collectors.map(collector => collector.collect()));
       const statuses: Record<string, ProviderStatus> = {};
       let failures = 0;
@@ -72,6 +101,22 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
           failures += 1;
           statuses[name] = "unavailable";
           options.onCollectorError?.(result.reason, index);
+          for (const target of options.collectors[index]?.healthTargets ?? []) {
+            sourceHealth?.recordFailure({ ...target, startedAt: attemptStartedAt[index]!, errorCode: "collector_error" });
+            if ((target.source === "rpc_evm" || target.source === "rpc_solana") && options.tokenStateStore) {
+              const subjectKey = options.collectors[index]?.name ?? `collector-${index}`;
+              options.tokenStateStore.enqueueRecoveryJob({
+                jobId: `recovery:rpc_gap:${target.chain}:${subjectKey}`,
+                jobType: "rpc_gap",
+                chain: target.chain,
+                subjectKey,
+                priority: 10,
+                cursor: null,
+                nextAttemptAt: options.clock.now(),
+                createdAt: options.clock.now(),
+              });
+            }
+          }
           continue;
         }
         const value = result.value;
@@ -85,16 +130,33 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
 
         let batchFailed = false;
         const groups = new Map<string, { chain: string; tokenAddress: string; evidence: AddressSignalEvidence[]; market: TokenMarketSnapshot | null }>();
-        const tokenFacts = new Map<string, { chain: string; tokenAddress: string; observedAt: number; createdAt?: number | null; launchedAt?: number | null }>();
+        const tokenFacts = new Map<string, { chain: string; tokenAddress: string; observedAt: number; sourceEventIds: Set<string>; createdAt?: number | null; launchedAt?: number | null }>();
         for (const observation of batch.observations) {
           if (!observation.event) continue;
           const chain = observation.event.chain.toLowerCase();
           const tokenAddress = observation.event.tokenAddress;
           const tokenId = addressRadarTokenId(chain, tokenAddress);
+          const supported = isSupportedDiscoveryChain(chain);
+          options.tokenStateStore?.saveTokenObservation({
+            tokenId,
+            chain,
+            tokenAddress,
+            observedAt: observation.event.occurredAt,
+            identityStatus: "resolved",
+            marketStatus: "pending",
+            fomoStatus: observation.event.source === "onchain_wallet" ? "pending" : "confirmed",
+            quarantined: !supported,
+            quarantineReason: supported ? null : "unsupported_chain",
+          });
+          if (supported && observation.event.source === "onchain_wallet") {
+            enqueueTokenRecovery(options.tokenStateStore, "fomo_token_history", chain, tokenId, 30, observation.event.collectedAt);
+          }
           const current = tokenFacts.get(tokenId);
           const createdTimes = [current?.createdAt, observation.createdAt].filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0);
           const launchTimes = [current?.launchedAt, observation.launchedAt].filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0);
-          tokenFacts.set(tokenId, { chain, tokenAddress, observedAt: Math.max(current?.observedAt ?? 0, observation.event.occurredAt), ...(createdTimes.length ? { createdAt: Math.min(...createdTimes) } : {}), ...(launchTimes.length ? { launchedAt: Math.min(...launchTimes) } : {}) });
+          const sourceEventIds = current?.sourceEventIds ?? new Set<string>();
+          sourceEventIds.add(observation.event.eventId);
+          tokenFacts.set(tokenId, { chain, tokenAddress, observedAt: Math.max(current?.observedAt ?? 0, observation.event.occurredAt), sourceEventIds, ...(createdTimes.length ? { createdAt: Math.min(...createdTimes) } : {}), ...(launchTimes.length ? { launchedAt: Math.min(...launchTimes) } : {}) });
         }
         const tokenResolutionCache = new Map<string, Promise<{ market: TokenMarketSnapshot | null; lifecycleStage: NonNullable<AddressSignalEvidence["lifecycleStage"]>; failed: boolean }>>();
         const resolveToken = (chain: string, tokenAddress: string) => {
@@ -108,8 +170,51 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
             let lifecycleStage: NonNullable<AddressSignalEvidence["lifecycleStage"]> = "unknown";
             let failed = false;
             if (options.marketProvider) {
-              try { market = await options.marketProvider.lookup(chain, tokenAddress); launchStatus = "ready"; }
-              catch (error) { marketStatus = "degraded"; launchStatus = "unavailable"; failed = true; options.onCollectorError?.(error, index); }
+              try {
+                market = await options.marketProvider.lookup(chain, tokenAddress);
+                launchStatus = "ready";
+                if (market) {
+                  const milestoneObserved = typeof market.marketCapUsd === "number" && market.marketCapUsd >= 100_000;
+                  options.tokenStateStore?.saveTokenObservation({
+                    tokenId,
+                    chain,
+                    tokenAddress,
+                    observedAt: facts.observedAt,
+                    marketStatus: "resolved",
+                    symbol: market.symbol ?? null,
+                    imageUrl: market.imageUrl ?? null,
+                    marketCapUsd: market.marketCapUsd,
+                    launchedAt: market.launchedAt ?? market.createdAt ?? null,
+                    ...(milestoneObserved ? { milestoneStatus: "observed" as const, milestoneObservedAt: facts.observedAt } : {}),
+                  });
+                  options.tokenStateStore?.saveTokenMarketSnapshot({
+                    snapshotId: `market:${tokenId}:${facts.observedAt}:${market.marketCapUsd ?? "na"}:${market.priceUsd ?? "na"}`,
+                    tokenId,
+                    source: "dexscreener",
+                    observedAt: facts.observedAt,
+                    priceUsd: market.priceUsd,
+                    marketCapUsd: market.marketCapUsd,
+                    liquidityUsd: market.liquidityUsd,
+                    payload: market,
+                  });
+                }
+              }
+              catch (error) {
+                marketStatus = "degraded";
+                launchStatus = "unavailable";
+                failed = true;
+                options.tokenStateStore?.saveTokenObservation({ tokenId, chain, tokenAddress, observedAt: facts.observedAt, marketStatus: "pending" });
+                if (isSupportedDiscoveryChain(chain)) enqueueTokenRecovery(options.tokenStateStore, "market_enrichment", chain, tokenId, 20, options.clock.now());
+                options.onCollectorError?.(error, index);
+              }
+            }
+            if (market && options.onTokenMarketObserved) {
+              try {
+                await options.onTokenMarketObserved({ chain, tokenAddress, observedAt: facts.observedAt, sourceEventIds: Object.freeze([...facts.sourceEventIds]), market });
+              } catch (error) {
+                failed = true;
+                options.onCollectorError?.(error, index);
+              }
             }
             const launchTimes = [market?.launchedAt, facts.launchedAt].filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0);
             const launchedAt = launchTimes.length > 0 ? Math.min(...launchTimes) : undefined;
@@ -131,9 +236,15 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
             let evidence: AddressSignalEvidence;
             let market: TokenMarketSnapshot | null = null;
             if (observation.event) {
+              if (options.sourceLedger && isSupportedDiscoveryChain(observation.event.chain)) {
+                const extractionMode = observation.event.source === "onchain_wallet" ? "rpc" : "network";
+                const sourceWrite = options.sourceLedger.saveObservation(sourceObservationForTraderEvent(observation.event, extractionMode));
+                if (sourceWrite.status === "conflict") continue;
+              }
               const mappedEntity = options.repository.entityForAccount(observation.event.accountId);
               const event = mappedEntity ? { ...observation.event, entityId: mappedEntity } : observation.event;
-              options.repository.insertTraderEvent(event);
+              const eventWrite = options.repository.insertTraderEvent(event);
+              if (!eventWrite.inserted) continue;
               chain = event.chain.toLowerCase();
               tokenAddress = event.tokenAddress;
               const resolved = await resolveToken(chain, tokenAddress);
@@ -166,6 +277,7 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
               continue;
             }
             options.repository.saveAddressSignalEvidence(chain, tokenAddress, evidence);
+            options.tokenStateStore?.saveTokenObservation({ tokenId, chain, tokenAddress, observedAt: evidence.occurredAt, evidenceStatus: "observed" });
             const group = groups.get(tokenId) ?? { chain, tokenAddress, evidence: [], market };
             group.evidence.push(evidence);
             if (market) group.market = market;
@@ -193,6 +305,11 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
           }
         }
         candidateCount += candidates.length;
+        if (sourceHealth) {
+          const derivedProgress = deriveSourceProgress(batch.observations);
+          const progress = batch.sourceProgress ?? (derivedProgress.length > 0 ? derivedProgress : options.collectors[index]?.healthTargets ?? []);
+          for (const item of progress) sourceHealth.recordSuccess({ ...item, startedAt: attemptStartedAt[index]! });
+        }
         if (!batchFailed && batch.commit) {
           try { await batch.commit(); }
           catch (error) { batchFailed = true; options.onCollectorError?.(error, index); }
@@ -210,11 +327,72 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
   });
 }
 
-export const createPollingRuntimeJob = (input: { readonly runOnce: () => unknown | Promise<unknown>; readonly intervalMs: number; readonly onError?: (error: unknown) => void }): ScannerRuntimeJob => {
+function isSupportedDiscoveryChain(chain: string): boolean {
+  try { normalizeDiscoveryChain(chain); return true; }
+  catch { return false; }
+}
+
+function enqueueTokenRecovery(
+  store: ScannerRuntimeOptions["tokenStateStore"],
+  jobType: "fomo_token_history" | "market_enrichment",
+  chain: string,
+  tokenId: string,
+  priority: number,
+  now: number,
+): void {
+  if (!store) return;
+  store.enqueueRecoveryJob({
+    jobId: `recovery:${jobType}:${tokenId}`,
+    jobType,
+    chain: normalizeDiscoveryChain(chain),
+    subjectKey: tokenId,
+    priority,
+    cursor: null,
+    nextAttemptAt: now,
+    createdAt: now,
+  });
+}
+
+function deriveSourceProgress(observations: readonly ScannerObservation[]): readonly Omit<SourceSuccessAttempt, "startedAt">[] {
+  const progress = new Map<string, Omit<SourceSuccessAttempt, "startedAt">>();
+  for (const observation of observations) {
+    if (!observation.event) continue;
+    try {
+      const event = observation.event;
+      const extractionMode = event.source === "onchain_wallet" ? "rpc" : "network";
+      const source = sourceObservationForTraderEvent(event, extractionMode).source;
+      const chain = normalizeDiscoveryChain(event.chain);
+      const stream = event.source === "onchain_wallet" ? "wallet_observation" as const : "fomo_live" as const;
+      const key = `${source}:${chain}:${stream}`;
+      const previous = progress.get(key);
+      progress.set(key, { source, chain, stream, lastEventAt: Math.max(previous?.lastEventAt ?? 0, event.occurredAt) });
+    } catch {
+      // Unsupported chains remain in the immutable ledger but do not create production health rows.
+    }
+  }
+  return Object.freeze([...progress.values()]);
+}
+
+export const createPollingRuntimeJob = (input: { readonly runOnce: () => unknown | Promise<unknown>; readonly intervalMs: number; readonly maximumBackoffMs?: number; readonly now?: () => number; readonly onError?: (error: unknown) => void }): ScannerRuntimeJob => {
   let timer: NodeJS.Timeout | undefined;
   let running: Promise<void> | undefined;
   let active = false;
-  const tick = () => { if (!active || running) return; running = Promise.resolve(input.runOnce()).then(() => undefined).catch(error => input.onError?.(error)).finally(() => { running = undefined; }); };
+  let consecutiveFailures = 0;
+  let nextAttemptAt = Number.NEGATIVE_INFINITY;
+  const now = input.now ?? Date.now;
+  const maximumBackoffMs = input.maximumBackoffMs ?? input.intervalMs * 32;
+  const tick = () => {
+    if (!active || running || now() < nextAttemptAt) return;
+    running = Promise.resolve(input.runOnce())
+      .then(() => { consecutiveFailures = 0; nextAttemptAt = Number.NEGATIVE_INFINITY; })
+      .catch(error => {
+        consecutiveFailures += 1;
+        const backoffMs = Math.min(maximumBackoffMs, input.intervalMs * (2 ** (consecutiveFailures - 1)));
+        nextAttemptAt = now() + backoffMs;
+        input.onError?.(error);
+      })
+      .finally(() => { running = undefined; });
+  };
   return Object.freeze({ start() { if (active) return; active = true; tick(); timer = setInterval(tick, input.intervalMs); }, async stop() { active = false; if (timer) clearInterval(timer); timer = undefined; await running; } });
 };
 export const RECONCILIATION_INTERVAL_MS: Readonly<Record<TraderLifecycle, number>> = Object.freeze({ candidate: 1_800_000, probation: 900_000, active: 300_000, elite: 120_000, degraded: 3_600_000, suspended: 86_400_000 });

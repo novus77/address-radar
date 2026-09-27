@@ -30,6 +30,10 @@ export function parseFomoLookupResult(line: string): FomoTokenLookupResult | nul
   try {
     const value = JSON.parse(line) as Partial<FomoTokenLookupResult>;
     if ((value.version !== 1 && value.version !== 2) || typeof value.lookupId !== "string" || !value.lookupId.trim() || typeof value.chainId !== "string" || !value.chainId.trim() || typeof value.tokenAddress !== "string" || !value.tokenAddress.trim() || !validInteger(value.completedAt) || !validInteger(value.holderCount) || !validInteger(value.queriedTraderCount) || !validInteger(value.observationCount)) return null;
+    if (value.verificationStatus !== undefined && !new Set(["confirmed", "not_found", "mismatch", "deferred"]).has(value.verificationStatus)) return null;
+    if (value.exactAddressMatch !== undefined && typeof value.exactAddressMatch !== "boolean") return null;
+    if (value.historyAvailable !== undefined && typeof value.historyAvailable !== "boolean") return null;
+    for (const field of [value.providerTokenId, value.providerUrl, value.errorCode]) if (field !== undefined && typeof field !== "string") return null;
     if (value.eventIds !== undefined && (!Array.isArray(value.eventIds) || value.eventIds.some((id) => typeof id !== "string" || !id.trim()))) return null;
     if (value.version === 2) {
       if (value.purpose !== "milestone_backfill" || typeof value.milestoneId !== "string" || !value.milestoneId.trim() || !validInteger(value.beforeAt)) return null;

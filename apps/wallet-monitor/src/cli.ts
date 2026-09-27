@@ -10,7 +10,10 @@ import { openWalletMonitorStore } from "./store.js";
 const config = loadWalletMonitorConfig(process.env);
 const registry = openMonitoringRegistry(config.databasePath);
 const store = openWalletMonitorStore(config.databasePath);
-const rpc = createConfiguredWalletRpcClient({ endpoints: config.endpoints });
+const rpc = createConfiguredWalletRpcClient({
+  endpoints: config.endpoints,
+  rateLimitCooldownMs: config.solanaRateLimitCooldownMs,
+});
 const market = createDexScreenerClient();
 const collectors = (Object.keys(config.endpoints) as DiscoveryChain[]).map(chain => chain === "solana"
   ? createSolanaWalletCollector({ rpc, market, batchSize: config.solanaBatchSize })

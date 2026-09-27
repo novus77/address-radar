@@ -1,0 +1,12 @@
+[Unit]
+Description=Synchronize Address Radar Fomo verification every two seconds
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=2s
+AccuracySec=1s
+Persistent=true
+Unit=address-radar-fomo-verification-sync.service
+
+[Install]
+WantedBy=timers.target

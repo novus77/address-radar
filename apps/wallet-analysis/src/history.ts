@@ -1,5 +1,5 @@
-import { DatabaseSync } from "node:sqlite";
 import { extractEvmSwapEvidence, extractSolanaSwapEvidence, type DiscoveryChain, type EvmSwapLog, type EvmSwapTransaction, type SolanaSwapTransaction } from "@address-radar/collectors";
+import { openAddressRadarDatabase } from "@address-radar/database";
 import type { WalletAnalysisPosition } from "@address-radar/domain";
 import type { WalletHistoryProvider } from "./runtime.js";
 
@@ -10,7 +10,7 @@ export interface HistoricalEventStore { append(analysisId: string, events: reado
 export interface HistoricalCanonicalBlock { readonly chain: string; readonly blockNumber: number; readonly blockHash: string }
 
 export function openHistoricalEventStore(databasePath: string): HistoricalEventStore {
-  const database = new DatabaseSync(databasePath);
+  const database = openAddressRadarDatabase(databasePath);
   database.exec(`
     CREATE TABLE IF NOT EXISTS wallet_analysis_provider_events(
       analysis_id TEXT NOT NULL, event_id TEXT NOT NULL, chain TEXT NOT NULL,
@@ -96,7 +96,7 @@ export function openHistoricalEventStore(databasePath: string): HistoricalEventS
 }
 
 export function openSqliteHistoricalMarketSource(databasePath: string): HistoricalMarketSource & { close(): void } {
-  const database = new DatabaseSync(databasePath);
+  const database = openAddressRadarDatabase(databasePath);
   const row = (sql: string, args: readonly (string | number)[]) => database.prepare(sql).get(...args) as { value: number | null } | undefined;
   const market: HistoricalMarketSource & { close(): void } = {
     async priceAt(chain, token, at) { return row("SELECT price_usd AS value FROM market_observations WHERE chain = ? AND token_address = ? AND observed_at BETWEEN ? AND ? ORDER BY ABS(observed_at - ?) LIMIT 1", [chain.toLowerCase(), normalizeToken(chain, token), at - 1_800_000, at + 1_800_000, at])?.value ?? null; },
@@ -311,3 +311,4 @@ function ensureHistoryColumn(database: DatabaseSync, column: string, definition:
   const columns = database.prepare("PRAGMA table_info(wallet_analysis_provider_events)").all() as Array<{ name: string }>;
   if (!columns.some((item) => item.name === column)) database.exec(`ALTER TABLE wallet_analysis_provider_events ADD COLUMN ${column} ${definition}`);
 }
+import type { DatabaseSync } from "node:sqlite";

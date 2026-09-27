@@ -183,25 +183,6 @@ sol_buckets AS (
        AND count(*) >= 3
        AND count(DISTINCT trader_address) >= 2
 ),
-sol_supply AS (
-    SELECT
-        b.token_mint_address AS token_address,
-        sum(CAST(b.token_balance AS double)) AS supply
-    FROM solana_utils.latest_balances b
-    JOIN requested_tokens r ON r.token_address = lower(b.token_mint_address)
-    WHERE b.token_balance > 0
-    GROUP BY 1
-),
-sol_valuations AS (
-    SELECT
-        b.chain,
-        b.token_address,
-        b.bucket_at,
-        b.price_usd * s.supply AS market_cap_usd
-    FROM sol_buckets b
-    JOIN sol_supply s ON s.token_address = b.token_address
-    WHERE b.price_usd * s.supply BETWEEN 100000 AND 100000000000
-),
 sol_evidence AS (
     SELECT
         t.chain,
@@ -210,18 +191,13 @@ sol_evidence AS (
         t.side,
         t.amount_usd,
         t.price_usd,
-        v.market_cap_usd,
+        CAST(NULL AS double) AS market_cap_usd,
         t.block_time,
         t.tx_hash,
         t.event_index
     FROM sol_trades t
-    JOIN sol_valuations v
-      ON v.chain = t.chain
-     AND v.token_address = t.token_address
-     AND v.bucket_at = t.bucket_at
     WHERE t.amount_usd >= 50
       AND t.trader_address IS NOT NULL
-      AND v.market_cap_usd <= 1000000
 )
 SELECT * FROM evm_evidence
 UNION ALL

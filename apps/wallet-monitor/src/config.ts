@@ -4,6 +4,7 @@ export interface WalletMonitorConfig {
   readonly databasePath: string;
   readonly intervalMs: number;
   readonly solanaBatchSize: number;
+  readonly solanaRateLimitCooldownMs: number;
   readonly endpoints: Readonly<Partial<Record<DiscoveryChain, { readonly primary: string; readonly fallback?: string }>>>;
 }
 
@@ -22,7 +23,12 @@ export function loadWalletMonitorConfig(env: Readonly<Record<string, string | un
   return Object.freeze({
     databasePath: env.ADDRESS_RADAR_DATABASE_PATH?.trim() || ".address-radar/address-radar.sqlite",
     intervalMs: positiveInteger(env.ADDRESS_RADAR_WALLET_MONITOR_INTERVAL_MS, 5_000, "wallet monitor interval"),
-    solanaBatchSize: positiveInteger(env.ADDRESS_RADAR_SOLANA_WALLET_BATCH_SIZE, 20, "Solana wallet batch size"),
+    solanaBatchSize: positiveInteger(env.ADDRESS_RADAR_SOLANA_WALLET_BATCH_SIZE, 3, "Solana wallet batch size"),
+    solanaRateLimitCooldownMs: positiveInteger(
+      env.ADDRESS_RADAR_SOLANA_RATE_LIMIT_COOLDOWN_MS,
+      30_000,
+      "Solana rate-limit cooldown",
+    ),
     endpoints: Object.freeze(endpoints),
   });
 }

@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import type { SQLInputValue } from "node:sqlite";
 
 import { normalizeFomoHandle, normalizeWalletAddress } from "@address-radar/domain";
 import { analyzeWalletPositions, type WalletAnalysisPosition } from "@address-radar/domain";
-import { migrateAddressRadarDatabase, openAddressRadarRepository } from "@address-radar/database";
+import { createSourceLedgerStore, migrateAddressRadarDatabase, openAddressRadarDatabase, openAddressRadarRepository, type RecoveryJobType } from "@address-radar/database";
 
 import { createManualResolutionService } from "@address-radar/identity";
 import { explainTokenMissingCondition } from "@address-radar/aggregation";
@@ -41,18 +41,45 @@ const chainRegistry = Object.freeze([
   { id: "bsc", labelZh: "BSC" },
   { id: "eth", labelZh: "Ethereum" },
   { id: "base", labelZh: "Base" },
-  { id: "monad", labelZh: "Monad" },
   { id: "robinhood", labelZh: "Robinhood" },
 ]);
 
+const sourceHealthDiagnosticZh: Readonly<Record<string, string>> = Object.freeze({
+  healthy: "运行正常",
+  degraded: "数据推进变慢",
+  rate_limited: "数据源限流，等待自动恢复",
+  stale: "数据已陈旧，需要检查游标或连接",
+  unavailable: "数据源当前不可用",
+  misconfigured: "数据源配置不完整",
+});
+
+const automationStatusDiagnosticZh = (status: string, lastError?: unknown): string => {
+  if (status === "pending") return "等待调度执行";
+  if (status === "leased") return "任务已领取，等待开始执行";
+  if (status === "running") return "任务正在执行";
+  if (status === "completed") return "任务已经完成";
+  if (status === "cancelled") return "任务已取消";
+  const detail = String(lastError ?? "").toLowerCase();
+  if (detail.includes("rate") || detail.includes("429")) return "数据源限流，系统将在冷却后自动重试";
+  if (detail.includes("lock") || detail.includes("busy")) return "数据库写入繁忙，系统将自动重试";
+  if (status === "waiting_source") return "上游数据尚未到达，等待自动补齐";
+  if (status === "retryable") return "执行暂时失败，已进入自动重试队列";
+  if (status === "terminal") return "自动重试已停止，需要开发者检查或手动重试";
+  return "状态需要检查";
+};
+
 export const createAddressConsoleApplication = (databasePath = ":memory:"): AddressConsoleApplication => {
-  const database = new DatabaseSync(databasePath);
+  const database = openAddressRadarDatabase(databasePath);
   migrateAddressRadarDatabase(database);
+  const sourceLedger = createSourceLedgerStore(database);
   const resolutionRepository = openAddressRadarRepository(databasePath);
   const resolutionService = createManualResolutionService({ repository: resolutionRepository });
   const listeners = new Set<(event: unknown) => void>();
 
   const rows = (sql: string, ...params: SQLInputValue[]): unknown[] => database.prepare(sql).all(...params);
+  const tableExists = (table: string): boolean => Boolean(database
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table));
   const audit = (action: string, payload: unknown): void => {
     const event = { auditId: randomUUID(), action, actor: "developer", payload, occurredAt: Date.now() };
     database.prepare("INSERT INTO operator_audit_log(audit_id, action, actor, payload, occurred_at) VALUES (?, ?, ?, ?, ?)")
@@ -62,6 +89,328 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
 
   const read = (pathname: string): ConsoleResult | null => {
     if (pathname === "/api/v2/chains") return { status: 200, body: { items: chainRegistry } };
+    if (pathname === "/api/v2/automation/overview") {
+      const now = Date.now();
+      const scalar = (sql: string): number => Number(
+        (database.prepare(sql).get() as { count: number | null }).count ?? 0,
+      );
+      const optionalScalar = (table: string, sql: string): number =>
+        tableExists(table) ? scalar(sql) : 0;
+      const statusRows = rows(`
+        SELECT status, COUNT(*) AS count FROM automation_jobs GROUP BY status ORDER BY status
+      `) as Array<{ status: string; count: number }>;
+      const laneRows = rows(`
+        SELECT lane, COUNT(*) AS total,
+          SUM(CASE WHEN status IN ('pending', 'waiting_source', 'blocked_source', 'retryable') THEN 1 ELSE 0 END) AS backlog,
+          SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed
+        FROM automation_jobs GROUP BY lane ORDER BY lane
+      `) as Array<{ lane: string; total: number; backlog: number | null; completed: number | null }>;
+      const backlog = scalar("SELECT COUNT(*) AS count FROM automation_jobs WHERE status IN ('pending', 'waiting_source', 'blocked_source', 'retryable')");
+      const completed24h = scalar(`SELECT COUNT(*) AS count FROM automation_jobs WHERE status = 'completed' AND completed_at >= ${now - 24 * 60 * 60_000}`);
+      const failed24h = scalar(`SELECT COUNT(*) AS count FROM automation_jobs WHERE status IN ('retryable', 'terminal') AND updated_at >= ${now - 24 * 60 * 60_000}`);
+      const oldest = database.prepare(`
+        SELECT MIN(created_at) AS createdAt FROM automation_jobs
+        WHERE status IN ('pending', 'waiting_source', 'blocked_source', 'retryable')
+      `).get() as { createdAt: number | null };
+      const blockedReasons = rows(`
+        SELECT COALESCE(last_error, 'unknown_source_dependency') AS reason, COUNT(*) AS count
+        FROM automation_jobs WHERE status = 'blocked_source'
+        GROUP BY COALESCE(last_error, 'unknown_source_dependency')
+        ORDER BY count DESC, reason LIMIT 20
+      `);
+      const jobTypeProgress = rows(`
+        SELECT job_type AS jobType,
+          SUM(CASE WHEN status IN ('pending', 'leased', 'running', 'waiting_source', 'blocked_source', 'retryable') THEN 1 ELSE 0 END) AS active,
+          SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+          MAX(updated_at) AS lastUpdatedAt
+        FROM automation_jobs GROUP BY job_type ORDER BY active DESC, job_type
+      `);
+      const sourceConflicts = tableExists("source_observation_conflicts") ? database.prepare(`
+        SELECT COUNT(*) AS distinctConflicts, COALESCE(SUM(occurrence_count), 0) AS occurrences,
+          MAX(last_seen_at) AS lastSeenAt
+        FROM source_observation_conflicts
+      `).get() as Record<string, unknown> : { distinctConflicts: 0, occurrences: 0, lastSeenAt: null };
+      return {
+        status: 200,
+        body: {
+          updatedAt: now,
+          funnel: {
+            observedFomoHandles: scalar("SELECT COUNT(*) AS count FROM fomo_accounts"),
+            canonicalTraders: scalar("SELECT COUNT(*) AS count FROM trader_entities"),
+            walletResolvedTraders: scalar(`
+              SELECT COUNT(*) AS count FROM (
+                SELECT entity_id FROM entity_wallet_identities
+                UNION
+                SELECT ea.entity_id
+                FROM entity_accounts ea
+                JOIN wallet_identities w ON w.account_id = ea.account_id
+              ) resolved
+            `),
+            monitoringEligibleTraders: optionalScalar(
+              "trader_monitoring_policy",
+              "SELECT COUNT(*) AS count FROM trader_monitoring_policy WHERE policy != 'off'",
+            ),
+            initialBackfillQueued: optionalScalar(
+              "automation_jobs",
+              "SELECT COUNT(DISTINCT subject_key) AS count FROM automation_jobs WHERE job_type = 'initial_wallet_backfill'",
+            ),
+            initialBackfillCompleted: optionalScalar(
+              "automation_jobs",
+              "SELECT COUNT(DISTINCT subject_key) AS count FROM automation_jobs WHERE job_type = 'initial_wallet_backfill' AND status = 'completed'",
+            ),
+            periodicCoverageCurrent: optionalScalar(
+              "trader_coverage_state",
+              "SELECT COUNT(*) AS count FROM trader_coverage_state WHERE coverage_state = 'current'",
+            ),
+            candidateEvidenceTraders: optionalScalar(
+              "candidate_evidence_v3",
+              "SELECT COUNT(DISTINCT trader_id) AS count FROM candidate_evidence_v3",
+            ),
+            admittedTraders: optionalScalar(
+              "candidate_admission_snapshots",
+              "SELECT COUNT(DISTINCT trader_id) AS count FROM candidate_admission_snapshots WHERE current_admission = 1",
+            ),
+          },
+          queue: {
+            total: scalar("SELECT COUNT(*) AS count FROM automation_jobs"),
+            backlog,
+            byStatus: Object.fromEntries(statusRows.map(item => [item.status, Number(item.count)])),
+            lanes: laneRows.map(item => ({ ...item, backlog: Number(item.backlog ?? 0), completed: Number(item.completed ?? 0) })),
+            oldestBacklogAt: oldest.createdAt,
+            oldestBacklogAgeMs: oldest.createdAt === null ? 0 : Math.max(0, now - oldest.createdAt),
+            completed24h,
+            failed24h,
+            failureRate24h: completed24h + failed24h === 0 ? 0 : failed24h / (completed24h + failed24h),
+            estimatedDrainMs: completed24h === 0 ? null : Math.round(backlog / completed24h * 24 * 60 * 60_000),
+            blockedReasons,
+            jobTypeProgress,
+            sourceConflicts,
+          },
+        },
+      };
+    }
+    if (pathname === "/api/v2/backfill/traders") {
+      const now = Date.now();
+      const items = rows(`
+        SELECT j.job_id AS jobId, j.subject_key AS traderId, j.lane, j.job_type AS jobType,
+          j.status, j.priority, j.cursor, j.attempt_count AS attemptCount,
+          j.next_attempt_at AS nextAttemptAt, j.lease_expires_at AS leaseExpiresAt,
+          j.last_error AS lastError, j.created_at AS createdAt, j.updated_at AS updatedAt,
+          j.completed_at AS completedAt,
+          COALESCE((SELECT GROUP_CONCAT(a.handle, ', ') FROM entity_accounts ea JOIN fomo_accounts a ON a.account_id = ea.account_id WHERE ea.entity_id = j.subject_key), '') AS handles,
+          c.tier, c.coverage_state AS coverageState, c.last_covered_at AS lastCoveredAt,
+          c.next_evaluation_at AS nextEvaluationAt
+        FROM automation_jobs j
+        LEFT JOIN trader_coverage_state c ON c.trader_id = j.subject_key
+        WHERE j.job_type IN ('initial_wallet_backfill', 'trader_backfill', 'trader_lightweight', 'ability_evaluation')
+          AND j.subject_key NOT LIKE '%dispatcher%'
+        ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'leased' THEN 1 WHEN 'retryable' THEN 2 WHEN 'waiting_source' THEN 3 WHEN 'pending' THEN 4 ELSE 5 END,
+          j.priority DESC, j.updated_at DESC
+        LIMIT 2000
+      `).map(item => {
+        const row = item as Record<string, unknown>;
+        return Object.freeze({
+          ...row,
+          ageMs: Math.max(0, now - Number(row.createdAt ?? now)),
+          diagnosticZh: automationStatusDiagnosticZh(String(row.status), row.lastError),
+        });
+      });
+      return { status: 200, body: { updatedAt: now, total: items.length, items } };
+    }
+    const traderBackfillMatch = pathname.match(/^\/api\/v2\/backfill\/traders\/([^/]+)$/);
+    if (traderBackfillMatch) {
+      const traderId = decodeURIComponent(traderBackfillMatch[1] ?? "");
+      const trader = database.prepare(`
+        SELECT e.entity_id AS traderId, e.lifecycle, e.manual, e.locked,
+          c.tier, c.coverage_state AS coverageState, c.last_covered_at AS lastCoveredAt,
+          c.next_evaluation_at AS nextEvaluationAt, p.policy AS monitoringPolicy
+        FROM trader_entities e
+        LEFT JOIN trader_coverage_state c ON c.trader_id = e.entity_id
+        LEFT JOIN trader_monitoring_policy p ON p.trader_id = e.entity_id
+        WHERE e.entity_id = ?
+      `).get(traderId) as Record<string, unknown> | undefined;
+      if (!trader) return { status: 404, body: { error: "trader_not_found" } };
+      return { status: 200, body: {
+        trader,
+        jobs: rows(`
+          SELECT job_id AS jobId, lane, job_type AS jobType, status, priority, cursor,
+            attempt_count AS attemptCount, next_attempt_at AS nextAttemptAt,
+            lease_expires_at AS leaseExpiresAt, last_error AS lastError,
+            created_at AS createdAt, updated_at AS updatedAt, completed_at AS completedAt
+          FROM automation_jobs WHERE subject_key = ? ORDER BY updated_at DESC
+        `, traderId).map(item => {
+          const row = item as Record<string, unknown>;
+          return { ...row, diagnosticZh: automationStatusDiagnosticZh(String(row.status), row.lastError) };
+        }),
+        ability: rows(`
+          SELECT window, ability_stage AS abilityStage, bundle_risk_state AS bundleRiskState,
+            total_samples AS totalSamples, valid_samples AS validSamples,
+            successful_distinct_tokens AS successfulDistinctTokens, win_rate AS winRate,
+            sample_span_ms AS sampleSpanMs,
+            maximum_single_token_profit_share AS maximumSingleTokenProfitShare,
+            bundle_distinct_token_count AS bundleDistinctTokenCount,
+            reason_codes AS reasonCodes, strategy_version AS strategyVersion,
+            evaluated_at AS evaluatedAt
+          FROM trader_repeatable_ability_snapshots
+          WHERE entity_id = ? ORDER BY evaluated_at DESC, window
+        `, traderId),
+      } };
+    }
+    if (pathname === "/api/v2/mining/partitions") return { status: 200, body: { updatedAt: Date.now(), items: rows(`
+      SELECT p.partition_id AS partitionId, p.chain, p.week_start AS weekStart,
+        p.week_end AS weekEnd, p.status, p.source_name AS sourceName, p.cursor,
+        p.token_count AS tokenCount, p.next_attempt_at AS nextAttemptAt,
+        p.last_error AS lastError, p.created_at AS createdAt, p.updated_at AS updatedAt,
+        p.completed_at AS completedAt,
+        (SELECT COUNT(*) FROM historical_token_mining_jobs m WHERE m.partition_id = p.partition_id) AS miningTokenCount,
+        (SELECT COUNT(*) FROM historical_token_mining_jobs m WHERE m.partition_id = p.partition_id AND m.status = 'completed') AS completedTokenCount
+      FROM historical_token_partitions p ORDER BY p.week_start DESC, p.chain
+    `).map(item => {
+      const row = item as Record<string, unknown>;
+      return { ...row, diagnosticZh: automationStatusDiagnosticZh(String(row.status), row.lastError) };
+    }) } };
+    if (pathname === "/api/v2/mining/tokens") return { status: 200, body: { updatedAt: Date.now(), items: rows(`
+      SELECT m.mining_job_id AS miningJobId, m.partition_id AS partitionId,
+        m.token_id AS tokenId, m.chain, m.token_address AS tokenAddress, m.status,
+        h.symbol, h.image_url AS imageUrl, h.peak_market_cap_usd AS peakMarketCapUsd,
+        m.created_at AS createdAt, m.updated_at AS updatedAt,
+        (SELECT COUNT(*) FROM candidate_evidence_v3 e WHERE e.token_id = m.token_id) AS evidenceCount
+      FROM historical_token_mining_jobs m
+      LEFT JOIN historical_tokens h ON h.token_id = m.token_id
+      ORDER BY m.updated_at DESC LIMIT 3000
+    `) } };
+    if (pathname === "/api/v2/coverage/traders") return { status: 200, body: { updatedAt: Date.now(), items: rows(`
+      SELECT e.entity_id AS traderId, e.lifecycle, c.tier, c.coverage_state AS coverageState,
+        c.last_covered_at AS lastCoveredAt, c.next_evaluation_at AS nextEvaluationAt,
+        c.strategy_version AS strategyVersion, p.policy AS monitoringPolicy,
+        (SELECT COUNT(*) FROM entity_wallet_identities w WHERE w.entity_id = e.entity_id) AS walletCount,
+        (SELECT ability_stage FROM trader_repeatable_ability_snapshots a WHERE a.entity_id = e.entity_id AND a.window = '30d' ORDER BY evaluated_at DESC LIMIT 1) AS abilityStage
+      FROM trader_entities e
+      LEFT JOIN trader_coverage_state c ON c.trader_id = e.entity_id
+      LEFT JOIN trader_monitoring_policy p ON p.trader_id = e.entity_id
+      ORDER BY COALESCE(c.next_evaluation_at, 0), e.entity_id
+    `) } };
+    if (pathname === "/api/v2/coverage/sources") {
+      const now = Date.now();
+      const runtime = database.prepare("SELECT payload FROM automation_runtime_snapshots ORDER BY captured_at DESC LIMIT 1").get() as { payload: string } | undefined;
+      let runtimePayload: Record<string, unknown> = {};
+      try { runtimePayload = runtime ? JSON.parse(runtime.payload) as Record<string, unknown> : {}; } catch { runtimePayload = {}; }
+      const due = database.prepare(`
+        SELECT MIN(next_evaluation_at) AS oldestDueAt FROM trader_coverage_state
+        WHERE next_evaluation_at <= ? AND coverage_state != 'current'
+      `).get(now) as { oldestDueAt: number | null };
+      return { status: 200, body: {
+        updatedAt: now,
+        items: rows(`
+          SELECT source, chain, state, last_attempt_at AS lastAttemptAt,
+            last_success_at AS lastSuccessAt, last_event_at AS lastEventAt,
+            consecutive_failures AS consecutiveFailures, latency_ms AS latencyMs,
+            rate_limit_reset_at AS rateLimitResetAt, last_error_code AS lastErrorCode
+          FROM source_health ORDER BY source, chain
+        `).map(item => {
+          const row = item as Record<string, unknown>;
+          return { ...row, diagnosticZh: sourceHealthDiagnosticZh[String(row.state)] ?? "未知状态" };
+        }),
+        providerBudgets: runtimePayload.providerBudgets ?? null,
+        sqliteContention: runtimePayload.sqliteContention ?? null,
+        telemetryDiagnosticZh: runtime ? "已读取最新运行遥测" : "运行时尚未上报 Provider 预算与 SQLite 争用指标",
+        dueWalletAgeMs: due.oldestDueAt === null ? 0 : Math.max(0, now - due.oldestDueAt),
+      } };
+    }
+    if (pathname === "/api/v2/sources/health") {
+      const items = rows(`
+        SELECT source, chain, state, last_attempt_at AS lastAttemptAt,
+          last_success_at AS lastSuccessAt, last_event_at AS lastEventAt,
+          consecutive_failures AS consecutiveFailures, latency_ms AS latencyMs,
+          rate_limit_reset_at AS rateLimitResetAt, cursor,
+          last_error_code AS lastErrorCode
+        FROM source_health ORDER BY source, chain
+      `).map(item => {
+        const row = item as Record<string, unknown>;
+        return Object.freeze({ ...row, diagnosticZh: sourceHealthDiagnosticZh[String(row.state)] ?? "未知状态" });
+      });
+      return { status: 200, body: { updatedAt: Date.now(), items } };
+    }
+    if (pathname === "/api/v2/sources/cursors") return { status: 200, body: { updatedAt: Date.now(), items: rows(`
+      SELECT source, chain, cursor, position, updated_at AS updatedAt
+      FROM source_cursors ORDER BY source, chain
+    `) } };
+    if (pathname === "/api/v2/discovery/token-funnel") {
+      const scalar = (sql: string): number => Number((database.prepare(sql).get() as { count: number | null }).count ?? 0);
+      return { status: 200, body: {
+        raw: scalar("SELECT COUNT(*) AS count FROM token_observation_state"),
+        identityResolved: scalar("SELECT COUNT(*) AS count FROM token_observation_state WHERE identity_status IN ('resolved', 'confirmed')"),
+        marketResolved: scalar("SELECT COUNT(*) AS count FROM token_observation_state WHERE market_status IN ('resolved', 'confirmed')"),
+        fomoConfirmed: scalar("SELECT COUNT(*) AS count FROM token_observation_state WHERE fomo_status = 'confirmed'"),
+        milestoneObserved: scalar("SELECT COUNT(*) AS count FROM token_observation_state WHERE milestone_status = 'observed'"),
+        earlyBuyerRecovered: scalar("SELECT COUNT(DISTINCT token_id) AS count FROM candidate_evidence_v3"),
+        candidateEvidence: scalar("SELECT COUNT(DISTINCT token_id) AS count FROM candidate_evidence_v3"),
+        aggregation: scalar("SELECT COUNT(*) AS count FROM token_evaluation_state"),
+        qualifiedSignal: scalar("SELECT COUNT(*) AS count FROM broadcast_records"),
+        updatedAt: Date.now(),
+      } };
+    }
+    if (pathname === "/api/v2/discovery/trader-funnel") {
+      const scalar = (sql: string): number => Number((database.prepare(sql).get() as { count: number | null }).count ?? 0);
+      return { status: 200, body: {
+        observed: scalar("SELECT COUNT(*) AS count FROM trader_entities"),
+        identityResolved: scalar("SELECT COUNT(DISTINCT entity_id) AS count FROM entity_accounts"),
+        walletObserved: scalar("SELECT COUNT(DISTINCT entity_id) AS count FROM entity_wallet_identities"),
+        fomoObserved: scalar("SELECT COUNT(DISTINCT entity_id) AS count FROM entity_accounts"),
+        candidateEvidence: scalar("SELECT COUNT(DISTINCT trader_id) AS count FROM candidate_evidence_v3"),
+        currentAdmitted: scalar("SELECT COUNT(DISTINCT trader_id) AS count FROM candidate_admission_snapshots WHERE current_admission = 1"),
+        updatedAt: Date.now(),
+      } };
+    }
+    if (pathname === "/api/v2/recovery/jobs") return { status: 200, body: { updatedAt: Date.now(), items: rows(`
+      SELECT job_id AS jobId, job_type AS jobType, chain, subject_key AS subjectKey,
+        status, priority, cursor, attempt_count AS attemptCount,
+        next_attempt_at AS nextAttemptAt, lease_expires_at AS leaseExpiresAt,
+        last_error AS lastError, created_at AS createdAt, updated_at AS updatedAt,
+        completed_at AS completedAt
+      FROM recovery_jobs ORDER BY priority, next_attempt_at, created_at, job_id LIMIT 1000
+    `) } };
+    if (pathname === "/api/v2/token-coverage") {
+      const targetChains = ["solana", "bsc", "eth", "robinhood", "base"] as const;
+      const groupedCounts = (table: string, addressColumn: string): Map<string, number> => {
+        const items = rows(`
+          SELECT LOWER(chain) AS chain,
+            COUNT(DISTINCT CASE
+              WHEN LOWER(chain) = 'solana' THEN ${addressColumn}
+              ELSE LOWER(${addressColumn})
+            END) AS count
+          FROM ${table}
+          WHERE LOWER(chain) IN ('solana', 'bsc', 'eth', 'robinhood', 'base')
+          GROUP BY LOWER(chain)
+        `) as Array<{ chain: string; count: number }>;
+        return new Map(items.map(item => [item.chain, Number(item.count)]));
+      };
+      const observed = groupedCounts("trader_events", "token_address");
+      const milestones = groupedCounts("token_milestones", "token_address");
+      const historical = groupedCounts("historical_tokens", "token_address");
+      const aggregated = groupedCounts("token_aggregation_state", "token_address");
+      const partitions = rows(`
+        SELECT LOWER(chain) AS chain,
+          SUM(CASE WHEN status IN ('pending', 'running') THEN 1 ELSE 0 END) AS pending,
+          SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
+        FROM historical_backfill_partitions
+        WHERE LOWER(chain) IN ('solana', 'bsc', 'eth', 'robinhood', 'base')
+        GROUP BY LOWER(chain)
+      `) as Array<{ chain: string; pending: number | null; failed: number | null }>;
+      const partitionCounts = new Map(partitions.map(item => [item.chain, item]));
+      return { status: 200, body: {
+        updatedAt: Date.now(),
+        items: targetChains.map(chain => ({
+          chain,
+          observedTokenCount: observed.get(chain) ?? 0,
+          milestoneTokenCount: milestones.get(chain) ?? 0,
+          historicalAdmittedCount: historical.get(chain) ?? 0,
+          aggregatedTokenCount: aggregated.get(chain) ?? 0,
+          pendingPartitionCount: Number(partitionCounts.get(chain)?.pending ?? 0),
+          failedPartitionCount: Number(partitionCounts.get(chain)?.failed ?? 0),
+        })),
+      } };
+    }
     if (pathname === "/api/v2/candidate-funnel") {
       const scalar = (sql: string): number => Number((database.prepare(sql).get() as { count: number | null }).count ?? 0);
       return { status: 200, body: {
@@ -177,6 +526,9 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
           h.symbol, h.image_url AS imageUrl, h.first_trade_at AS firstTradeAt,
           h.first_reached_1m_at AS firstReached1mAt,
           h.peak_market_cap_usd AS peakMarketCapUsd, h.source,
+          v.status AS verificationStatus, v.attempt_count AS verificationAttempts,
+          v.exact_ca_match AS exactAddressMatch, v.history_available AS historyAvailable,
+          v.last_error AS verificationError, v.last_checked_at AS verificationCheckedAt,
           CASE WHEN EXISTS (
             SELECT 1 FROM token_milestone_crossings m
             WHERE m.token_id = h.token_id AND m.precision != 'unavailable'
@@ -194,12 +546,19 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
           (SELECT COUNT(DISTINCT e.trader_id) FROM candidate_evidence_v3 e WHERE e.token_id = h.token_id) AS evidenceTraderCount,
           (SELECT r.status FROM historical_re_evaluation_requests r WHERE r.token_id = h.token_id ORDER BY r.requested_at DESC LIMIT 1) AS reEvaluationStatus
         FROM historical_tokens h
+        JOIN historical_token_verifications v ON v.token_id = h.token_id
+        WHERE LOWER(h.chain) IN ('solana', 'eth', 'ethereum', 'bsc', 'robinhood', 'base')
         ORDER BY h.first_reached_1m_at DESC, h.chain, h.token_address
         LIMIT 1000
       `).map(item => {
         const row = item as Record<string, unknown>;
         const diagnostics: string[] = [];
         if (row.milestoneStatus !== "complete") diagnostics.push("缺少可信的市值里程碑时间");
+        if (row.verificationStatus === "pending" || row.verificationStatus === "queued") diagnostics.push("等待 Fomo 精确验证");
+        if (row.verificationStatus === "deferred") diagnostics.push("Fomo 查询暂时不可用，等待重试");
+        if (row.verificationStatus === "not_found") diagnostics.push("Fomo 连续两次未找到，已隔离");
+        if (row.verificationStatus === "mismatch") diagnostics.push("Fomo 搜索结果与 CA 不一致，已隔离");
+        if (row.verificationStatus === "confirmed" && Number(row.historyAvailable ?? 0) !== 1) diagnostics.push("Fomo 已收录，但历史交易暂不可用");
         if (row.backfillStatus === "not_scheduled") diagnostics.push("尚未安排历史交易回补");
         if (row.backfillStatus === "failed") diagnostics.push("历史交易回补失败，可手动重试");
         if (Number(row.eligibleBuyerCount ?? 0) === 0) diagnostics.push("尚未发现满足最低买入金额的早期交易员");
@@ -244,6 +603,14 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
       `);
       const realtime = database.prepare("SELECT MAX(occurred_at) AS value FROM trader_events").get() as { value: number | null };
       const historical = database.prepare("SELECT MAX(watermark) AS value FROM historical_backfill_watermarks").get() as { value: number | null };
+      const verification = database.prepare(`
+        SELECT
+          SUM(CASE WHEN status = 'confirmed' AND history_available = 1 THEN 1 ELSE 0 END) AS confirmedCount,
+          SUM(CASE WHEN status IN ('pending', 'queued', 'deferred') THEN 1 ELSE 0 END) AS pendingCount,
+          SUM(CASE WHEN status IN ('not_found', 'mismatch') THEN 1 ELSE 0 END) AS quarantinedCount,
+          SUM(CASE WHEN status = 'unsupported' THEN 1 ELSE 0 END) AS unsupportedCount
+        FROM historical_token_verifications
+      `).get() as Record<string, number | null>;
       return { status: 200, body: {
         creditsUsedToday: Number(credits?.creditsUsed ?? 0),
         pendingPartitionCount: Number(counts.pendingPartitionCount ?? 0),
@@ -251,6 +618,10 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
         failedPartitionCount: Number(counts.failedPartitionCount ?? 0),
         historicalWatermark: historical.value,
         realtimeWatermark: realtime.value,
+        fomoConfirmedCount: Number(verification.confirmedCount ?? 0),
+        fomoPendingCount: Number(verification.pendingCount ?? 0),
+        fomoQuarantinedCount: Number(verification.quarantinedCount ?? 0),
+        unsupportedTokenCount: Number(verification.unsupportedCount ?? 0),
         watermarks,
         updatedAt: Date.now(),
       } };
@@ -465,6 +836,79 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
     handle(method, pathname, body) {
       if (method === "GET") return read(pathname) ?? { status: 404, body: { error: "not_found" } };
       const input = body && typeof body === "object" ? body as Record<string, unknown> : {};
+      const recoveryRetryMatch = pathname.match(/^\/api\/v2\/recovery\/jobs\/([^/]+)\/retry$/);
+      const traderRetryMatch = pathname.match(/^\/api\/v2\/backfill\/traders\/([^/]+)\/retry$/);
+      if (method === "POST" && traderRetryMatch) {
+        const traderId = decodeURIComponent(traderRetryMatch[1] ?? "");
+        const requestedJobId = typeof input.jobId === "string" ? input.jobId : null;
+        const job = database.prepare(`
+          SELECT job_id AS jobId, status, lease_expires_at AS leaseExpiresAt
+          FROM automation_jobs
+          WHERE subject_key = ? AND (? IS NULL OR job_id = ?)
+          ORDER BY updated_at DESC LIMIT 1
+        `).get(traderId, requestedJobId, requestedJobId) as { jobId: string; status: string; leaseExpiresAt: number | null } | undefined;
+        if (!job) return { status: 404, body: { error: "automation_job_not_found" } };
+        const now = Date.now();
+        if (job.status === "completed" || job.status === "cancelled") return { status: 409, body: { error: "automation_job_not_retryable", diagnosticZh: "已完成或已取消的任务不能重试" } };
+        if (["leased", "running"].includes(job.status) && (job.leaseExpiresAt ?? now + 1) > now) return { status: 409, body: { error: "automation_job_actively_leased", diagnosticZh: "任务仍由工作进程执行，不能重复领取" } };
+        database.prepare(`
+          UPDATE automation_jobs SET status = 'pending', next_attempt_at = ?,
+            lease_expires_at = NULL, lease_owner = NULL, last_error = NULL,
+            completed_at = NULL, updated_at = ? WHERE job_id = ?
+        `).run(now, now, job.jobId);
+        audit("automation.trader_retry", { traderId, jobId: job.jobId, previousStatus: job.status });
+        return { status: 202, body: { traderId, jobId: job.jobId, status: "pending", updatedAt: now } };
+      }
+      const partitionRetryMatch = pathname.match(/^\/api\/v2\/mining\/partitions\/([^/]+)\/retry$/);
+      if (method === "POST" && partitionRetryMatch) {
+        const partitionId = decodeURIComponent(partitionRetryMatch[1] ?? "");
+        const partition = database.prepare("SELECT status FROM historical_token_partitions WHERE partition_id = ?").get(partitionId) as { status: string } | undefined;
+        if (!partition) return { status: 404, body: { error: "mining_partition_not_found" } };
+        const now = Date.now();
+        const active = database.prepare(`
+          SELECT 1 AS active FROM automation_jobs
+          WHERE subject_key = ? AND status IN ('leased', 'running') AND COALESCE(lease_expires_at, ?) > ?
+          LIMIT 1
+        `).get(partitionId, now + 1, now);
+        if (partition.status === "completed") return { status: 409, body: { error: "mining_partition_completed", diagnosticZh: "分区已经完成，无需重试" } };
+        if (active) return { status: 409, body: { error: "mining_partition_actively_leased", diagnosticZh: "分区仍在执行，不能重复领取" } };
+        database.prepare(`
+          UPDATE historical_token_partitions SET status = 'pending', next_attempt_at = ?,
+            last_error = NULL, completed_at = NULL, updated_at = ? WHERE partition_id = ?
+        `).run(now, now, partitionId);
+        database.prepare(`
+          UPDATE automation_jobs SET status = 'pending', next_attempt_at = ?, lease_expires_at = NULL,
+            lease_owner = NULL, last_error = NULL, completed_at = NULL, updated_at = ?
+          WHERE subject_key = ? AND status IN ('waiting_source', 'retryable', 'terminal')
+        `).run(now, now, partitionId);
+        audit("automation.partition_retry", { partitionId, previousStatus: partition.status });
+        return { status: 202, body: { partitionId, status: "pending", updatedAt: now } };
+      }
+      if (method === "POST" && recoveryRetryMatch) {
+        const jobId = decodeURIComponent(recoveryRetryMatch[1] ?? "");
+        const job = database.prepare("SELECT status FROM recovery_jobs WHERE job_id = ?").get(jobId) as { status: string } | undefined;
+        if (!job) return { status: 404, body: { error: "recovery_job_not_found" } };
+        if (!new Set(["failed", "dead_letter"]).has(job.status)) return { status: 409, body: { error: "recovery_job_not_retryable" } };
+        const now = Date.now();
+        database.prepare("UPDATE recovery_jobs SET status = 'pending', next_attempt_at = ?, lease_expires_at = NULL, last_error = NULL, completed_at = NULL, updated_at = ? WHERE job_id = ?").run(now, now, jobId);
+        audit("recovery.retry", { jobId, previousStatus: job.status });
+        return { status: 200, body: { jobId, status: "pending", updatedAt: now } };
+      }
+      const tokenReEvaluateMatch = pathname.match(/^\/api\/v2\/tokens\/([^/]+)\/re-evaluate$/);
+      if (method === "POST" && tokenReEvaluateMatch) {
+        const tokenId = decodeURIComponent(tokenReEvaluateMatch[1] ?? "");
+        const token = database.prepare("SELECT chain, token_address AS tokenAddress FROM token_observation_state WHERE token_id = ?").get(tokenId) as { chain: "solana" | "eth" | "bsc" | "base" | "robinhood"; tokenAddress: string } | undefined;
+        if (!token) return { status: 404, body: { error: "token_observation_not_found" } };
+        const now = Date.now();
+        const queued: RecoveryJobType[] = ["market_enrichment", "fomo_token_history", "milestone_early_buyers"];
+        const priorities: Record<RecoveryJobType, number> = { rpc_gap: 10, market_enrichment: 20, fomo_token_history: 30, milestone_early_buyers: 35, identity_resolution: 40, historical_research: 60 };
+        for (const jobType of queued) {
+          const existing = database.prepare("UPDATE recovery_jobs SET status = 'pending', next_attempt_at = ?, lease_expires_at = NULL, last_error = NULL, completed_at = NULL, updated_at = ? WHERE job_type = ? AND chain = ? AND subject_key = ?").run(now, now, jobType, token.chain, tokenId);
+          if (existing.changes === 0) sourceLedger.enqueueRecoveryJob({ jobId: `recovery:${jobType}:${tokenId}`, jobType, chain: token.chain, subjectKey: tokenId, priority: priorities[jobType], cursor: null, nextAttemptAt: now, createdAt: now });
+        }
+        audit("token.re_evaluate", { tokenId, queued });
+        return { status: 202, body: { tokenId, queued, requestedAt: now } };
+      }
       if (method === "POST" && pathname === "/api/v1/identity-batches") {
         const maxSize = typeof input.maxSize === "number" ? input.maxSize : 25;
         try {

@@ -40,6 +40,43 @@ export function initializeCandidateHistorySchema(database: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS historical_tokens_reached_1m ON historical_tokens(first_reached_1m_at, chain);
 
+    CREATE TABLE IF NOT EXISTS historical_token_verifications (
+      token_id TEXT PRIMARY KEY REFERENCES historical_tokens(token_id),
+      provider TEXT NOT NULL DEFAULT 'fomo',
+      status TEXT NOT NULL CHECK(status IN ('pending', 'queued', 'confirmed', 'not_found', 'mismatch', 'deferred', 'unsupported')),
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      consecutive_not_found INTEGER NOT NULL DEFAULT 0,
+      exact_ca_match INTEGER,
+      history_available INTEGER,
+      provider_token_id TEXT,
+      provider_url TEXT,
+      last_error TEXT,
+      last_checked_at INTEGER,
+      next_retry_at INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS historical_token_verifications_claim
+      ON historical_token_verifications(status, next_retry_at, updated_at);
+    INSERT OR IGNORE INTO historical_token_verifications(token_id, status, updated_at)
+    SELECT token_id,
+      CASE WHEN LOWER(chain) IN ('solana', 'eth', 'ethereum', 'bsc', 'robinhood', 'base') THEN 'pending' ELSE 'unsupported' END,
+      0
+    FROM historical_tokens;
+    CREATE TRIGGER IF NOT EXISTS historical_tokens_initialize_fomo_verification
+    AFTER INSERT ON historical_tokens
+    BEGIN
+      INSERT OR IGNORE INTO historical_token_verifications(token_id, status, updated_at)
+      VALUES (
+        NEW.token_id,
+        CASE WHEN LOWER(NEW.chain) IN ('solana', 'eth', 'ethereum', 'bsc', 'robinhood', 'base') THEN 'pending' ELSE 'unsupported' END,
+        0
+      );
+    END;
+    UPDATE historical_token_verifications
+    SET status = 'pending', next_retry_at = 0, updated_at = 0
+    WHERE status = 'unsupported'
+      AND token_id IN (SELECT token_id FROM historical_tokens WHERE LOWER(chain) = 'base');
+
     CREATE TABLE IF NOT EXISTS token_milestone_crossings (
       milestone_id TEXT PRIMARY KEY,
       token_id TEXT NOT NULL,
@@ -143,6 +180,19 @@ export function createCandidateHistoryStore(database: DatabaseSync) {
       }) : null;
     },
 
+    confirmHistoricalTokenPresence(tokenId: string, observedAt: number): void {
+      database.prepare(`
+        UPDATE historical_token_verifications
+        SET status = 'confirmed', consecutive_not_found = 0, exact_ca_match = 1,
+          history_available = COALESCE(history_available, 0), last_error = CASE
+            WHEN COALESCE(history_available, 0) = 1 THEN NULL
+            ELSE 'fomo_history_pending'
+          END,
+          last_checked_at = ?, next_retry_at = 0, updated_at = ?
+        WHERE token_id = ?
+      `).run(observedAt, observedAt, tokenId);
+    },
+
     saveMilestoneCrossing(crossing: TokenMilestoneCrossing): void {
       database.prepare(`
         INSERT OR IGNORE INTO token_milestone_crossings(
@@ -151,6 +201,17 @@ export function createCandidateHistoryStore(database: DatabaseSync) {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(crossing.milestoneId, crossing.tokenId, crossing.marketCapUsd, crossing.crossedAt,
         crossing.precision, crossing.source, JSON.stringify(crossing.sourceEventIds), crossing.strategyVersion);
+      const automationJobsAvailable = database.prepare(`
+        SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'automation_jobs'
+      `).get();
+      if (automationJobsAvailable) {
+        database.prepare(`
+          UPDATE automation_jobs
+          SET status = 'pending', next_attempt_at = ?, last_error = NULL, updated_at = ?
+          WHERE job_type = 'candidate_evidence' AND subject_key = ?
+            AND status IN ('blocked_source', 'waiting_source')
+        `).run(crossing.crossedAt ?? Date.now(), crossing.crossedAt ?? Date.now(), crossing.tokenId);
+      }
     },
 
     milestoneCrossings(tokenId: string): readonly TokenMilestoneCrossing[] {
@@ -169,7 +230,7 @@ export function createCandidateHistoryStore(database: DatabaseSync) {
 
     saveEvidence(evidence: CandidateEvidenceV3): void {
       database.prepare(`
-        INSERT OR IGNORE INTO candidate_evidence_v3(
+        INSERT OR REPLACE INTO candidate_evidence_v3(
           evidence_id, trader_id, token_id, milestone_id, evidence_type, admission_class,
           cumulative_buy_usd, weighted_entry_market_cap_usd, theoretical_opportunity,
           capturable_multiple, realized_multiple, evidence_at, source_event_ids, strategy_version

@@ -1,7 +1,9 @@
-import { DatabaseSync } from "node:sqlite";
-
 import type { ChainFamily, TraderLifecycle } from "@address-radar/domain";
-import { migrateAddressRadarDatabase } from "@address-radar/database";
+import {
+  drainResolvedWalletAutomationOutbox,
+  migrateAddressRadarDatabase,
+  openAddressRadarDatabase,
+} from "@address-radar/database";
 
 export interface MonitoredWallet {
   readonly address: string;
@@ -18,11 +20,12 @@ export interface MonitoringRegistry {
 }
 
 export function openMonitoringRegistry(databasePath: string): MonitoringRegistry {
-  const database = new DatabaseSync(databasePath);
+  const database = openAddressRadarDatabase(databasePath);
   migrateAddressRadarDatabase(database);
 
   const registry: MonitoringRegistry = {
     version() {
+      drainResolvedWalletAutomationOutbox(database, Date.now());
       const row = database.prepare(
         "SELECT version FROM monitoring_registry_state WHERE singleton = 1",
       ).get() as { version: number };
@@ -30,12 +33,14 @@ export function openMonitoringRegistry(databasePath: string): MonitoringRegistry
     },
 
     wallets(chainFamily) {
+      drainResolvedWalletAutomationOutbox(database, Date.now());
       const rows = database.prepare(`
         SELECT w.address, w.account_id AS accountId, e.entity_id AS entityId, e.lifecycle
         FROM wallet_identities w
         JOIN entity_accounts ea ON ea.account_id = w.account_id
         JOIN trader_entities e ON e.entity_id = ea.entity_id
-        WHERE w.chain_family = ? AND e.lifecycle != 'suspended'
+        JOIN trader_monitoring_policy mp ON mp.trader_id = e.entity_id
+        WHERE w.chain_family = ? AND mp.policy = 'realtime'
           AND ea.entity_id = (
             SELECT owner.entity_id
             FROM entity_accounts owner
@@ -47,7 +52,8 @@ export function openMonitoringRegistry(databasePath: string): MonitoringRegistry
         SELECT ew.address, e.entity_id AS accountId, e.entity_id AS entityId, e.lifecycle
         FROM entity_wallet_identities ew
         JOIN trader_entities e ON e.entity_id = ew.entity_id
-        WHERE ew.chain_family = ? AND e.lifecycle != 'suspended'
+        JOIN trader_monitoring_policy mp ON mp.trader_id = e.entity_id
+        WHERE ew.chain_family = ? AND mp.policy = 'realtime'
           AND NOT EXISTS (
             SELECT 1 FROM wallet_identities w
             WHERE w.chain_family = ew.chain_family AND w.address = ew.address

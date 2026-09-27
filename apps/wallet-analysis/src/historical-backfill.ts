@@ -3,6 +3,16 @@ import type { AddressRadarRepository, HistoricalBackfillPartition } from "@addre
 export interface HistoricalBackfillWorkerResult { readonly executionId: string; readonly nextOffset: number | null; readonly rowCount: number; readonly watermark: number; readonly creditsUsed: number; readonly done: boolean; }
 export interface HistoricalBackfillWorker { execute(partition: HistoricalBackfillPartition, signal: AbortSignal): Promise<HistoricalBackfillWorkerResult>; }
 
+export async function runHistoricalBackfillCycle(input: {
+  readonly verification: { runOnce(): Promise<{ readonly processed: boolean }> };
+  readonly scheduler: { runOnce(signal?: AbortSignal): Promise<{ readonly processed: boolean }> };
+  readonly signal: AbortSignal;
+}): Promise<{ readonly processed: boolean }> {
+  const verification = await input.verification.runOnce();
+  const backfill = await input.scheduler.runOnce(input.signal);
+  return Object.freeze({ processed: verification.processed || backfill.processed });
+}
+
 const usageDay = (timestamp: number): string => new Date(timestamp).toISOString().slice(0, 10);
 
 export function createHistoricalBackfillScheduler(input: {

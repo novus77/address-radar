@@ -15,6 +15,12 @@ export type {
   ResolvedFomoWallet,
 } from "./identity-resolution-service.js";
 export {
+  drainResolvedWalletAutomationOutbox,
+  IDENTITY_WALLET_BACKFILL_STRATEGY_VERSION,
+  recordResolvedWalletAutomation,
+} from "./identity-automation.js";
+export type { ResolvedWalletAutomationInput } from "./identity-automation.js";
+export {
   createLeaderboardSyncService,
 } from "./leaderboard-sync-service.js";
 export type {

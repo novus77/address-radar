@@ -18,6 +18,10 @@ export interface HistoricalBackfillConfig {
   readonly strategyVersion: string;
   readonly timeoutMs: number;
   readonly pollIntervalMs: number;
+  readonly fomoLookupQueuePath: string;
+  readonly fomoLookupResultPath: string;
+  readonly fomoLookupResultCursorPath: string;
+  readonly solanaRpc?: { readonly primary: string; readonly fallback?: string };
 }
 
 export function loadWalletAnalysisConfig(env: Readonly<Record<string, string | undefined>>): WalletAnalysisConfig {
@@ -51,10 +55,19 @@ export function loadHistoricalBackfillConfig(env: Readonly<Record<string, string
   };
   const startAt = Date.parse(env.DUNE_HISTORICAL_START_AT ?? "2026-08-09T16:00:00.000Z");
   if (!Number.isFinite(startAt)) throw new Error("DUNE_HISTORICAL_START_AT must be an ISO timestamp");
-  const chains = [...new Set((env.DUNE_HISTORICAL_CHAINS ?? "bsc,eth,base,robinhood,monad").split(",").map(value => value.trim().toLowerCase()).filter(Boolean))];
+  const solanaPrimary = env.RADAR_RPC_SOLANA_HTTP_URL?.trim() || "https://api.mainnet-beta.solana.com";
+  const solanaFallback = env.RADAR_RPC_SOLANA_FALLBACK_HTTP_URL?.trim();
+  if (solanaPrimary) ensureHttpUrl(solanaPrimary, "solana");
+  if (solanaFallback) ensureHttpUrl(solanaFallback, "solana");
+  const defaultChains = "solana,bsc,eth,robinhood,base";
+  const chains = [...new Set((env.DUNE_HISTORICAL_CHAINS ?? defaultChains).split(",").map(value => value.trim().toLowerCase()).filter(Boolean))];
   if (!chains.length) throw new Error("DUNE_HISTORICAL_CHAINS must not be empty");
+  const unsupported = chains.filter(chain => !new Set(["solana", "bsc", "eth", "robinhood", "base"]).has(chain));
+  if (unsupported.length) throw new Error(`DUNE_HISTORICAL_CHAINS contains unsupported chains: ${unsupported.join(",")}`);
+  if (chains.includes("solana") && !solanaPrimary) throw new Error("RADAR_RPC_SOLANA_HTTP_URL is required when Solana historical backfill is enabled");
+  const databasePath = env.ADDRESS_RADAR_DATABASE_PATH?.trim() || ".address-radar/address-radar.sqlite";
   return Object.freeze({
-    databasePath: env.ADDRESS_RADAR_DATABASE_PATH?.trim() || ".address-radar/address-radar.sqlite",
+    databasePath,
     apiKey,
     queryIds: Object.freeze({ token_universe: positiveInteger("DUNE_TOKEN_UNIVERSE_QUERY_ID"), milestone_crossings: positiveInteger("DUNE_MILESTONE_CROSSINGS_QUERY_ID"), pre_milestone_trades: positiveInteger("DUNE_PRE_MILESTONE_TRADES_QUERY_ID") }),
     chains: Object.freeze(chains),
@@ -65,5 +78,9 @@ export function loadHistoricalBackfillConfig(env: Readonly<Record<string, string
     strategyVersion: env.ADDRESS_RADAR_CANDIDATE_HISTORY_STRATEGY_VERSION?.trim() || "candidate-history-v3",
     timeoutMs: positiveInteger("DUNE_QUERY_TIMEOUT_MS", 300_000),
     pollIntervalMs: positiveInteger("DUNE_POLL_INTERVAL_MS", 2_000),
+    fomoLookupQueuePath: env.ADDRESS_RADAR_FOMO_LOOKUP_QUEUE_PATH?.trim() || env.RADAR_FOMO_LOOKUP_QUEUE_PATH?.trim() || `${databasePath}.fomo-lookups.ndjson`,
+    fomoLookupResultPath: env.ADDRESS_RADAR_FOMO_LOOKUP_RESULT_PATH?.trim() || env.RADAR_FOMO_LOOKUP_RESULT_PATH?.trim() || `${databasePath}.fomo-results.ndjson`,
+    fomoLookupResultCursorPath: env.ADDRESS_RADAR_FOMO_LOOKUP_RESULT_CURSOR_PATH?.trim() || env.ADDRESS_RADAR_FOMO_RESULT_CURSOR_PATH?.trim() || `${databasePath}.fomo-results.cursor.json`,
+    ...(solanaPrimary ? { solanaRpc: Object.freeze({ primary: solanaPrimary, ...(solanaFallback ? { fallback: solanaFallback } : {}) }) } : {}),
   });
 }

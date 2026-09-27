@@ -29,6 +29,12 @@ export interface FomoTokenLookupResult {
   readonly holderCount: number;
   readonly queriedTraderCount: number;
   readonly observationCount: number;
+  readonly verificationStatus?: "confirmed" | "not_found" | "mismatch" | "deferred";
+  readonly exactAddressMatch?: boolean;
+  readonly historyAvailable?: boolean;
+  readonly providerTokenId?: string;
+  readonly providerUrl?: string;
+  readonly errorCode?: string;
   readonly eventIds?: readonly string[];
   readonly purpose?: "milestone_backfill";
   readonly milestoneId?: string;

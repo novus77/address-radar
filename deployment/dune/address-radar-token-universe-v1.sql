@@ -134,7 +134,8 @@ sol_buckets AS (
         token_address,
         max_by(symbol, observed_at) AS symbol,
         observed_at,
-        approx_percentile(price_usd, 0.5) AS price_usd
+        approx_percentile(price_usd, 0.5) AS price_usd,
+        sum(trade_usd) AS bucket_volume_usd
     FROM sol_trade_sides
     WHERE upper(coalesce(symbol, '')) NOT IN (
         'USDT','USDC','USDS','DAI','FDUSD','TUSD','SOL','WSOL','BTC','WBTC'
@@ -144,45 +145,61 @@ sol_buckets AS (
        AND count(*) >= 3
        AND count(DISTINCT trader) >= 2
 ),
-sol_tokens AS (
-    SELECT DISTINCT token_address FROM sol_buckets
-),
-sol_supply AS (
-    SELECT
-        b.token_mint_address AS token_address,
-        sum(CAST(b.token_balance AS double)) AS supply
-    FROM solana_utils.latest_balances b
-    JOIN sol_tokens t ON t.token_address = b.token_mint_address
-    WHERE b.token_balance > 0
-    GROUP BY 1
-),
-sol_valuations AS (
+sol_summary AS (
     SELECT
         b.chain,
         b.token_address,
-        b.symbol,
-        b.observed_at,
-        b.price_usd * s.supply AS market_cap_usd
+        max_by(b.symbol, b.observed_at) AS symbol,
+        min(b.observed_at) AS first_trade_at,
+        max_by(b.observed_at, b.price_usd) AS peak_price_at,
+        max(b.price_usd) AS peak_price_usd,
+        sum(b.bucket_volume_usd) AS trade_volume_usd
     FROM sol_buckets b
-    JOIN sol_supply s ON s.token_address = b.token_address
-    WHERE b.price_usd * s.supply BETWEEN 100000 AND 100000000000
+    JOIN tokens_solana.fungible f ON f.token_mint_address = b.token_address
+    CROSS JOIN params p
+    WHERE f.token_version IN ('spl_token', 'token2022')
+      AND f.created_at >= date_add('day', -30, p.start_at)
+      AND f.created_at < p.end_at
+    GROUP BY 1, 2
 ),
-valuations AS (
-    SELECT * FROM evm_valuations
-    UNION ALL
-    SELECT * FROM sol_valuations
+evm_summary AS (
+    SELECT
+        chain,
+        token_address,
+        max_by(symbol, observed_at) AS symbol,
+        min(observed_at) AS first_trade_at,
+        min(observed_at) FILTER (WHERE market_cap_usd >= 1000000) AS first_reached_1m_at,
+        max(market_cap_usd) AS peak_market_cap_usd
+    FROM evm_valuations
+    GROUP BY 1, 2
+    HAVING max(market_cap_usd) >= 1000000
 )
 SELECT
     chain,
     token_address,
-    max_by(symbol, observed_at) AS symbol,
-    min(observed_at) AS first_trade_at,
-    min(observed_at)
-        FILTER (WHERE market_cap_usd >= 1000000) AS first_reached_1m_at,
-    max(market_cap_usd) AS peak_market_cap_usd,
+    symbol,
+    first_trade_at,
+    first_reached_1m_at,
+    peak_market_cap_usd,
+    CAST(NULL AS double) AS peak_price_usd,
+    CAST(NULL AS timestamp) AS peak_price_at,
+    CAST(NULL AS double) AS trade_volume_usd,
     CAST(NULL AS varchar) AS image_url
-FROM valuations
-GROUP BY 1, 2
-HAVING max(market_cap_usd) >= 1000000
-ORDER BY peak_market_cap_usd DESC
-LIMIT 5000
+FROM evm_summary
+
+UNION ALL
+
+SELECT
+    chain,
+    token_address,
+    symbol,
+    first_trade_at,
+    CAST(NULL AS timestamp) AS first_reached_1m_at,
+    CAST(NULL AS double) AS peak_market_cap_usd,
+    peak_price_usd,
+    peak_price_at,
+    trade_volume_usd,
+    CAST(NULL AS varchar) AS image_url
+FROM sol_summary
+ORDER BY coalesce(peak_market_cap_usd, trade_volume_usd) DESC
+LIMIT 2000

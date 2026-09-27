@@ -1,4 +1,7 @@
-import { DatabaseSync } from "node:sqlite";
+import {
+  openAddressRadarDatabase,
+  withAddressRadarWriteTransaction,
+} from "@address-radar/database";
 
 import type { NormalizedWalletObservation } from "./contracts.js";
 
@@ -32,7 +35,7 @@ export interface WalletMonitorStore {
 }
 
 export function openWalletMonitorStore(databasePath: string): WalletMonitorStore {
-  const database = new DatabaseSync(databasePath);
+  const database = openAddressRadarDatabase(databasePath);
   database.exec(`
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS wallet_monitor_checkpoints (
@@ -87,17 +90,8 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
   ensureColumn(database, "wallet_monitor_observations", "source_block_hash", "TEXT");
   ensureColumn(database, "wallet_monitor_observations", "orphaned_at", "INTEGER");
 
-  const transaction = <T>(operation: () => T): T => {
-    database.exec("BEGIN IMMEDIATE");
-    try {
-      const result = operation();
-      database.exec("COMMIT");
-      return result;
-    } catch (error) {
-      database.exec("ROLLBACK");
-      throw error;
-    }
-  };
+  const transaction = <T>(operation: () => T): T =>
+    withAddressRadarWriteTransaction(database, operation);
 
   return {
     checkpoint(source, partitionKey) {
@@ -311,3 +305,4 @@ function ensureColumn(database: DatabaseSync, table: string, column: string, def
   const columns = database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
   if (!columns.some(item => item.name === column)) database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
+import type { DatabaseSync } from "node:sqlite";

@@ -1,4 +1,12 @@
-import { openAddressRadarRepository } from "@address-radar/database";
+import { addressRadarTokenId } from "@address-radar/domain";
+import {
+  createCandidateHistoryStore,
+  createSourceLedgerStore,
+  initializeCandidateHistorySchema,
+  initializeSourceLedgerSchema,
+  openAddressRadarDatabase,
+  openAddressRadarRepository,
+} from "@address-radar/database";
 import { createDexScreenerClient } from "@address-radar/collectors";
 import { createTokenLifecycleResolver } from "@address-radar/aggregation";
 import { openMonitoringRegistry } from "@address-radar/identity";
@@ -6,7 +14,9 @@ import { createGatewayClient, createGatewayDeliveryWorker } from "@address-radar
 import { pathToFileURL } from "node:url";
 import { parseScannerConfig, runScannerPreflight } from "./config.js";
 import { createPollingRuntimeJob, createScannerRuntime } from "./runtime.js";
+import { createRecoveryRuntime } from "./recovery-runtime.js";
 import { createConfiguredCollectors } from "./collectors.js";
+import { createDiskHeadroomGuard, createRateLimitedErrorReporter } from "./resilience.js";
 
 export async function main(env: Readonly<Record<string, string | undefined>> = process.env): Promise<void> {
   const config = parseScannerConfig(env);
@@ -14,10 +24,24 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
   if (!preflight.ready) throw new Error(preflight.failures.map(item => `${item.code}: ${item.message}`).join("; "));
 
   const repository = openAddressRadarRepository(config.databasePath);
+  const historyDatabase = openAddressRadarDatabase(config.databasePath);
+  initializeCandidateHistorySchema(historyDatabase);
+  initializeSourceLedgerSchema(historyDatabase);
+  const historyStore = createCandidateHistoryStore(historyDatabase);
+  const sourceLedger = createSourceLedgerStore(historyDatabase);
   const monitoringRegistry = openMonitoringRegistry(config.databasePath);
   const marketProvider = createDexScreenerClient({ ...(config.marketBaseUrl ? { baseUrl: config.marketBaseUrl } : {}) });
   const lifecycleResolver = createTokenLifecycleResolver({});
   const collectors = createConfiguredCollectors({ config, repository, monitoringRegistry });
+  const errorReporter = createRateLimitedErrorReporter({
+    emit: (message, error) => console.error(message, error),
+    windowMs: config.errorLogWindowMs,
+  });
+  const diskGuard = createDiskHeadroomGuard({
+    path: config.databasePath,
+    minimumFreeBytes: config.minimumFreeDiskBytes,
+    checkIntervalMs: config.diskCheckIntervalMs,
+  });
   const runtime = createScannerRuntime({
     repository,
     collectors,
@@ -25,12 +49,49 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
     config,
     lifecycleResolver,
     marketProvider,
-    onCollectorError: (error, collectorIndex) => console.error(`Scanner collector ${collectorIndex} failed`, error),
+    sourceLedger,
+    sourceHealthLedger: sourceLedger,
+    tokenStateStore: sourceLedger,
+    onTokenMarketObserved: observation => {
+      const marketCapUsd = observation.market.marketCapUsd;
+      if (marketCapUsd == null || !Number.isFinite(marketCapUsd) || marketCapUsd <= 0) return;
+      const tokenId = addressRadarTokenId(observation.chain, observation.tokenAddress);
+      for (const milestoneMarketCapUsd of [100_000, 200_000, 300_000, 500_000, 1_000_000]) {
+        if (marketCapUsd < milestoneMarketCapUsd) continue;
+        historyStore.saveMilestoneCrossing({
+          milestoneId: `${observation.chain}:${observation.tokenAddress}:${milestoneMarketCapUsd}`,
+          tokenId,
+          marketCapUsd: milestoneMarketCapUsd,
+          crossedAt: observation.observedAt,
+          precision: "estimated",
+          source: "fomo_realtime_dexscreener",
+          sourceEventIds: observation.sourceEventIds,
+          strategyVersion: "candidate-history-v3",
+        });
+      }
+      if (marketCapUsd < 1_000_000) return;
+      historyStore.saveHistoricalToken({
+        tokenId,
+        chain: observation.chain,
+        tokenAddress: observation.tokenAddress,
+        symbol: observation.market.symbol ?? null,
+        imageUrl: observation.market.imageUrl ?? null,
+        firstTradeAt: observation.market.createdAt ?? observation.market.launchedAt ?? null,
+        firstReached1mAt: observation.observedAt,
+        peakMarketCapUsd: marketCapUsd,
+        source: "fomo_realtime_dexscreener",
+        sourceQueryId: null,
+        provenance: { observedAt: observation.observedAt, sourceEventIds: observation.sourceEventIds },
+      });
+      historyStore.confirmHistoricalTokenPresence(tokenId, observation.observedAt);
+    },
+    onCollectorError: (error, collectorIndex) => errorReporter.report(`Scanner collector ${collectorIndex} failed`, error),
   });
   const polling = createPollingRuntimeJob({
-    runOnce: () => runtime.runOnce(),
+    runOnce: async () => { await diskGuard.assertHealthy(); return runtime.runOnce(); },
     intervalMs: config.pollIntervalMs,
-    onError: error => console.error("Scanner iteration failed", error),
+    maximumBackoffMs: 5 * 60_000,
+    onError: error => errorReporter.report("Scanner iteration failed", error),
   });
   const delivery = config.gatewayDeliveryEnabled && config.gatewayEndpoint && config.gatewayKeyId && config.gatewaySharedSecret
     ? createGatewayDeliveryWorker({
@@ -42,18 +103,33 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
   const deliveryPolling = delivery ? createPollingRuntimeJob({
     runOnce: () => delivery.runOnce(),
     intervalMs: config.gatewayDeliveryIntervalMs ?? 1_000,
-    onError: error => console.error("Gateway delivery iteration failed", error),
+    onError: error => errorReporter.report("Gateway delivery iteration failed", error),
+  }) : null;
+  const recovery = config.recoveryEnabled ? createRecoveryRuntime({
+    ledger: sourceLedger,
+    handlers: {},
+    clock: { now: Date.now },
+    leaseMs: config.recoveryLeaseMs,
+    retryBaseMs: config.recoveryRetryBaseMs,
+  }) : null;
+  const recoveryPolling = recovery ? createPollingRuntimeJob({
+    runOnce: () => recovery.runOnce(),
+    intervalMs: config.recoveryPollIntervalMs,
+    onError: error => errorReporter.report("Recovery iteration failed", error),
   }) : null;
 
   await runtime.start();
   polling.start();
   deliveryPolling?.start();
+  recoveryPolling?.start();
   const shutdown = async (): Promise<void> => {
+    await recoveryPolling?.stop();
     await deliveryPolling?.stop();
     await polling.stop();
     await runtime.close();
     repository.close();
     monitoringRegistry.close();
+    historyDatabase.close();
   };
   process.once("SIGINT", () => { void shutdown(); });
   process.once("SIGTERM", () => { void shutdown(); });

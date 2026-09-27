@@ -136,42 +136,41 @@ sol_buckets AS (
        AND count(*) >= 3
        AND count(DISTINCT trader) >= 2
 ),
-sol_supply AS (
-    SELECT
-        b.token_mint_address AS token_address,
-        sum(CAST(b.token_balance AS double)) AS supply
-    FROM solana_utils.latest_balances b
-    JOIN requested_tokens r ON r.token_address = lower(b.token_mint_address)
-    WHERE b.token_balance > 0
-    GROUP BY 1
-),
-sol_valuations AS (
-    SELECT
-        b.chain,
-        b.token_address,
-        b.observed_at,
-        b.price_usd * s.supply AS market_cap_usd
-    FROM sol_buckets b
-    JOIN sol_supply s ON s.token_address = b.token_address
-    WHERE b.price_usd * s.supply BETWEEN 100000 AND 100000000000
-),
-valuations AS (
-    SELECT * FROM evm_valuations
-    UNION ALL
-    SELECT * FROM sol_valuations
-),
 thresholds(milestone_market_cap_usd) AS (
     VALUES 100000e0, 200000e0, 300000e0, 500000e0, 1000000e0
+),
+evm_crossings AS (
+    SELECT
+        v.chain,
+        v.token_address,
+        t.milestone_market_cap_usd,
+        min(v.observed_at) AS crossed_at,
+        'estimated_latest_supply_5m_median' AS precision,
+        concat('dune:address_radar_milestone_crossings_v1:', v.token_address) AS source_reference
+    FROM evm_valuations v
+    CROSS JOIN thresholds t
+    WHERE v.market_cap_usd >= t.milestone_market_cap_usd
+    GROUP BY 1, 2, 3
 )
 SELECT
-    v.chain,
-    v.token_address,
-    t.milestone_market_cap_usd,
-    min(v.observed_at) AS crossed_at,
-    'estimated_latest_supply_5m_median' AS precision,
-    concat('dune:address_radar_milestone_crossings_v1:', v.token_address) AS source_reference
-FROM valuations v
-CROSS JOIN thresholds t
-WHERE v.market_cap_usd >= t.milestone_market_cap_usd
-GROUP BY 1, 2, 3
-ORDER BY token_address, milestone_market_cap_usd
+    chain,
+    token_address,
+    milestone_market_cap_usd,
+    crossed_at,
+    precision,
+    source_reference,
+    CAST(NULL AS double) AS observed_price_usd
+FROM evm_crossings
+
+UNION ALL
+
+SELECT
+    chain,
+    token_address,
+    CAST(NULL AS double) AS milestone_market_cap_usd,
+    observed_at AS crossed_at,
+    'estimated_rpc_supply_5m_median' AS precision,
+    concat('dune:address_radar_milestone_crossings_v1:', token_address, ':', CAST(observed_at AS varchar)) AS source_reference,
+    price_usd AS observed_price_usd
+FROM sol_buckets
+ORDER BY token_address, crossed_at

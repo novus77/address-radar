@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { openAddressRadarRepository } from "@address-radar/database";
 import { createCandidateHistoryStore } from "@address-radar/database";
 import { DatabaseSync } from "node:sqlite";
-import { createDuneHistoricalBackfillWorker, createHistoricalBackfillScheduler, createHistoricalPartitions } from "../src/index.js";
+import { createDuneHistoricalBackfillWorker, createHistoricalBackfillScheduler, createHistoricalPartitions, runHistoricalBackfillCycle } from "../src/index.js";
 
 const DAY = 24 * 60 * 60_000;
 const START = Date.parse("2026-08-09T16:00:00.000Z");
@@ -41,7 +41,71 @@ describe("historical partition planning", () => {
   });
 });
 
+describe("Solana historical valuation", () => {
+  it("combines Dune peak price with RPC token supply before admitting a token", async () => {
+    const path = await databasePath();
+    const repository = openAddressRadarRepository(path);
+    const database = new DatabaseSync(path);
+    const historyStore = createCandidateHistoryStore(database);
+    const runSavedQueryPage = vi.fn(async () => ({
+      queryId: 11,
+      executionId: "exec-solana",
+      rows: [{ chain: "solana", token_address: "MintA", symbol: "SOLMEME", first_trade_at: "2026-08-10T00:00:00.000Z", peak_price_at: "2026-08-10T01:00:00.000Z", peak_price_usd: 0.002 }],
+      nextOffset: null,
+      totalRowCount: 1,
+    }));
+    const worker = createDuneHistoricalBackfillWorker({
+      client: { runSavedQueryPage } as never,
+      repository,
+      historyStore,
+      queryIds: { token_universe: 11, milestone_crossings: 12, pre_milestone_trades: 13 },
+      pageSize: 100,
+      strategyVersion: "candidate-history-v3",
+      solanaSupply: { resolveMany: async () => new Map([["MintA", 1_000_000_000]]) },
+    });
+    const [partition] = createHistoricalPartitions({ queryKind: "token_universe", chains: ["solana"], from: START, to: START + DAY, createdAt: 1 });
+
+    await worker.execute(partition!, new AbortController().signal);
+
+    expect(historyStore.historicalToken("solana:MintA")).toMatchObject({ peakMarketCapUsd: 2_000_000, firstReached1mAt: Date.parse("2026-08-10T01:00:00.000Z") });
+    database.close();
+    repository.close();
+  });
+});
+
 describe("historical backfill scheduler", () => {
+  it("interleaves chains by day instead of exhausting one chain first", async () => {
+    const path = await databasePath();
+    const repository = openAddressRadarRepository(path);
+    const partitions = createHistoricalPartitions({ queryKind: "token_universe", chains: ["base", "solana"], from: START, to: START + 2 * DAY, createdAt: 1 });
+    partitions.forEach(partition => repository.enqueueHistoricalBackfillPartition(partition));
+    const database = new DatabaseSync(path);
+    database.prepare("UPDATE historical_backfill_partitions SET next_retry_at = 2 WHERE chain = 'solana'").run();
+    database.close();
+    const worker = { execute: vi.fn(async input => ({ executionId: `exec-${input.partitionId}`, nextOffset: null, rowCount: 1, watermark: input.dayEnd, creditsUsed: 1, done: true })) };
+    const scheduler = createHistoricalBackfillScheduler({ repository, worker, dailyCreditBudget: 10, now: () => START + 100 });
+
+    await scheduler.runOnce();
+    await scheduler.runOnce();
+
+    expect(worker.execute.mock.calls.map(([partition]) => [partition.chain, partition.dayStart])).toEqual([
+      ["base", START],
+      ["solana", START],
+    ]);
+    repository.close();
+  });
+
+  it("runs historical work even while verification remains busy", async () => {
+    const verification = { runOnce: vi.fn(async () => ({ processed: true })) };
+    const scheduler = { runOnce: vi.fn(async () => ({ processed: true })) };
+    const signal = new AbortController().signal;
+
+    await expect(runHistoricalBackfillCycle({ verification, scheduler, signal })).resolves.toEqual({ processed: true });
+
+    expect(verification.runOnce).toHaveBeenCalledTimes(1);
+    expect(scheduler.runOnce).toHaveBeenCalledWith(signal);
+  });
+
   it("persists a page checkpoint and resumes it after restart", async () => {
     const path = await databasePath();
     const firstRepository = openAddressRadarRepository(path);
@@ -139,7 +203,8 @@ describe("Dune historical backfill worker", () => {
 
     await expect(worker.execute(partition, new AbortController().signal)).resolves.toMatchObject({ executionId: "exec-1", nextOffset: null, rowCount: 101, watermark: START + DAY, creditsUsed: 0, done: true });
     expect(runSavedQueryPage).toHaveBeenCalledWith(11, expect.objectContaining({ executionId: "exec-1", offset: 100, pageSize: 100, parameters: expect.objectContaining({ chain: "base" }) }));
-    expect(runSavedQueryPage.mock.calls[0]?.[1].parameters).not.toHaveProperty("token_addresses");
+    const calls = runSavedQueryPage.mock.calls as unknown as readonly [number, { readonly parameters: Readonly<Record<string, unknown>> }][];
+    expect(calls[0]?.[1].parameters).not.toHaveProperty("token_addresses");
     expect(historyStore.historicalToken("base:0xabc")).toMatchObject({ symbol: "ALPHA", peakMarketCapUsd: 2_000_000 });
     database.close();
     repository.close();
