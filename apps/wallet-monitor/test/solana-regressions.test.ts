@@ -143,6 +143,27 @@ test("Solana transfer-only balance changes are skipped with a diagnostic", async
   assert.equal(result.diagnostics?.[0]?.reason, "insufficient_swap_evidence");
 });
 
+test("Solana transaction lookup supports version one transactions", async () => {
+  let transactionOptions: unknown;
+  const rpc: WalletRpcClient = {
+    async request(_chain, method, params) {
+      if (method === "getSignaturesForAddress") return [{ signature: "versioned", blockTime: 100 }];
+      if (method === "getTransaction") {
+        transactionOptions = params[1];
+        return swapTransaction("versioned", 100);
+      }
+      throw new Error(`unexpected ${method}`);
+    },
+  };
+  await createSolanaWalletCollector({ rpc, batchSize: 1 }).collect({
+    wallets: wallets(1),
+    checkpoint: () => null,
+    signal: new AbortController().signal,
+  });
+
+  assert.deepEqual(transactionOptions, { encoding: "jsonParsed", maxSupportedTransactionVersion: 1 });
+});
+
 test("Solana claim plus fee-only native decrease is not treated as a buy", async () => {
   const rpc: WalletRpcClient = {
     async request(_chain, method) {

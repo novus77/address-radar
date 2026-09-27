@@ -268,7 +268,7 @@ async function collectSolanaWallet(input: {
   for (const signature of [...signatures].reverse()) {
     const transaction = await input.rpc.request("solana", "getTransaction", [
       signature.signature,
-      { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 },
+      { encoding: "jsonParsed", maxSupportedTransactionVersion: 1 },
     ], input.signal) as (SolanaSwapTransaction & { readonly blockTime?: number | null }) | null;
     if (!transaction) throw new Error(`transaction_unavailable:${signature.signature}`);
     const extracted = await solanaSwapEvents({
