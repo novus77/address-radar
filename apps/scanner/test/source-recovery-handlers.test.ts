@@ -76,6 +76,11 @@ describe("source recovery handlers", () => {
 
     await expect(runtime.runOnce()).resolves.toMatchObject({ outcome: "completed" });
     expect(database.prepare("SELECT price_usd AS priceUsd FROM market_observations WHERE chain = 'base' AND token_address = '0xabc'").get()).toEqual({ priceUsd: 0.25 });
+    expect(database.prepare("SELECT market_cap_usd AS marketCapUsd, precision FROM token_milestone_crossings ORDER BY market_cap_usd").all()).toEqual([
+      { marketCapUsd: 100_000, precision: "estimated" },
+      { marketCapUsd: 200_000, precision: "estimated" },
+    ]);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM historical_tokens").get()).toEqual({ count: 0 });
     expect(jobs.job(automationJob.jobId)).toMatchObject({ status: "pending" });
     expect(jobs.sourceBlock(automationJob.jobId)).toMatchObject({ resolvedAt: NOW });
     database.close();

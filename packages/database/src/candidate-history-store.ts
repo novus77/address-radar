@@ -205,12 +205,21 @@ export function createCandidateHistoryStore(database: DatabaseSync) {
         SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'automation_jobs'
       `).get();
       if (automationJobsAvailable) {
+        const updatedAt = crossing.crossedAt ?? Date.now();
+        database.prepare(`
+          UPDATE automation_job_blocks SET resolved_at = ?, updated_at = ?
+          WHERE resolved_at IS NULL AND job_id IN (
+            SELECT job_id FROM automation_jobs
+            WHERE job_type = 'candidate_evidence' AND subject_key = ?
+              AND status IN ('blocked_source', 'waiting_source')
+          )
+        `).run(updatedAt, updatedAt, crossing.tokenId);
         database.prepare(`
           UPDATE automation_jobs
           SET status = 'pending', next_attempt_at = ?, last_error = NULL, updated_at = ?
           WHERE job_type = 'candidate_evidence' AND subject_key = ?
             AND status IN ('blocked_source', 'waiting_source')
-        `).run(crossing.crossedAt ?? Date.now(), crossing.crossedAt ?? Date.now(), crossing.tokenId);
+        `).run(updatedAt, updatedAt, crossing.tokenId);
       }
     },
 

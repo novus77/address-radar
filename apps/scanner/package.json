@@ -17,6 +17,7 @@
     "@address-radar/domain": "workspace:*",
     "@address-radar/identity": "workspace:*",
     "@address-radar/observability": "workspace:*",
+    "@address-radar/scoring": "workspace:*",
     "@address-radar/signal-engine": "workspace:*"
   }
 }

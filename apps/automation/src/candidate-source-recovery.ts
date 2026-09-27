@@ -12,11 +12,16 @@ export interface CandidateSourceRecoveryPlan {
   readonly recoveryJobIds: readonly string[];
 }
 
-const recoveryType = (reason: CandidateSourceBlockReason) => {
-  if (reason === "missing_early_trades") return { jobType: "milestone_early_buyers" as const, priority: 35 };
-  if (reason === "missing_wallet_mapping") return { jobType: "identity_resolution" as const, priority: 40 };
-  if (reason === "missing_milestone" || reason === "insufficient_coverage") return { jobType: "historical_research" as const, priority: 60 };
-  return { jobType: "market_enrichment" as const, priority: 20 };
+const recoveryTypes = (reason: CandidateSourceBlockReason) => {
+  if (reason === "missing_early_trades") return [{ jobType: "milestone_early_buyers" as const, priority: 35 }];
+  if (reason === "missing_wallet_mapping") return [{ jobType: "identity_resolution" as const, priority: 40 }];
+  if (reason === "missing_milestone" || reason === "insufficient_coverage") {
+    return [
+      { jobType: "market_enrichment" as const, priority: 20 },
+      { jobType: "historical_research" as const, priority: 60 },
+    ];
+  }
+  return [{ jobType: "market_enrichment" as const, priority: 20 }];
 };
 
 export interface CandidateSourceRecoveryPlanner {
@@ -30,20 +35,22 @@ export function createCandidateSourceRecoveryPlanner(input: {
   const now = input.now ?? Date.now;
   return Object.freeze({
     plan(request: CandidateSourceRecoveryRequest) {
-      const recovery = recoveryType(request.reasonCode);
-      const jobId = `recovery:${recovery.jobType}:${request.tokenId}`;
       const createdAt = now();
-      input.ledger.enqueueRecoveryJob({
-        jobId,
-        jobType: recovery.jobType,
-        chain: normalizeDiscoveryChain(request.chain),
-        subjectKey: request.tokenId,
-        priority: recovery.priority,
-        cursor: null,
-        nextAttemptAt: createdAt,
-        createdAt,
+      const recoveryJobIds = recoveryTypes(request.reasonCode).map((recovery) => {
+        const jobId = `recovery:${recovery.jobType}:${request.tokenId}`;
+        input.ledger.enqueueRecoveryJob({
+          jobId,
+          jobType: recovery.jobType,
+          chain: normalizeDiscoveryChain(request.chain),
+          subjectKey: request.tokenId,
+          priority: recovery.priority,
+          cursor: null,
+          nextAttemptAt: createdAt,
+          createdAt,
+        });
+        return jobId;
       });
-      return Object.freeze({ recoveryJobIds: Object.freeze([jobId]) });
+      return Object.freeze({ recoveryJobIds: Object.freeze(recoveryJobIds) });
     },
   });
 }

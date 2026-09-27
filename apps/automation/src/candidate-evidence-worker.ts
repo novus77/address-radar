@@ -128,13 +128,25 @@ function resolveToken(database: DatabaseSync, payload: CandidateEvidencePayload)
       WHERE token_id = ?
     `).get(payload.tokenId) as HistoricalTokenRow | undefined;
     if (row) return row;
+    const separator = payload.tokenId.indexOf(":");
+    if (separator > 0 && separator < payload.tokenId.length - 1) {
+      return {
+        tokenId: payload.tokenId,
+        chain: payload.tokenId.slice(0, separator),
+        tokenAddress: payload.tokenId.slice(separator + 1),
+      };
+    }
   }
   if (!payload.chain || !payload.tokenAddress) return null;
   return (database.prepare(`
     SELECT token_id AS tokenId, chain, token_address AS tokenAddress
     FROM historical_tokens
     WHERE chain = ? AND token_address = ?
-  `).get(payload.chain, payload.tokenAddress) as HistoricalTokenRow | undefined) ?? null;
+  `).get(payload.chain, payload.tokenAddress) as HistoricalTokenRow | undefined) ?? {
+    tokenId: `${payload.chain}:${payload.tokenAddress}`,
+    chain: payload.chain,
+    tokenAddress: payload.tokenAddress,
+  };
 }
 
 function enqueueTokenJob(input: {

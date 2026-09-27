@@ -198,4 +198,29 @@ describe("candidate evidence worker", () => {
     });
     database.close();
   });
+
+  it("recovers chain identity from token id without historical token metadata", async () => {
+    const database = new DatabaseSync(":memory:");
+    migrateAddressRadarDatabase(database);
+    initializeCandidateHistorySchema(database);
+    initializeSourceLedgerSchema(database);
+    const jobs = createAutomationJobStore(database);
+    const recovery = createCandidateSourceRecoveryPlanner({
+      ledger: createSourceLedgerStore(database),
+      now: () => NOW,
+    });
+    const worker = createCandidateEvidenceWorker({ database, jobs, recovery, now: () => NOW });
+
+    await expect(evaluate(worker, "bsc:0xabc")).resolves.toMatchObject({
+      status: "waiting_source",
+      sourceBlock: {
+        reasonCode: "missing_milestone",
+        recoveryJobIds: [
+          "recovery:market_enrichment:bsc:0xabc",
+          "recovery:historical_research:bsc:0xabc",
+        ],
+      },
+    });
+    database.close();
+  });
 });

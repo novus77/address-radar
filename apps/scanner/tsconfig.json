@@ -7,6 +7,7 @@
     { "path": "../../packages/aggregation" },
     { "path": "../../packages/collectors" },
     { "path": "../../packages/identity" },
+    { "path": "../../packages/scoring" },
     { "path": "../../packages/signal-engine" },
     { "path": "../../packages/observability" }
   ],

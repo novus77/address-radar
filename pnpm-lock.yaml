@@ -84,6 +84,9 @@ importers:
       '@address-radar/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@address-radar/scoring':
+        specifier: workspace:*
+        version: link:../../packages/scoring
       '@address-radar/signal-engine':
         specifier: workspace:*
         version: link:../../packages/signal-engine

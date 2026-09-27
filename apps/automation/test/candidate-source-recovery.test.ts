@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { createCandidateSourceRecoveryPlanner } from "../src/candidate-source-recovery.js";
 
 describe("candidate source recovery planner", () => {
-  it("enqueues one idempotent historical recovery job for a missing milestone", () => {
+  it("enqueues idempotent market and historical recovery jobs for a missing milestone", () => {
     const database = new DatabaseSync(":memory:");
     initializeSourceLedgerSchema(database);
     const ledger = createSourceLedgerStore(database);
@@ -28,14 +28,22 @@ describe("candidate source recovery planner", () => {
       tokenAddress: "0xabc",
     });
 
-    expect(first).toEqual({ recoveryJobIds: ["recovery:historical_research:base:0xabc"] });
+    expect(first).toEqual({ recoveryJobIds: [
+      "recovery:market_enrichment:base:0xabc",
+      "recovery:historical_research:base:0xabc",
+    ] });
     expect(replay).toEqual(first);
     expect(ledger.recoveryJob(first.recoveryJobIds[0]!)).toMatchObject({
+      jobType: "market_enrichment",
+      subjectKey: "base:0xabc",
+      status: "pending",
+    });
+    expect(ledger.recoveryJob(first.recoveryJobIds[1]!)).toMatchObject({
       jobType: "historical_research",
       subjectKey: "base:0xabc",
       status: "pending",
     });
-    expect(database.prepare("SELECT COUNT(*) AS count FROM recovery_jobs").get()).toEqual({ count: 1 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM recovery_jobs").get()).toEqual({ count: 2 });
     database.close();
   });
 

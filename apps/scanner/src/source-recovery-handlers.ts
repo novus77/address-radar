@@ -6,6 +6,7 @@ import type {
   CandidateHistoryStore,
   SourceLedgerStore,
 } from "@address-radar/database";
+import { CANDIDATE_MILESTONES } from "@address-radar/scoring";
 
 import {
   RetryableRecoveryError,
@@ -91,12 +92,28 @@ export function createSourceRecoveryHandlers(input: {
         liquidityUsd: market.liquidityUsd,
         payload: market,
       });
+      const snapshotId = `recovery:market:${job.subjectKey}:${observedAt}`;
       input.database.prepare(`
         INSERT INTO market_observations(chain, token_address, observed_at, price_usd, source)
         VALUES (?, ?, ?, ?, 'recovery_market')
         ON CONFLICT(chain, token_address, observed_at, source)
         DO UPDATE SET price_usd = excluded.price_usd
       `).run(token.chain, token.tokenAddress, observedAt, market.priceUsd);
+      if (market.marketCapUsd != null && Number.isFinite(market.marketCapUsd) && market.marketCapUsd > 0) {
+        for (const milestone of CANDIDATE_MILESTONES) {
+          if (market.marketCapUsd < milestone.marketCapUsd) continue;
+          input.history.saveMilestoneCrossing({
+            milestoneId: `${job.subjectKey}:${milestone.marketCapUsd}`,
+            tokenId: job.subjectKey,
+            marketCapUsd: milestone.marketCapUsd,
+            crossedAt: observedAt,
+            precision: "estimated",
+            source: "recovery_market_snapshot",
+            sourceEventIds: [snapshotId],
+            strategyVersion: "candidate-market-recovery-v1",
+          });
+        }
+      }
       if (market.marketCapUsd != null && market.marketCapUsd >= 1_000_000) {
         input.history.saveHistoricalToken({
           tokenId: job.subjectKey,
