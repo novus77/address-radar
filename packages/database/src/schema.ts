@@ -609,6 +609,57 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       UNIQUE(import_id, chain_family, address)
     );
     CREATE INDEX IF NOT EXISTS wallet_mapping_observations_address ON wallet_mapping_observations(chain_family, address);
+    CREATE TABLE IF NOT EXISTS wallet_monitor_checkpoints (
+      source TEXT NOT NULL,
+      partition_key TEXT NOT NULL,
+      checkpoint TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (source, partition_key)
+    );
+    CREATE TABLE IF NOT EXISTS wallet_monitor_observations (
+      source TEXT NOT NULL,
+      event_id TEXT NOT NULL,
+      chain_family TEXT NOT NULL,
+      chain TEXT NOT NULL,
+      wallet_address TEXT NOT NULL,
+      token_address TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      side TEXT NOT NULL,
+      amount_usd REAL,
+      price_usd REAL,
+      market_cap_usd REAL,
+      occurred_at INTEGER NOT NULL,
+      collected_at INTEGER NOT NULL,
+      source_reference TEXT NOT NULL,
+      source_block_number INTEGER,
+      source_block_hash TEXT,
+      orphaned_at INTEGER,
+      projected_at INTEGER,
+      PRIMARY KEY (source, event_id)
+    );
+    CREATE TABLE IF NOT EXISTS wallet_monitor_provider_status (
+      source TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      last_error TEXT,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS wallet_monitor_partition_status (
+      source TEXT NOT NULL,
+      partition_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      last_error TEXT,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (source, partition_key)
+    );
+    CREATE TABLE IF NOT EXISTS wallet_monitor_diagnostics (
+      source TEXT NOT NULL,
+      partition_key TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      source_reference TEXT NOT NULL,
+      recorded_at INTEGER NOT NULL,
+      PRIMARY KEY (source, partition_key, reason, source_reference)
+    );
     CREATE TABLE IF NOT EXISTS identity_conflicts (
       conflict_id TEXT PRIMARY KEY,
       handle TEXT NOT NULL,

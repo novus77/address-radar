@@ -18,6 +18,10 @@ export function migrateAddressRadarDatabase(database: DatabaseSync): void {
     initializeSourceLedgerSchema(database);
     initializeTokenFactSchema(database);
     initializeCanonicalRegistrySchema(database);
+    ensureColumn(database, "wallet_monitor_observations", "source_block_number", "INTEGER");
+    ensureColumn(database, "wallet_monitor_observations", "source_block_hash", "TEXT");
+    ensureColumn(database, "wallet_monitor_observations", "orphaned_at", "INTEGER");
+    ensureColumn(database, "wallet_monitor_observations", "projected_at", "INTEGER");
     backfillLegacyTokenFacts(database);
     migrateAutomationJobStatusConstraint(database);
     migrateWaitingSourceJobs(database);
