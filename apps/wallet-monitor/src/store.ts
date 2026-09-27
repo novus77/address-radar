@@ -1,7 +1,11 @@
 import {
+  createSourceLedgerStore,
   openAddressRadarDatabase,
+  openAddressRadarRepository,
   withAddressRadarWriteTransaction,
 } from "@address-radar/database";
+import { sourceObservationForTraderEvent } from "@address-radar/collectors";
+import type { TraderEvent } from "@address-radar/domain";
 
 import type { NormalizedWalletObservation } from "./contracts.js";
 
@@ -36,6 +40,8 @@ export interface WalletMonitorStore {
 
 export function openWalletMonitorStore(databasePath: string): WalletMonitorStore {
   const database = openAddressRadarDatabase(databasePath);
+  const eventRepository = openAddressRadarRepository(databasePath);
+  const sourceLedger = createSourceLedgerStore(database);
   database.exec(`
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS wallet_monitor_checkpoints (
@@ -89,9 +95,44 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
   ensureColumn(database, "wallet_monitor_observations", "source_block_number", "INTEGER");
   ensureColumn(database, "wallet_monitor_observations", "source_block_hash", "TEXT");
   ensureColumn(database, "wallet_monitor_observations", "orphaned_at", "INTEGER");
+  ensureColumn(database, "wallet_monitor_observations", "projected_at", "INTEGER");
 
   const transaction = <T>(operation: () => T): T =>
     withAddressRadarWriteTransaction(database, operation);
+
+  const projectPendingObservations = (projectedAt: number): number => {
+    const rows = database.prepare(`
+      SELECT * FROM wallet_monitor_observations
+      WHERE orphaned_at IS NULL AND projected_at IS NULL
+      ORDER BY occurred_at, source, event_id
+      LIMIT 500
+    `).all() as WalletMonitorObservationRow[];
+    const hasIdentity = database.prepare(`
+      SELECT 1 AS present FROM entity_accounts
+      WHERE account_id = ? AND entity_id = ?
+      LIMIT 1
+    `);
+    let projected = 0;
+    for (const row of rows) {
+      if (!hasIdentity.get(row.account_id, row.entity_id)) continue;
+      const event = toTraderEvent(row);
+      const sourceWrite = sourceLedger.saveObservation(sourceObservationForTraderEvent(event, "rpc", {
+        walletAddress: row.wallet_address,
+        sourceReference: row.source_reference,
+        walletMonitorSource: row.source,
+        ...(row.source_block_number === null ? {} : { sourceBlockNumber: row.source_block_number }),
+        ...(row.source_block_hash === null ? {} : { sourceBlockHash: row.source_block_hash }),
+      }));
+      if (sourceWrite.status === "conflict") continue;
+      eventRepository.insertTraderEvent(event);
+      database.prepare(`
+        UPDATE wallet_monitor_observations SET projected_at = ?
+        WHERE source = ? AND event_id = ? AND orphaned_at IS NULL
+      `).run(projectedAt, row.source, row.event_id);
+      projected += 1;
+    }
+    return projected;
+  };
 
   return {
     checkpoint(source, partitionKey) {
@@ -102,7 +143,7 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
       return row?.checkpoint ?? null;
     },
     persist(source, partitionKey, observations, nextCheckpoint, updatedAt, canonicalBlocks = []) {
-      return transaction(() => {
+      const persisted = transaction(() => {
         for (const block of canonicalBlocks) {
           database.prepare(`
             UPDATE wallet_monitor_observations SET orphaned_at = ?
@@ -181,6 +222,8 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
         `).run(source, partitionKey, nextCheckpoint, updatedAt);
         return inserted;
       });
+      projectPendingObservations(updatedAt);
+      return persisted;
     },
     recordFailure(source, error, updatedAt) {
       this.recordProviderResult(source, [], [{ partitionKey: "provider", error }], updatedAt);
@@ -296,10 +339,48 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
       });
     },
     close() {
+      eventRepository.close();
       database.close();
     },
   };
 }
+
+function toTraderEvent(row: WalletMonitorObservationRow): TraderEvent {
+  return Object.freeze({
+    eventId: row.event_id,
+    accountId: row.account_id,
+    entityId: row.entity_id,
+    chain: row.chain,
+    tokenAddress: row.token_address,
+    side: row.side,
+    amountUsd: row.amount_usd,
+    priceUsd: row.price_usd,
+    marketCapUsd: row.market_cap_usd,
+    tokenAgeMs: null,
+    occurredAt: row.occurred_at,
+    collectedAt: row.collected_at,
+    source: "onchain_wallet",
+  });
+}
+
+type WalletMonitorObservationRow = {
+  source: string;
+  event_id: string;
+  chain: string;
+  wallet_address: string;
+  token_address: string;
+  account_id: string;
+  entity_id: string;
+  side: "buy" | "sell";
+  amount_usd: number | null;
+  price_usd: number | null;
+  market_cap_usd: number | null;
+  occurred_at: number;
+  collected_at: number;
+  source_reference: string;
+  source_block_number: number | null;
+  source_block_hash: string | null;
+};
 
 function ensureColumn(database: DatabaseSync, table: string, column: string, definition: string): void {
   const columns = database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
