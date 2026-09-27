@@ -29,7 +29,7 @@ import {
 import { matchCanonicalTraderEvent, type BundleDiagnostics, type TokenAggregationRepository, type WalletBundleRelation } from "@address-radar/aggregation";
 import type { RuntimeQualityRepository, RuntimeQualitySnapshot } from "@address-radar/observability";
 import { migrateAddressRadarDatabase } from "./migrations.js";
-import { openAddressRadarDatabase } from "./connection.js";
+import { openAddressRadarDatabase, withAddressRadarWriteTransaction } from "./connection.js";
 import { recordResolvedWalletAutomation } from "./identity-automation.js";
 
 export type AddressEvidenceSource = "fomo" | "onchain";
@@ -241,15 +241,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
 
   const transaction = <T>(operation: () => T): T => {
     if (database.isTransaction) return operation();
-    database.exec("BEGIN IMMEDIATE");
-    try {
-      const result = operation();
-      database.exec("COMMIT");
-      return result;
-    } catch (error) {
-      database.exec("ROLLBACK");
-      throw error;
-    }
+    return withAddressRadarWriteTransaction(database, operation);
   };
 
   const markIdentityResolutionInTransaction = (
@@ -1144,17 +1136,19 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     },
 
     enqueueHistoricalBackfillPartition(partition) {
-      const result = database.prepare(`
-        INSERT OR IGNORE INTO historical_backfill_partitions(
-          partition_id, query_kind, chain, day_start, day_end, token_addresses, status,
-          execution_id, next_offset, row_count, attempt_count, watermark, next_retry_at,
-          lease_expires_at, last_error, created_at, updated_at, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(partition.partitionId, partition.queryKind, partition.chain, partition.dayStart, partition.dayEnd,
-        JSON.stringify(partition.tokenAddresses), partition.status, partition.executionId, partition.nextOffset,
-        partition.rowCount, partition.attemptCount, partition.watermark, partition.nextRetryAt,
-        partition.leaseExpiresAt, partition.lastError, partition.createdAt, partition.updatedAt, partition.completedAt);
-      return Object.freeze({ inserted: result.changes === 1 });
+      return withAddressRadarWriteTransaction(database, () => {
+        const result = database.prepare(`
+          INSERT OR IGNORE INTO historical_backfill_partitions(
+            partition_id, query_kind, chain, day_start, day_end, token_addresses, status,
+            execution_id, next_offset, row_count, attempt_count, watermark, next_retry_at,
+            lease_expires_at, last_error, created_at, updated_at, completed_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(partition.partitionId, partition.queryKind, partition.chain, partition.dayStart, partition.dayEnd,
+          JSON.stringify(partition.tokenAddresses), partition.status, partition.executionId, partition.nextOffset,
+          partition.rowCount, partition.attemptCount, partition.watermark, partition.nextRetryAt,
+          partition.leaseExpiresAt, partition.lastError, partition.createdAt, partition.updatedAt, partition.completedAt);
+        return Object.freeze({ inserted: result.changes === 1 });
+      });
     },
 
     claimHistoricalBackfillPartition(now, leaseMs) {

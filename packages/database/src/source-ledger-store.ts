@@ -12,6 +12,7 @@ import {
   semanticSourceObservationFingerprint,
   SOURCE_OBSERVATION_FINGERPRINT_VERSION,
 } from "@address-radar/domain";
+import { withAddressRadarWriteTransaction } from "./connection.js";
 
 export type RecoveryJobType =
   | "rpc_gap"
@@ -358,17 +359,7 @@ const toTokenMarketSnapshot = (row: Record<string, unknown>): TokenMarketSnapsho
 });
 
 export function createSourceLedgerStore(database: DatabaseSync): SourceLedgerStore {
-  const transaction = <T>(operation: () => T): T => {
-    database.exec("BEGIN IMMEDIATE");
-    try {
-      const result = operation();
-      database.exec("COMMIT");
-      return result;
-    } catch (error) {
-      database.exec("ROLLBACK");
-      throw error;
-    }
-  };
+  const transaction = <T>(operation: () => T): T => withAddressRadarWriteTransaction(database, operation);
 
   const store: SourceLedgerStore = {
     saveObservation(observation) {

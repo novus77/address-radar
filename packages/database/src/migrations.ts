@@ -4,15 +4,14 @@ import { decodePersistedRadarSignal } from "@address-radar/signal-engine";
 import { initializeAddressRadarSchema } from "./schema.js";
 import { initializeCandidateHistorySchema } from "./candidate-history-store.js";
 import { initializeSourceLedgerSchema } from "./source-ledger-store.js";
-import { ADDRESS_RADAR_BUSY_TIMEOUT_MS } from "./connection.js";
+import { ADDRESS_RADAR_BUSY_TIMEOUT_MS, withAddressRadarWriteTransaction } from "./connection.js";
 import { initializeTokenFactSchema } from "./token-fact-store.js";
 import { initializeCanonicalRegistrySchema } from "./canonical-registry-store.js";
 import { materializeLegacyWalletIdentities } from "./identity-automation.js";
 
 export function migrateAddressRadarDatabase(database: DatabaseSync): void {
   database.exec(`PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${ADDRESS_RADAR_BUSY_TIMEOUT_MS};`);
-  database.exec("BEGIN IMMEDIATE");
-  try {
+  withAddressRadarWriteTransaction(database, () => {
     initializeAddressRadarSchema(database);
     initializeCandidateHistorySchema(database);
     initializeSourceLedgerSchema(database);
@@ -48,15 +47,7 @@ export function migrateAddressRadarDatabase(database: DatabaseSync): void {
       LEFT JOIN address_signal_evidence e ON e.event_id = ec.event_id;
     `);
     migrateHistoricalBroadcasts(database);
-    database.exec("COMMIT");
-  } catch (error) {
-    try {
-      database.exec("ROLLBACK");
-    } catch {
-      // Preserve the migration failure if SQLite already rolled the transaction back.
-    }
-    throw error;
-  }
+  }, { maximumAttempts: 20, baseDelayMs: 25, maximumDelayMs: 1_000 });
 }
 
 function backfillLegacyTokenFacts(database: DatabaseSync): void {

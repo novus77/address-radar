@@ -28,10 +28,12 @@ export function createTraderPerformanceRuntime(input: {
           const launchCandidates = events.flatMap(event => event.tokenAgeMs === null ? [] : [Math.max(0, event.occurredAt - event.tokenAgeMs)]);
           const sample = buildTraderTokenSample({ events, launchAt: launchCandidates.length ? Math.min(...launchCandidates) : null, now: asOf, dustThresholdUsd: input.dustThresholdUsd });
           input.repository.upsertTraderTokenSample(sample);
-          if (input.repository.traderTokenOutcomes(sample.sampleId).length === 0) for (const outcome of scheduleTraderOutcomes(sample, asOf)) input.repository.saveTraderTokenOutcome(outcome);
-          const observations = input.repository.marketObservations(sample.chain, sample.tokenAddress, sample.firstBuyAt, asOf);
-          const capturedMultiple = sample.totalBuyUsd > 0 ? (sample.totalSellUsd + sample.remainingCostUsd) / sample.totalBuyUsd : null;
-          for (const outcome of evaluateScheduledTraderOutcomes({ sample, observations, computedAt: asOf, maximumObservationDelayMs: input.maximumObservationDelayMs, capturedMultiple })) input.repository.saveTraderTokenOutcome(outcome);
+          const persistedSample = input.repository.traderTokenSample(sample.entityId, sample.chain, sample.tokenAddress);
+          if (!persistedSample) throw new Error(`Trader token sample was not persisted: ${sample.entityId}:${sample.chain}:${sample.tokenAddress}`);
+          if (input.repository.traderTokenOutcomes(persistedSample.sampleId).length === 0) for (const outcome of scheduleTraderOutcomes(persistedSample, asOf)) input.repository.saveTraderTokenOutcome(outcome);
+          const observations = input.repository.marketObservations(persistedSample.chain, persistedSample.tokenAddress, persistedSample.firstBuyAt, asOf);
+          const capturedMultiple = persistedSample.totalBuyUsd > 0 ? (persistedSample.totalSellUsd + persistedSample.remainingCostUsd) / persistedSample.totalBuyUsd : null;
+          for (const outcome of evaluateScheduledTraderOutcomes({ sample: persistedSample, observations, computedAt: asOf, maximumObservationDelayMs: input.maximumObservationDelayMs, capturedMultiple })) input.repository.saveTraderTokenOutcome(outcome);
           samplesCreated += 1;
         }
         const samples = input.repository.traderTokenSamples(entityId);
