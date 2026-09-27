@@ -3,6 +3,7 @@ import type {
   RepeatableTraderAbilityEvaluation,
   RepeatableTraderAbilityStage,
   RepeatableTraderAbilityWindow,
+  TraderAbilitySnapshot,
   TraderEvent,
 } from "@address-radar/domain";
 import { strongestCandidateEvidenceByToken } from "@address-radar/identity";
@@ -42,7 +43,8 @@ export function createTraderPerformanceRuntime(input: {
           return { chain: payload.chain ?? "unknown", tokenAddress: payload.tokenAddress ?? item.discovery.discoveryId, discoveryType: item.discovery.discoveryType, discoveredAt: item.discovery.discoveredAt };
         });
         const evaluation = evaluateTraderPerformance({ entityId, currentLifecycle: entity.lifecycle, locked: entity.locked, samples, outcomes: samples.flatMap(sample => input.repository.traderTokenOutcomes(sample.sampleId)), discoveries, asOf, window: "30d", preferredHorizon: "24h", strategyVersion: input.strategyVersion });
-        if (input.repository.latestTraderAbility(entityId, "30d")?.snapshotId !== evaluation.snapshot.snapshotId) {
+        const previousAbility = input.repository.latestTraderAbility(entityId, "30d");
+        if (!previousAbility || !sameAbilitySnapshot(previousAbility, evaluation.snapshot)) {
           input.repository.saveTraderAbilitySnapshot(evaluation.snapshot);
         }
         if (evaluation.lifecycle.changed) {
@@ -53,6 +55,17 @@ export function createTraderPerformanceRuntime(input: {
       return Object.freeze({ entities: input.repository.traderEntityIdsWithEvents().length, samples: samplesCreated });
     },
   });
+}
+
+function sameAbilitySnapshot(left: TraderAbilitySnapshot, right: TraderAbilitySnapshot): boolean {
+  return left.strategyVersion === right.strategyVersion
+    && left.rawQuality === right.rawQuality
+    && left.adjustedQuality === right.adjustedQuality
+    && left.sampleConfidence === right.sampleConfidence
+    && left.coverageConfidence === right.coverageConfidence
+    && JSON.stringify(left.metrics) === JSON.stringify(right.metrics)
+    && JSON.stringify(left.components) === JSON.stringify(right.components)
+    && JSON.stringify(left.styles) === JSON.stringify(right.styles);
 }
 
 function groupEvents(events: readonly TraderEvent[]): Map<string, TraderEvent[]> {

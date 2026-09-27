@@ -101,11 +101,14 @@ describe("trader performance runtime", () => {
     repository.insertTraderEvent({ eventId: "sell-later", accountId: "u1", entityId: "fomo:u1", chain: "solana", tokenAddress: "TokenA", side: "sell", amountUsd: 100, priceUsd: 2.5, marketCapUsd: 125_000, tokenAgeMs: 120_000, occurredAt: 121_000, collectedAt: 121_000, source: "fomo_stream" });
     await runtime.runOnce();
     const second = repository.latestTraderAbility("fomo:u1", "30d");
+    await runtime.runOnce();
+    const third = repository.latestTraderAbility("fomo:u1", "30d");
 
     expect(first).not.toBeNull();
     expect(repository.traderTokenSamples("fomo:u1")).toHaveLength(1);
     expect(repository.traderTokenOutcomes(repository.traderTokenSamples("fomo:u1")[0]!.sampleId).length).toBeGreaterThan(0);
     expect(second).toEqual(expect.objectContaining({ strategyVersion: "trader-ability-v2", styles: expect.objectContaining({ EARLY_LAUNCH: expect.any(Number), HIGH_MULTIPLE: expect.any(Number) }) }));
+    expect(third).toEqual(second);
     repository.close();
   });
 });

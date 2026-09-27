@@ -893,7 +893,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     },
 
     upsertTraderTokenSample(sample) {
-      database.prepare(`
+      withAddressRadarWriteTransaction(database, () => database.prepare(`
         INSERT INTO trader_token_samples(
           sample_id, entity_id, chain, token_address, first_buy_at, last_activity_at,
           weighted_entry_price_usd, weighted_entry_market_cap_usd, total_buy_usd,
@@ -923,7 +923,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         sample.realizedValueUsd, sample.remainingCostUsd, sample.launchAt,
         sample.lifecycleStageAtEntry, sample.sourceState, sample.sampleStatus,
         sample.exclusionReason, sample.createdAt, sample.updatedAt,
-      );
+      ));
     },
 
     traderTokenSample(entityId, chain, tokenAddress) {
@@ -939,22 +939,24 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     },
 
     saveMarketObservation(chain, tokenAddress, observation) {
-      database.prepare(`
-        INSERT INTO market_observations(chain, token_address, observed_at, price_usd, source)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(chain, token_address, observed_at, source) DO UPDATE SET price_usd = excluded.price_usd
-      `).run(chain, tokenAddress, observation.observedAt, observation.priceUsd, observation.source);
-      const automationJobsAvailable = database.prepare(`
-        SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'automation_jobs'
-      `).get();
-      if (automationJobsAvailable) {
+      withAddressRadarWriteTransaction(database, () => {
         database.prepare(`
-          UPDATE automation_jobs
-          SET status = 'pending', next_attempt_at = ?, last_error = NULL, updated_at = ?
-          WHERE job_type = 'candidate_evidence' AND subject_key = ?
-            AND status IN ('blocked_source', 'waiting_source')
-        `).run(observation.observedAt, observation.observedAt, `${chain}:${tokenAddress}`);
-      }
+          INSERT INTO market_observations(chain, token_address, observed_at, price_usd, source)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(chain, token_address, observed_at, source) DO UPDATE SET price_usd = excluded.price_usd
+        `).run(chain, tokenAddress, observation.observedAt, observation.priceUsd, observation.source);
+        const automationJobsAvailable = database.prepare(`
+          SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'automation_jobs'
+        `).get();
+        if (automationJobsAvailable) {
+          database.prepare(`
+            UPDATE automation_jobs
+            SET status = 'pending', next_attempt_at = ?, last_error = NULL, updated_at = ?
+            WHERE job_type = 'candidate_evidence' AND subject_key = ?
+              AND status IN ('blocked_source', 'waiting_source')
+          `).run(observation.observedAt, observation.observedAt, `${chain}:${tokenAddress}`);
+        }
+      });
     },
 
     marketObservations(chain, tokenAddress, from, to) {
@@ -967,7 +969,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     },
 
     saveTraderTokenOutcome(outcome) {
-      database.prepare(`
+      withAddressRadarWriteTransaction(database, () => database.prepare(`
         INSERT INTO trader_token_outcomes(
           sample_id, horizon, target_at, observed_at, close_multiple, mfe_multiple,
           mae_multiple, captured_multiple, hit_1_5x, hit_2x, hit_5x, hit_10x,
@@ -991,7 +993,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         nullableBoolean(outcome.hit5x), nullableBoolean(outcome.hit10x), outcome.timeTo1_5xMs,
         outcome.timeTo2xMs, outcome.timeTo5xMs, outcome.timeTo10xMs,
         outcome.coverageStatus, outcome.source, outcome.computedAt,
-      );
+      ));
     },
 
     traderTokenOutcomes(sampleId) {
@@ -1009,19 +1011,30 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     },
 
     saveTraderAbilitySnapshot(snapshot) {
-      database.prepare(`
-        INSERT INTO trader_ability_snapshots(
-          snapshot_id, entity_id, window, as_of, strategy_version, raw_quality,
-          adjusted_quality, sample_confidence, coverage_confidence, metrics,
-          components, styles, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        snapshot.snapshotId, snapshot.entityId, snapshot.window, snapshot.asOf,
-        snapshot.strategyVersion, snapshot.rawQuality, snapshot.adjustedQuality,
-        snapshot.sampleConfidence, snapshot.coverageConfidence, JSON.stringify(snapshot.metrics),
-        JSON.stringify(snapshot.components), JSON.stringify(snapshot.styles), snapshot.createdAt,
-      );
-      synchronizeTraderSignalProfile(snapshot.entityId, snapshot.createdAt);
+      withAddressRadarWriteTransaction(database, () => {
+        database.prepare(`
+          INSERT INTO trader_ability_snapshots(
+            snapshot_id, entity_id, window, as_of, strategy_version, raw_quality,
+            adjusted_quality, sample_confidence, coverage_confidence, metrics,
+            components, styles, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(snapshot_id) DO UPDATE SET
+            raw_quality = excluded.raw_quality,
+            adjusted_quality = excluded.adjusted_quality,
+            sample_confidence = excluded.sample_confidence,
+            coverage_confidence = excluded.coverage_confidence,
+            metrics = excluded.metrics,
+            components = excluded.components,
+            styles = excluded.styles,
+            created_at = excluded.created_at
+        `).run(
+          snapshot.snapshotId, snapshot.entityId, snapshot.window, snapshot.asOf,
+          snapshot.strategyVersion, snapshot.rawQuality, snapshot.adjustedQuality,
+          snapshot.sampleConfidence, snapshot.coverageConfidence, JSON.stringify(snapshot.metrics),
+          JSON.stringify(snapshot.components), JSON.stringify(snapshot.styles), snapshot.createdAt,
+        );
+        synchronizeTraderSignalProfile(snapshot.entityId, snapshot.createdAt);
+      });
     },
 
     latestTraderAbility(entityId, window) {
