@@ -46,8 +46,15 @@ const report = {
   facts: {
     available: optionalCount("token_fact_status", "SELECT COUNT(*) AS count FROM token_fact_status WHERE status = 'available'"),
     partial: optionalCount("token_fact_status", "SELECT COUNT(*) AS count FROM token_fact_status WHERE status = 'partial'"),
-    unresolvedDependencies: optionalCount("token_fact_dependencies", "SELECT COUNT(*) AS count FROM token_fact_dependencies WHERE resolved_at IS NULL"),
-    unresolvedConflicts: optionalCount("token_fact_conflicts", "SELECT COUNT(*) AS count FROM token_fact_conflicts WHERE resolved_at IS NULL"),
+    unresolvedDependencies: optionalCount("token_fact_dependencies", `
+      SELECT COUNT(*) AS count
+      FROM token_fact_dependencies d
+      JOIN token_fact_status dependency
+        ON dependency.token_id = d.token_id
+       AND dependency.fact_type = d.depends_on_fact_type
+      WHERE dependency.status NOT IN ('available', 'partial', 'degraded')
+    `),
+    unresolvedConflicts: optionalCount("token_fact_conflicts", "SELECT COUNT(*) AS count FROM token_fact_conflicts WHERE status = 'open'"),
   },
   analysis: {
     completedWalletAnalyses: optionalCount("wallet_analysis_jobs", "SELECT COUNT(*) AS count FROM wallet_analysis_jobs WHERE status IN ('review_required', 'accepted', 'insufficient_data')"),

@@ -44,6 +44,7 @@ describe("multi-source operator APIs", () => {
     const { app } = setup();
     expect(app.handle("GET", "/api/v2/discovery/token-funnel")).toMatchObject({ status: 200, body: { raw: 1, identityResolved: 1, marketResolved: 1, fomoConfirmed: 1, milestoneObserved: 1, candidateEvidence: expect.any(Number), aggregation: expect.any(Number), qualifiedSignal: expect.any(Number) } });
     expect(app.handle("GET", "/api/v2/discovery/trader-funnel")).toMatchObject({ status: 200, body: expect.objectContaining({ observed: expect.any(Number), candidateEvidence: expect.any(Number), currentAdmitted: expect.any(Number) }) });
+    expect(app.handle("GET", "/api/v2/discovery/fact-coverage")).toMatchObject({ status: 200, body: { unresolvedDependencies: 0, unresolvedConflicts: 0 } });
     expect(app.handle("GET", "/api/v2/automation/overview")).toMatchObject({ status: 200, body: { funnel: expect.objectContaining({ observedFomoHandles: 0, canonicalTraders: 0, walletResolvedTraders: 0, monitoringEligibleTraders: 0 }) } });
     app.close();
   });

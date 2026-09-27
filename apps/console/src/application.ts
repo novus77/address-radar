@@ -381,7 +381,7 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
         GROUP BY provider, fact_type, outcome
         ORDER BY provider, fact_type, outcome
       `, now - 24 * 60 * 60_000);
-      const walletSources = rows(`
+      const walletSources = tableExists("wallet_monitor_provider_status") && tableExists("wallet_monitor_observations") ? rows(`
         SELECT status.source, status.status,
           status.last_error AS lastError, status.updated_at AS updatedAt,
           COUNT(observation.event_id) AS observationCount,
@@ -392,7 +392,7 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
           AND observation.orphaned_at IS NULL
         GROUP BY status.source, status.status, status.last_error, status.updated_at
         ORDER BY status.source
-      `);
+      `) : [];
       const walletAnalyses = rows(`
         SELECT status, COUNT(*) AS count,
           SUM(valid_sample_count) AS validSamples,
@@ -420,8 +420,15 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
         walletSources,
         walletAnalyses,
         abilities,
-        unresolvedDependencies: scalar("SELECT COUNT(*) AS count FROM token_fact_dependencies WHERE resolved_at IS NULL"),
-        unresolvedConflicts: scalar("SELECT COUNT(*) AS count FROM token_fact_conflicts WHERE resolved_at IS NULL"),
+        unresolvedDependencies: scalar(`
+          SELECT COUNT(*) AS count
+          FROM token_fact_dependencies d
+          JOIN token_fact_status dependency
+            ON dependency.token_id = d.token_id
+           AND dependency.fact_type = d.depends_on_fact_type
+          WHERE dependency.status NOT IN ('available', 'partial', 'degraded')
+        `),
+        unresolvedConflicts: scalar("SELECT COUNT(*) AS count FROM token_fact_conflicts WHERE status = 'open'"),
       } };
     }
     if (pathname === "/api/v2/discovery/trader-funnel") {
