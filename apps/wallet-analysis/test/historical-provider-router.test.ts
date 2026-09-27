@@ -91,5 +91,13 @@ describe("HistoricalProviderRouter", () => {
       attempts: [{ provider: "gecko_terminal", outcome: "not_found" }],
     });
   });
-});
 
+  it("preserves retryable primary failures when fallback is disabled", async () => {
+    const rateLimit = Object.assign(new Error("GeckoTerminal request failed with status 429"), { retryable: true });
+    const router = createHistoricalProviderRouter({
+      primary: { id: "gecko_terminal", provider: { reconstruct: async () => { throw rateLimit; } } },
+    });
+
+    await expect(router.reconstruct(input)).rejects.toBe(rateLimit);
+  });
+});

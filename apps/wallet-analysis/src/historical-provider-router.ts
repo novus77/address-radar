@@ -81,6 +81,7 @@ export function createHistoricalProviderRouter(options: HistoricalProviderRouter
     async reconstruct(input) {
       const attempts: HistoricalProviderAttempt[] = [];
       let primaryResult: MilestoneReconstructionResult;
+      let primaryError: unknown = null;
 
       try {
         primaryResult = await options.primary.provider.reconstruct(input);
@@ -94,6 +95,7 @@ export function createHistoricalProviderRouter(options: HistoricalProviderRouter
           return { provider: options.primary.id, result: primaryResult, attempts };
         }
       } catch (error) {
+        primaryError = error;
         attempts.push({
           provider: options.primary.id,
           outcome: "failed",
@@ -105,6 +107,7 @@ export function createHistoricalProviderRouter(options: HistoricalProviderRouter
 
       const fallback = options.fallback;
       if (!fallback || fallback.enabled === false) {
+        if (primaryError !== null && retryable(primaryError)) throw primaryError;
         return { provider: options.primary.id, result: primaryResult, attempts };
       }
 
@@ -138,6 +141,7 @@ export function createHistoricalProviderRouter(options: HistoricalProviderRouter
           retryable: retryable(error) || isQuotaError(error),
           message: errorMessage(error),
         });
+        if (primaryError !== null && retryable(primaryError)) throw primaryError;
         return { provider: options.primary.id, result: primaryResult, attempts };
       }
     },
@@ -148,4 +152,3 @@ export function createHistoricalProviderRouter(options: HistoricalProviderRouter
     },
   };
 }
-

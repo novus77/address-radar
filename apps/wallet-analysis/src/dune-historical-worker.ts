@@ -96,7 +96,7 @@ export function createDuneHistoricalBackfillWorker(input: {
             strategyVersion: input.strategyVersion,
           });
         }
-        if (unavailable === 0) return Object.freeze({
+        if (unavailable === 0 || !input.duneFallbackEnabled) return Object.freeze({
           executionId: partition.executionId ?? `gecko-terminal:${partition.partitionId}`,
           nextOffset: null,
           rowCount: partition.rowCount + reconstructed,
@@ -104,7 +104,6 @@ export function createDuneHistoricalBackfillWorker(input: {
           creditsUsed: 0,
           done: true,
         });
-        if (!input.duneFallbackEnabled) throw new Error(`gecko_milestone_unavailable:${unavailable}`);
       }
       if (partition.queryKind === "pre_milestone_trades" && input.earlyTradeProvider) {
         let incomplete = 0;

@@ -52,7 +52,12 @@ export interface GeckoTerminalOhlcvOptions {
 }
 
 export class GeckoTerminalError extends Error {
-  constructor(message: string, readonly status: number | null, readonly retryable: boolean) {
+  constructor(
+    message: string,
+    readonly status: number | null,
+    readonly retryable: boolean,
+    readonly retryAfterMs: number | null = null,
+  ) {
     super(message);
     this.name = "GeckoTerminalError";
   }
@@ -79,6 +84,7 @@ export interface GeckoTerminalClientOptions {
   baseUrl?: string;
   timeoutMs?: number;
   minimumRequestIntervalMs?: number;
+  rateLimitCooldownMs?: number;
   now?: () => number;
 }
 
@@ -102,10 +108,12 @@ export function createGeckoTerminalClient(options: GeckoTerminalClientOptions = 
   const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const minimumRequestIntervalMs = options.minimumRequestIntervalMs ?? 3_100;
+  const rateLimitCooldownMs = options.rateLimitCooldownMs ?? 60_000;
   const now = options.now ?? Date.now;
   const cache = new Map<string, { expiresAt: number; value: unknown }>();
   let requestTail = Promise.resolve();
   let lastRequestAt = 0;
+  let rateLimitedUntil = 0;
 
   async function request(path: string, cacheTtlMs: number, signal?: AbortSignal): Promise<unknown> {
     const cached = cache.get(path);
@@ -114,7 +122,7 @@ export function createGeckoTerminalClient(options: GeckoTerminalClientOptions = 
     const previous = requestTail;
     requestTail = new Promise<void>((resolve) => { release = resolve; });
     await previous;
-    const waitMs = Math.max(0, lastRequestAt + minimumRequestIntervalMs - now());
+    const waitMs = Math.max(0, lastRequestAt + minimumRequestIntervalMs - now(), rateLimitedUntil - now());
     if (waitMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -130,10 +138,18 @@ export function createGeckoTerminalClient(options: GeckoTerminalClientOptions = 
         return null;
       }
       if (!response.ok) {
+        const retryAfterSeconds = Number(response.headers.get("retry-after"));
+        const retryAfterMs = response.status === 429
+          ? Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+            ? retryAfterSeconds * 1000
+            : rateLimitCooldownMs
+          : null;
+        if (retryAfterMs !== null) rateLimitedUntil = Math.max(rateLimitedUntil, now() + retryAfterMs);
         throw new GeckoTerminalError(
           `GeckoTerminal request failed with status ${response.status}`,
           response.status,
           response.status === 408 || response.status === 429 || response.status >= 500,
+          retryAfterMs,
         );
       }
       const value = await response.json();

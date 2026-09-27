@@ -251,6 +251,34 @@ describe("Dune historical backfill worker", () => {
     repository.close();
   });
 
+  it("completes permanently unavailable milestone tokens when Dune fallback is disabled", async () => {
+    const path = await databasePath();
+    const repository = openAddressRadarRepository(path);
+    const database = new DatabaseSync(path);
+    const historyStore = createCandidateHistoryStore(database);
+    const worker = createDuneHistoricalBackfillWorker({
+      repository,
+      historyStore,
+      queryIds: {},
+      pageSize: 100,
+      strategyVersion: "candidate-history-v3",
+      milestoneRouter: {
+        fallbackCircuit: () => ({ open: false, retryAt: null }),
+        reconstruct: async () => ({
+          provider: "gecko_terminal",
+          result: { status: "not_found", poolAddress: null, supplyEstimate: null, supplyBasis: null, candleCount: 0, milestones: [] },
+          attempts: [{ provider: "gecko_terminal", outcome: "not_found", retryable: false, message: null }],
+        }),
+      },
+      duneFallbackEnabled: false,
+    });
+    const [partition] = createHistoricalPartitions({ queryKind: "milestone_crossings", chains: ["base"], from: START, to: START + DAY, tokenAddressesByChain: { base: ["0xABC"] }, createdAt: 1 });
+
+    await expect(worker.execute(partition!, new AbortController().signal)).resolves.toMatchObject({ creditsUsed: 0, done: true, rowCount: 0 });
+    database.close();
+    repository.close();
+  });
+
   it("completes recent early-trade partitions without Dune credits", async () => {
     const path = await databasePath();
     const repository = openAddressRadarRepository(path);

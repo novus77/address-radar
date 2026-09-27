@@ -25,7 +25,7 @@ describe("GeckoTerminalClient", () => {
 
   it("classifies rate limits as retryable", async () => {
     const client = createGeckoTerminalClient({ fetch: async () => new Response("", { status: 429 }) });
-    await expect(client.topPool("eth", "0xToken")).rejects.toMatchObject({ status: 429, retryable: true });
+    await expect(client.topPool("eth", "0xToken")).rejects.toMatchObject({ status: 429, retryable: true, retryAfterMs: 60_000 });
   });
 
   it("degrades unsupported chains without a request", async () => {
