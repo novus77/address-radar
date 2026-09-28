@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 
 import {
+  createAutomationJobStore,
   createCandidateHistoryStore,
   initializeCandidateHistorySchema,
   migrateAddressRadarDatabase,
@@ -85,6 +86,23 @@ describe("candidate history store", () => {
     store.saveEvidence(evidence);
 
     expect(store.evidenceForTrader("wallet:unresolved")).toEqual([evidence]);
+    database.close();
+  });
+
+  it("atomically wakes candidate evidence when a milestone becomes available", () => {
+    const database = new DatabaseSync(":memory:");
+    migrateAddressRadarDatabase(database);
+    const history = createCandidateHistoryStore(database);
+    const jobs = createAutomationJobStore(database);
+    history.saveHistoricalToken({ tokenId: "base:token-a", chain: "base", tokenAddress: "token-a", symbol: "AAA", imageUrl: null, firstTradeAt: 1, firstReached1mAt: 2, peakMarketCapUsd: 1_500_000, source: "test", sourceQueryId: null, provenance: {} });
+    jobs.enqueue({ jobId: "candidate-1", idempotencyKey: "candidate-1", lane: "trader_backfill", jobType: "candidate_evidence", subjectKey: "base:token-a", priority: 10, cursor: null, nextAttemptAt: 0, payload: "{}", createdAt: 1 });
+    jobs.claim("trader_backfill", 2, 100, "worker");
+    jobs.waitForSource("candidate-1", "worker", { diagnostic: "token milestone data is not available", reasonCode: "missing_milestone", context: { tokenId: "base:token-a" }, recoveryJobIds: [], retryAt: 3, updatedAt: 2 });
+
+    history.saveMilestoneCrossing({ milestoneId: "base:token-a:1000000", tokenId: "base:token-a", marketCapUsd: 1_000_000, crossedAt: 10, precision: "estimated", source: "test", sourceEventIds: ["event-1"], strategyVersion: "candidate-history-v3" });
+
+    expect(jobs.sourceBlock("candidate-1")).toMatchObject({ resolvedAt: 10 });
+    expect(jobs.claim("trader_backfill", 10, 100, "worker")).toMatchObject({ jobId: "candidate-1" });
     database.close();
   });
 

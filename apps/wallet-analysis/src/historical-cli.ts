@@ -79,7 +79,6 @@ const stagePlanner = createHistoricalStagePlanner({
   historyStore,
   chains: config.chains,
   startAt: config.startAt,
-  onMilestoneMaterialized: tokenId => automationJobs.wakeBlockedSource(tokenId, Date.now(), "candidate_evidence"),
 });
 
 const seedStage = (queryKind: "token_universe" | "milestone_crossings" | "pre_milestone_trades", tokenAddressesByChain?: Readonly<Record<string, readonly string[]>>): void => {

@@ -26,7 +26,6 @@ describe("historical stage planner", () => {
     history.saveMilestoneCrossing({ milestoneId: "base:0xgood:500000", tokenId: "base:0xgood", marketCapUsd: 500_000, crossedAt: START + 2, precision: "exact", source: "test", sourceEventIds: ["m"], strategyVersion: "v3" });
     database.prepare(`INSERT INTO historical_backfill_partitions(partition_id,query_kind,chain,day_start,day_end,token_addresses,status,execution_id,next_offset,row_count,attempt_count,watermark,next_retry_at,lease_expires_at,last_error,created_at,updated_at,completed_at) VALUES ('failed-universe','token_universe','base',?,?,'[]','failed',NULL,0,0,1,NULL,0,NULL,'provider_error',1,1,NULL)`).run(START, START + 100);
 
-    const materialized: string[] = [];
     const planner = createHistoricalStagePlanner({
       database,
       repository,
@@ -34,7 +33,6 @@ describe("historical stage planner", () => {
       chains: ["base"],
       startAt: START,
       now: () => START + 24 * 60 * 60_000,
-      onMilestoneMaterialized: tokenId => materialized.push(tokenId),
     });
     const result = planner.plan();
     planner.plan();
@@ -49,7 +47,6 @@ describe("historical stage planner", () => {
     expect(history.milestoneCrossings("base:0xgood")).toEqual(expect.arrayContaining([
       expect.objectContaining({ marketCapUsd: 1_000_000, crossedAt: START + 1, source: "historical_token_first_reached_1m" }),
     ]));
-    expect(materialized).toEqual(["base:0xgood"]);
     database.close();
     repository.close();
   });

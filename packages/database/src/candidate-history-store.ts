@@ -7,6 +7,8 @@ import type {
   TokenMilestoneCrossing,
 } from "@address-radar/domain";
 
+import { withAddressRadarWriteTransaction } from "./connection.js";
+
 const parseArray = (value: unknown): readonly string[] => {
   if (typeof value !== "string") return Object.freeze([]);
   try {
@@ -194,33 +196,35 @@ export function createCandidateHistoryStore(database: DatabaseSync) {
     },
 
     saveMilestoneCrossing(crossing: TokenMilestoneCrossing): void {
-      database.prepare(`
-        INSERT OR IGNORE INTO token_milestone_crossings(
-          milestone_id, token_id, market_cap_usd, crossed_at, precision, source,
-          source_event_ids, strategy_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(crossing.milestoneId, crossing.tokenId, crossing.marketCapUsd, crossing.crossedAt,
-        crossing.precision, crossing.source, JSON.stringify(crossing.sourceEventIds), crossing.strategyVersion);
-      const automationJobsAvailable = database.prepare(`
-        SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'automation_jobs'
-      `).get();
-      if (automationJobsAvailable) {
-        const updatedAt = crossing.crossedAt ?? Date.now();
+      withAddressRadarWriteTransaction(database, () => {
         database.prepare(`
-          UPDATE automation_job_blocks SET resolved_at = ?, updated_at = ?
-          WHERE resolved_at IS NULL AND job_id IN (
-            SELECT job_id FROM automation_jobs
+          INSERT OR IGNORE INTO token_milestone_crossings(
+            milestone_id, token_id, market_cap_usd, crossed_at, precision, source,
+            source_event_ids, strategy_version
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(crossing.milestoneId, crossing.tokenId, crossing.marketCapUsd, crossing.crossedAt,
+          crossing.precision, crossing.source, JSON.stringify(crossing.sourceEventIds), crossing.strategyVersion);
+        const automationJobsAvailable = database.prepare(`
+          SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'automation_jobs'
+        `).get();
+        if (automationJobsAvailable) {
+          const updatedAt = crossing.crossedAt ?? Date.now();
+          database.prepare(`
+            UPDATE automation_job_blocks SET resolved_at = ?, updated_at = ?
+            WHERE resolved_at IS NULL AND job_id IN (
+              SELECT job_id FROM automation_jobs
+              WHERE job_type = 'candidate_evidence' AND subject_key = ?
+                AND status IN ('blocked_source', 'waiting_source')
+            )
+          `).run(updatedAt, updatedAt, crossing.tokenId);
+          database.prepare(`
+            UPDATE automation_jobs
+            SET status = 'pending', next_attempt_at = ?, last_error = NULL, updated_at = ?
             WHERE job_type = 'candidate_evidence' AND subject_key = ?
               AND status IN ('blocked_source', 'waiting_source')
-          )
-        `).run(updatedAt, updatedAt, crossing.tokenId);
-        database.prepare(`
-          UPDATE automation_jobs
-          SET status = 'pending', next_attempt_at = ?, last_error = NULL, updated_at = ?
-          WHERE job_type = 'candidate_evidence' AND subject_key = ?
-            AND status IN ('blocked_source', 'waiting_source')
-        `).run(updatedAt, updatedAt, crossing.tokenId);
-      }
+          `).run(updatedAt, updatedAt, crossing.tokenId);
+        }
+      });
     },
 
     milestoneCrossings(tokenId: string): readonly TokenMilestoneCrossing[] {
