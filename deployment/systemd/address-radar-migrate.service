@@ -1,19 +1,17 @@
 [Unit]
-Description=Address Radar Wallet Monitor
-After=network-online.target address-radar-migrate.service
+Description=Address Radar Database Migration Barrier
+After=network-online.target
 Wants=network-online.target
-Requires=address-radar-migrate.service
 
 [Service]
-Type=simple
+Type=oneshot
 User=address-radar
 Group=address-radar
 WorkingDirectory=/opt/address-radar/current
 EnvironmentFile=/etc/address-radar/address-radar.env
-Environment=ADDRESS_RADAR_RUNTIME_MIGRATIONS=false
-ExecStart=/opt/address-radar/current/node_modules/.bin/tsx apps/wallet-monitor/src/cli.ts
-Restart=on-failure
-RestartSec=5
+ExecStart=/opt/address-radar/current/node_modules/.bin/tsx scripts/migrate-database.ts
+RemainAfterExit=yes
+TimeoutStartSec=5min
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

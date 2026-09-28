@@ -1,7 +1,8 @@
 [Unit]
 Description=Address Radar Durable Automation
-After=network-online.target
+After=network-online.target address-radar-migrate.service
 Wants=network-online.target
+Requires=address-radar-migrate.service
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -11,6 +12,7 @@ User=address-radar
 Group=address-radar
 WorkingDirectory=/opt/address-radar/current
 EnvironmentFile=/etc/address-radar/address-radar.env
+Environment=ADDRESS_RADAR_RUNTIME_MIGRATIONS=false
 ExecStart=/opt/address-radar/current/node_modules/.bin/tsx apps/automation/src/cli.ts
 Restart=on-failure
 SuccessExitStatus=143

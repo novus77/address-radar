@@ -1,4 +1,5 @@
 export { migrateAddressRadarDatabase } from "./migrations.js";
+export type { AddressRadarMigrationOptions } from "./migrations.js";
 export { createAutomationJobStore } from "./automation-job-store.js";
 export type {
   AutomationQueueMetrics,
@@ -67,7 +68,9 @@ export type {
 } from "./repository.js";
 export { initializeAddressRadarSchema } from "./schema.js";
 export { createCandidateHistoryStore, initializeCandidateHistorySchema } from "./candidate-history-store.js";
-export type { CandidateHistoryStore } from "./candidate-history-store.js";
+export type { CandidateEvidenceWriteResult, CandidateHistoryStore } from "./candidate-history-store.js";
+export { createSqliteAddressRadarWritePort } from "./write-port.js";
+export type { AddressRadarWritePort } from "./write-port.js";
 export { createSourceLedgerStore, initializeSourceLedgerSchema } from "./source-ledger-store.js";
 export type {
   RecoveryJobRecord,

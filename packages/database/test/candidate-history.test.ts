@@ -82,10 +82,41 @@ describe("candidate history store", () => {
       strategyVersion: "candidate-history-v3",
     };
 
-    store.saveEvidence(evidence);
-    store.saveEvidence(evidence);
+    expect(store.saveEvidence(evidence)).toBe("inserted");
+    expect(store.saveEvidence(evidence)).toBe("unchanged");
 
     expect(store.evidenceForTrader("wallet:unresolved")).toEqual([evidence]);
+    database.close();
+  });
+
+  it("updates mutable evidence without merging a conflicting identity", () => {
+    const database = new DatabaseSync(":memory:");
+    initializeCandidateHistorySchema(database);
+    const store = createCandidateHistoryStore(database);
+    const evidence = {
+      evidenceId: "evidence-1",
+      traderId: "trader-1",
+      tokenId: "base:token-a",
+      milestoneId: "base:token-a:500000",
+      evidenceType: "market_cap_500k_10x",
+      admissionClass: "strong" as const,
+      cumulativeBuyUsd: 50,
+      weightedEntryMarketCapUsd: 40_000,
+      theoreticalOpportunity: 12.5,
+      capturableMultiple: null,
+      realizedMultiple: null,
+      evidenceAt: 100,
+      sourceEventIds: ["event-1"],
+      strategyVersion: "candidate-history-v3",
+    };
+
+    expect(store.saveEvidence(evidence)).toBe("inserted");
+    expect(store.saveEvidence({ ...evidence, cumulativeBuyUsd: 75 })).toBe("updated");
+    expect(store.evidenceForTrader("trader-1")).toEqual([
+      expect.objectContaining({ cumulativeBuyUsd: 75 }),
+    ]);
+    expect(() => store.saveEvidence({ ...evidence, traderId: "trader-2" }))
+      .toThrow("candidate_evidence_identity_conflict:evidence-1");
     database.close();
   });
 

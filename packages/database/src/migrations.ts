@@ -13,7 +13,17 @@ import { initializeRecoveryFactLinkSchema } from "./recovery-fact-link-store.js"
 import { initializeSourceEnrichmentSchema } from "./source-enrichment-store.js";
 import { initializeWalletCoverageSchema } from "./wallet-coverage-store.js";
 
-export function migrateAddressRadarDatabase(database: DatabaseSync): void {
+export interface AddressRadarMigrationOptions {
+  readonly force?: boolean;
+  readonly environment?: NodeJS.ProcessEnv;
+}
+
+export function migrateAddressRadarDatabase(
+  database: DatabaseSync,
+  options: AddressRadarMigrationOptions = {},
+): void {
+  const environment = options.environment ?? process.env;
+  if (!options.force && environment.ADDRESS_RADAR_RUNTIME_MIGRATIONS === "false") return;
   database.exec(`PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${ADDRESS_RADAR_BUSY_TIMEOUT_MS};`);
   withAddressRadarWriteTransaction(database, () => {
     initializeAddressRadarSchema(database);
@@ -59,6 +69,20 @@ export function migrateAddressRadarDatabase(database: DatabaseSync): void {
       LEFT JOIN address_signal_evidence e ON e.event_id = ec.event_id;
     `);
     migrateHistoricalBroadcasts(database);
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS address_radar_schema_state (
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+        schema_version TEXT NOT NULL,
+        migrated_at INTEGER NOT NULL
+      ) STRICT;
+    `);
+    database.prepare(`
+      INSERT INTO address_radar_schema_state(singleton, schema_version, migrated_at)
+      VALUES (1, '2026-09-28-write-stability-v1', ?)
+      ON CONFLICT(singleton) DO UPDATE SET
+        schema_version = excluded.schema_version,
+        migrated_at = excluded.migrated_at
+    `).run(Date.now());
   }, { maximumAttempts: 20, baseDelayMs: 25, maximumDelayMs: 1_000 });
 }
 

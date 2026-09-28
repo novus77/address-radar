@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 
 import {
   createCandidateHistoryStore,
+  createSqliteAddressRadarWritePort,
   type AutomationJobStore,
 } from "@address-radar/database";
 import {
@@ -327,7 +328,8 @@ async function dispatchChanges(input: {
   const availableCapacity = 2_000 - activeJobs;
   const events = input.database.prepare(`
     SELECT canonical_event_id AS eventId, entity_id AS traderId, chain,
-      token_address AS tokenAddress, updated_at AS updatedAt
+      token_address AS tokenAddress, side, amount_usd AS amountUsd,
+      occurred_at AS occurredAt, updated_at AS updatedAt
     FROM canonical_trader_events
     WHERE updated_at > ? OR (updated_at = ? AND canonical_event_id > ?)
     ORDER BY updated_at, canonical_event_id
@@ -337,6 +339,9 @@ async function dispatchChanges(input: {
     traderId: string;
     chain: string;
     tokenAddress: string;
+    side: string;
+    amountUsd: number | null;
+    occurredAt: number;
     updatedAt: number;
   }>;
   let eventUpdatedAt = cursor.eventUpdatedAt;
@@ -347,7 +352,15 @@ async function dispatchChanges(input: {
       chain: event.chain,
       tokenAddress: event.tokenAddress,
       traderId: event.traderId,
-      sourceKey: `event:${event.eventId}:${event.updatedAt}`,
+      sourceKey: stableId("event-business-state", [
+        event.eventId,
+        event.traderId,
+        event.chain,
+        event.tokenAddress,
+        event.side,
+        event.amountUsd,
+        event.occurredAt,
+      ]),
       evaluatedAt: event.updatedAt,
       now: input.now,
     });
@@ -403,7 +416,7 @@ async function evaluateToken(input: {
       : [];
     return {
       status: "waiting_source",
-      retryAt: input.evaluatedAt + SOURCE_RETRY_MS,
+      retryAt: input.decisionAt + SOURCE_RETRY_MS,
       diagnostic: "historical token metadata is not available",
       sourceBlock: { reasonCode: "missing_token_identity", context: { tokenId, evaluatedAt: input.evaluatedAt }, recoveryJobIds },
       outcome: {
@@ -470,7 +483,7 @@ async function evaluateToken(input: {
     }).recoveryJobIds ?? [];
     return {
       status: "waiting_source",
-      retryAt: input.evaluatedAt + SOURCE_RETRY_MS,
+      retryAt: input.decisionAt + SOURCE_RETRY_MS,
       diagnostic: "token milestone data is not available",
       sourceBlock: { reasonCode: "missing_milestone", context: { tokenId: token.tokenId, evaluatedAt: input.evaluatedAt }, recoveryJobIds },
       outcome: {
@@ -497,7 +510,7 @@ async function evaluateToken(input: {
     }).recoveryJobIds ?? [];
     return {
       status: "waiting_source",
-      retryAt: input.evaluatedAt + SOURCE_RETRY_MS,
+      retryAt: input.decisionAt + SOURCE_RETRY_MS,
       diagnostic: "canonical early buy events are not available",
       sourceBlock: { reasonCode: "missing_early_trades", context: { tokenId: token.tokenId, evaluatedAt: input.evaluatedAt }, recoveryJobIds },
       outcome: {
@@ -522,7 +535,7 @@ async function evaluateToken(input: {
     }).recoveryJobIds ?? [];
     return {
       status: "waiting_source",
-      retryAt: input.evaluatedAt + SOURCE_RETRY_MS,
+      retryAt: input.decisionAt + SOURCE_RETRY_MS,
       diagnostic: "token price history is not available",
       sourceBlock: { reasonCode: "missing_market_history", context: { tokenId: token.tokenId, evaluatedAt: input.evaluatedAt }, recoveryJobIds },
       outcome: {
@@ -533,6 +546,7 @@ async function evaluateToken(input: {
   }
 
   const historyStore = createCandidateHistoryStore(input.database);
+  const writePort = createSqliteAddressRadarWritePort(input.database);
   const eventsByTrader = new Map<string, BuyEventRow[]>();
   for (const event of events) {
     const traderEvents = eventsByTrader.get(event.traderId) ?? [];
@@ -579,7 +593,7 @@ async function evaluateToken(input: {
     }
 
     if (strongest) {
-      historyStore.saveEvidence({
+      const writeResult = writePort.saveCandidateEvidence({
         evidenceId: stableId("candidate-evidence", [STRATEGY_VERSION, traderId, token.tokenId]),
         traderId,
         tokenId: token.tokenId,
@@ -595,7 +609,7 @@ async function evaluateToken(input: {
         sourceEventIds: sourceIds(input.database, strongest.events),
         strategyVersion: STRATEGY_VERSION,
       });
-      persisted += 1;
+      if (writeResult !== "unchanged") persisted += 1;
     }
 
     evaluateAndProjectAdmission({

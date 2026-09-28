@@ -9,6 +9,8 @@ import type {
 
 import { withAddressRadarWriteTransaction } from "./connection.js";
 
+export type CandidateEvidenceWriteResult = "inserted" | "updated" | "unchanged";
+
 const parseArray = (value: unknown): readonly string[] => {
   if (typeof value !== "string") return Object.freeze([]);
   try {
@@ -244,18 +246,51 @@ export function createCandidateHistoryStore(database: DatabaseSync) {
       })));
     },
 
-    saveEvidence(evidence: CandidateEvidenceV3): void {
-      database.prepare(`
-        INSERT OR REPLACE INTO candidate_evidence_v3(
+    saveEvidence(evidence: CandidateEvidenceV3): CandidateEvidenceWriteResult {
+      const existing = database.prepare(`
+        SELECT trader_id AS traderId, token_id AS tokenId
+        FROM candidate_evidence_v3
+        WHERE evidence_id = ?
+      `).get(evidence.evidenceId) as { traderId: string; tokenId: string } | undefined;
+      if (existing && (existing.traderId !== evidence.traderId || existing.tokenId !== evidence.tokenId)) {
+        throw new Error(`candidate_evidence_identity_conflict:${evidence.evidenceId}`);
+      }
+      const result = database.prepare(`
+        INSERT INTO candidate_evidence_v3(
           evidence_id, trader_id, token_id, milestone_id, evidence_type, admission_class,
           cumulative_buy_usd, weighted_entry_market_cap_usd, theoretical_opportunity,
           capturable_multiple, realized_multiple, evidence_at, source_event_ids, strategy_version
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(evidence_id) DO UPDATE SET
+          milestone_id = excluded.milestone_id,
+          evidence_type = excluded.evidence_type,
+          admission_class = excluded.admission_class,
+          cumulative_buy_usd = excluded.cumulative_buy_usd,
+          weighted_entry_market_cap_usd = excluded.weighted_entry_market_cap_usd,
+          theoretical_opportunity = excluded.theoretical_opportunity,
+          capturable_multiple = excluded.capturable_multiple,
+          realized_multiple = excluded.realized_multiple,
+          evidence_at = excluded.evidence_at,
+          source_event_ids = excluded.source_event_ids,
+          strategy_version = excluded.strategy_version
+        WHERE candidate_evidence_v3.milestone_id IS NOT excluded.milestone_id
+          OR candidate_evidence_v3.evidence_type IS NOT excluded.evidence_type
+          OR candidate_evidence_v3.admission_class IS NOT excluded.admission_class
+          OR candidate_evidence_v3.cumulative_buy_usd IS NOT excluded.cumulative_buy_usd
+          OR candidate_evidence_v3.weighted_entry_market_cap_usd IS NOT excluded.weighted_entry_market_cap_usd
+          OR candidate_evidence_v3.theoretical_opportunity IS NOT excluded.theoretical_opportunity
+          OR candidate_evidence_v3.capturable_multiple IS NOT excluded.capturable_multiple
+          OR candidate_evidence_v3.realized_multiple IS NOT excluded.realized_multiple
+          OR candidate_evidence_v3.evidence_at IS NOT excluded.evidence_at
+          OR candidate_evidence_v3.source_event_ids IS NOT excluded.source_event_ids
+          OR candidate_evidence_v3.strategy_version IS NOT excluded.strategy_version
       `).run(evidence.evidenceId, evidence.traderId, evidence.tokenId, evidence.milestoneId,
         evidence.evidenceType, evidence.admissionClass, evidence.cumulativeBuyUsd,
         evidence.weightedEntryMarketCapUsd, evidence.theoreticalOpportunity,
         evidence.capturableMultiple, evidence.realizedMultiple, evidence.evidenceAt,
         JSON.stringify(evidence.sourceEventIds), evidence.strategyVersion);
+      if (result.changes === 0) return "unchanged";
+      return existing ? "updated" : "inserted";
     },
 
     evidenceForTrader(traderId: string): readonly CandidateEvidenceV3[] {

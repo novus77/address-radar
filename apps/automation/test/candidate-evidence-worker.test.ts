@@ -158,7 +158,9 @@ describe("candidate evidence worker", () => {
       WHERE canonical_event_id = 'event-a'
     `).run();
     await evaluate(worker, "solana:token-a");
-    await evaluate(worker, "solana:token-a");
+    await expect(evaluate(worker, "solana:token-a")).resolves.toMatchObject({
+      outcome: { status: "no_output", producedCount: 0 },
+    });
 
     expect(history.evidenceForTrader("fomo:trader-a")).toEqual([
       expect.objectContaining({ sourceEventIds: ["event-a:FOMO_AND_ONCHAIN"] }),
