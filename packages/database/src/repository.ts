@@ -118,6 +118,7 @@ export interface AddressRadarRepository extends TokenAggregationRepository, Runt
   eventsForToken(chain: string, tokenAddress: string): readonly TraderEvent[];
   traderEntity(entityId: string): TraderEntityRecord | null;
   traderEntityIdsWithEvents(): readonly string[];
+  traderEntityIdsRequiringPerformance(asOf: number, limit: number): readonly string[];
   identityResolution(handle: string): IdentityResolutionCache | null;
   saveIdentityResolution(input: IdentityResolutionCache): void;
   recordLeaderboardObservation(input: LeaderboardObservationInput): void;
@@ -720,6 +721,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
 
     insertTraderEvent(event) {
       validateTraderEvent(event);
+      return transaction(() => {
       const result = database.prepare(`
         INSERT OR IGNORE INTO trader_events(
           event_id, account_id, entity_id, chain, token_address, side,
@@ -776,6 +778,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         database.prepare("INSERT OR IGNORE INTO canonical_trader_event_observations(canonical_event_id, observation_id) VALUES (?, ?)").run(canonicalEventId, observationId);
       }
       return Object.freeze({ inserted: result.changes === 1 });
+      });
     },
 
     eventsForEntity(entityId) {
@@ -855,6 +858,45 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
 
     traderEntityIdsWithEvents() {
       const rows = database.prepare("SELECT DISTINCT entity_id AS entityId FROM trader_events ORDER BY entity_id").all() as { entityId: string }[];
+      return Object.freeze(rows.map(row => row.entityId));
+    },
+
+    traderEntityIdsRequiringPerformance(asOf, limit) {
+      if (!Number.isSafeInteger(asOf) || asOf < 0) throw new Error("asOf must be a non-negative safe integer");
+      if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("limit must be a positive safe integer");
+      const rows = database.prepare(`
+        WITH latest_event AS (
+          SELECT entity_id, MAX(collected_at) AS event_watermark
+          FROM trader_events
+          WHERE collected_at <= ?
+          GROUP BY entity_id
+        ), latest_sample AS (
+          SELECT entity_id, MAX(updated_at) AS sample_watermark
+          FROM trader_token_samples
+          GROUP BY entity_id
+        ), latest_ability AS (
+          SELECT entity_id, MAX(created_at) AS ability_watermark
+          FROM trader_ability_snapshots
+          WHERE window = '30d'
+          GROUP BY entity_id
+        ), due_outcome AS (
+          SELECT samples.entity_id, MIN(outcomes.target_at) AS due_at
+          FROM trader_token_outcomes outcomes
+          JOIN trader_token_samples samples ON samples.sample_id = outcomes.sample_id
+          WHERE outcomes.coverage_status = 'pending' AND outcomes.target_at <= ?
+          GROUP BY samples.entity_id
+        )
+        SELECT events.entity_id AS entityId
+        FROM latest_event events
+        LEFT JOIN latest_sample samples ON samples.entity_id = events.entity_id
+        LEFT JOIN latest_ability abilities ON abilities.entity_id = events.entity_id
+        LEFT JOIN due_outcome due ON due.entity_id = events.entity_id
+        WHERE events.event_watermark > COALESCE(samples.sample_watermark, 0)
+          OR COALESCE(samples.sample_watermark, 0) > COALESCE(abilities.ability_watermark, 0)
+          OR due.due_at IS NOT NULL
+        ORDER BY COALESCE(due.due_at, events.event_watermark), events.entity_id
+        LIMIT ?
+      `).all(asOf, asOf, limit) as { entityId: string }[];
       return Object.freeze(rows.map(row => row.entityId));
     },
 

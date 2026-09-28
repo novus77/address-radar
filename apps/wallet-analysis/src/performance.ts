@@ -14,17 +14,22 @@ export function createTraderPerformanceRuntime(input: {
   readonly strategyVersion: string;
   readonly dustThresholdUsd: number;
   readonly maximumObservationDelayMs: number;
+  readonly batchSize?: number;
   readonly now?: () => number;
 }) {
   const now = input.now ?? Date.now;
+  const batchSize = input.batchSize ?? 10;
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1) throw new Error("batchSize must be a positive safe integer");
   return Object.freeze({
     async runOnce() {
       const asOf = now();
       let samplesCreated = 0;
-      for (const entityId of input.repository.traderEntityIdsWithEvents()) {
+      const entityIds = input.repository.traderEntityIdsRequiringPerformance(asOf, batchSize);
+      for (const entityId of entityIds) {
         const entity = input.repository.traderEntity(entityId);
         if (!entity) continue;
-        for (const events of groupEvents(input.repository.eventsForEntity(entityId)).values()) {
+        const availableEvents = input.repository.eventsForEntity(entityId).filter(event => event.collectedAt <= asOf);
+        for (const events of groupEvents(availableEvents).values()) {
           for (const event of events) if (event.priceUsd !== null && event.priceUsd > 0) input.repository.saveMarketObservation(event.chain, event.tokenAddress, { observedAt: event.occurredAt, priceUsd: event.priceUsd, source: event.source });
           const launchCandidates = events.flatMap(event => event.tokenAgeMs === null ? [] : [Math.max(0, event.occurredAt - event.tokenAgeMs)]);
           const sample = buildTraderTokenSample({ events, launchAt: launchCandidates.length ? Math.min(...launchCandidates) : null, now: asOf, dustThresholdUsd: input.dustThresholdUsd });
@@ -52,7 +57,7 @@ export function createTraderPerformanceRuntime(input: {
           input.repository.updateTraderLifecycle(entityId, evaluation.lifecycle.next, asOf);
         }
       }
-      return Object.freeze({ entities: input.repository.traderEntityIdsWithEvents().length, samples: samplesCreated });
+      return Object.freeze({ entities: entityIds.length, samples: samplesCreated });
     },
   });
 }

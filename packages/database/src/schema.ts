@@ -216,6 +216,7 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       source TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS trader_events_entity_time ON trader_events(entity_id, occurred_at);
+    CREATE INDEX IF NOT EXISTS trader_events_performance_watermark ON trader_events(entity_id, collected_at DESC);
     CREATE INDEX IF NOT EXISTS trader_events_token_time ON trader_events(chain, token_address, occurred_at);
     CREATE TABLE IF NOT EXISTS raw_trader_observations (
       observation_id TEXT PRIMARY KEY,
@@ -315,6 +316,7 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       UNIQUE(entity_id, chain, token_address)
     );
     CREATE INDEX IF NOT EXISTS trader_token_samples_entity_time ON trader_token_samples(entity_id, first_buy_at);
+    CREATE INDEX IF NOT EXISTS trader_token_samples_performance_watermark ON trader_token_samples(entity_id, updated_at DESC);
     CREATE TABLE IF NOT EXISTS market_observations (
       chain TEXT NOT NULL,
       token_address TEXT NOT NULL,

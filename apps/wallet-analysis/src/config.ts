@@ -4,6 +4,7 @@ export interface WalletAnalysisConfig {
   readonly databasePath: string;
   readonly intervalMs: number;
   readonly performanceIntervalMs: number;
+  readonly performanceBatchSize: number;
   readonly performanceDustThresholdUsd: number;
   readonly maximumObservationDelayMs: number;
   readonly endpoints: Readonly<Partial<Record<DiscoveryChain, { readonly primary: string; readonly fallback?: string }>>>;
@@ -46,15 +47,18 @@ export function loadWalletAnalysisConfig(env: Readonly<Record<string, string | u
   const interval = Number(env.ADDRESS_RADAR_WALLET_ANALYSIS_INTERVAL_MS ?? 5_000);
   if (!Number.isSafeInteger(interval) || interval <= 0) throw new Error("Invalid wallet analysis interval");
   const performanceIntervalMs = Number(env.ADDRESS_RADAR_PERFORMANCE_INTERVAL_MS ?? 300_000);
+  const performanceBatchSize = Number(env.ADDRESS_RADAR_PERFORMANCE_BATCH_SIZE ?? 10);
   const performanceDustThresholdUsd = Number(env.ADDRESS_RADAR_PERFORMANCE_DUST_THRESHOLD_USD ?? 50);
   const maximumObservationDelayMs = Number(env.ADDRESS_RADAR_OUTCOME_MAXIMUM_DELAY_MS ?? 15 * 60_000);
   if (!Number.isSafeInteger(performanceIntervalMs) || performanceIntervalMs <= 0) throw new Error("Invalid performance interval");
+  if (!Number.isSafeInteger(performanceBatchSize) || performanceBatchSize <= 0) throw new Error("Invalid performance batch size");
   if (!Number.isFinite(performanceDustThresholdUsd) || performanceDustThresholdUsd < 0) throw new Error("Invalid performance dust threshold");
   if (!Number.isSafeInteger(maximumObservationDelayMs) || maximumObservationDelayMs < 0) throw new Error("Invalid outcome maximum delay");
   return Object.freeze({
     databasePath: env.ADDRESS_RADAR_DATABASE_PATH?.trim() || ".address-radar/address-radar.sqlite",
     intervalMs: interval,
     performanceIntervalMs,
+    performanceBatchSize,
     performanceDustThresholdUsd,
     maximumObservationDelayMs,
     endpoints: Object.freeze(endpoints),

@@ -26,6 +26,7 @@ const performance = createTraderPerformanceRuntime({
   strategyVersion: "trader-ability-v3-production",
   dustThresholdUsd: config.performanceDustThresholdUsd,
   maximumObservationDelayMs: config.maximumObservationDelayMs,
+  batchSize: config.performanceBatchSize,
 });
 let nextPerformanceAt = 0;
 const controller = new AbortController(); let stopping = false;

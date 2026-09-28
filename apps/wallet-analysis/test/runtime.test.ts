@@ -94,14 +94,16 @@ describe("trader performance runtime", () => {
     repository.linkAccountToEntity({ accountId: "u1", entityId: "fomo:u1", confidence: "confirmed", source: "test", observedAt: 1 });
     repository.insertTraderEvent({ eventId: "buy", accountId: "u1", entityId: "fomo:u1", chain: "solana", tokenAddress: "TokenA", side: "buy", amountUsd: 200, priceUsd: 1, marketCapUsd: 50_000, tokenAgeMs: 500, occurredAt: 1_000, collectedAt: 1_000, source: "fomo_stream" });
     repository.insertTraderEvent({ eventId: "sell", accountId: "u1", entityId: "fomo:u1", chain: "solana", tokenAddress: "TokenA", side: "sell", amountUsd: 400, priceUsd: 2, marketCapUsd: 100_000, tokenAgeMs: 60_000, occurredAt: 61_000, collectedAt: 61_000, source: "fomo_stream" });
-    const runtime = createTraderPerformanceRuntime({ repository, now: () => 70_000, strategyVersion: "trader-ability-v2", dustThresholdUsd: 25, maximumObservationDelayMs: 5_000 });
+    let now = 70_000;
+    const runtime = createTraderPerformanceRuntime({ repository, now: () => now, strategyVersion: "trader-ability-v2", dustThresholdUsd: 25, maximumObservationDelayMs: 5_000 });
 
-    await runtime.runOnce();
+    await expect(runtime.runOnce()).resolves.toMatchObject({ entities: 1 });
     const first = repository.latestTraderAbility("fomo:u1", "30d");
     repository.insertTraderEvent({ eventId: "sell-later", accountId: "u1", entityId: "fomo:u1", chain: "solana", tokenAddress: "TokenA", side: "sell", amountUsd: 100, priceUsd: 2.5, marketCapUsd: 125_000, tokenAgeMs: 120_000, occurredAt: 121_000, collectedAt: 121_000, source: "fomo_stream" });
-    await runtime.runOnce();
+    now = 130_000;
+    await expect(runtime.runOnce()).resolves.toMatchObject({ entities: 1 });
     const second = repository.latestTraderAbility("fomo:u1", "30d");
-    await runtime.runOnce();
+    await expect(runtime.runOnce()).resolves.toMatchObject({ entities: 0 });
     const third = repository.latestTraderAbility("fomo:u1", "30d");
 
     expect(first).not.toBeNull();
