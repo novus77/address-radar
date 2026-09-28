@@ -43,6 +43,15 @@ describe("historical stage planner", () => {
       END;
     `);
     expect(() => planner.plan()).not.toThrow();
+    const restartedPlanner = createHistoricalStagePlanner({
+      database,
+      repository,
+      historyStore: history,
+      chains: ["base"],
+      startAt: START,
+      now: () => START + 24 * 60 * 60_000,
+    });
+    expect(() => restartedPlanner.plan()).not.toThrow();
 
     expect(result).toMatchObject({ milestoneTokenCount: 1, earlyTradeTokenCount: 1 });
     const partitions = repository.historicalBackfillPartitions().filter(item => item.queryKind !== "token_universe");

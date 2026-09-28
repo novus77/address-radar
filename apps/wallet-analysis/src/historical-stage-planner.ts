@@ -32,7 +32,9 @@ export function createHistoricalStagePlanner(input: {
   const now = input.now ?? Date.now;
   const configuredChains = new Set(input.chains.map(chain => chain.trim().toLowerCase()).filter(Boolean));
   const materializedMilestoneTokens = new Set<string>();
-  const attemptedPartitionIds = new Set<string>();
+  const attemptedPartitionIds = new Set(
+    input.repository.historicalBackfillPartitions().map(partition => partition.partitionId),
+  );
 
   const eligibleRows = (requireMilestone: boolean): readonly HistoricalTokenRow[] => {
     const rows = input.database.prepare(`
