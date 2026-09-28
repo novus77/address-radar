@@ -61,4 +61,17 @@ describe("candidate source recovery planner", () => {
     })).toEqual({ recoveryJobIds: ["recovery:milestone_early_buyers:solana:Mint"] });
     database.close();
   });
+
+  it("routes market history by supported source family", () => {
+    const database = new DatabaseSync(":memory:");
+    initializeSourceLedgerSchema(database);
+    const ledger = createSourceLedgerStore(database);
+    const planner = createCandidateSourceRecoveryPlanner({ ledger, now: () => 3_000 });
+
+    expect(planner.plan({ reasonCode: "missing_market_history", tokenId: "eth:0xabc", chain: "eth", tokenAddress: "0xabc" }))
+      .toEqual({ recoveryJobIds: ["recovery:market_history:eth:0xabc"] });
+    expect(planner.plan({ reasonCode: "missing_market_history", tokenId: "robinhood:0xdef", chain: "robinhood", tokenAddress: "0xdef" }))
+      .toEqual({ recoveryJobIds: ["recovery:fomo_token_history:robinhood:0xdef"] });
+    database.close();
+  });
 });

@@ -7,7 +7,7 @@ import {
   openAddressRadarDatabase,
   openAddressRadarRepository,
 } from "@address-radar/database";
-import { createDexScreenerClient, FomoTokenLookupProducer } from "@address-radar/collectors";
+import { createDexScreenerClient, createGeckoTerminalClient, FomoTokenLookupProducer } from "@address-radar/collectors";
 import { createTokenLifecycleResolver } from "@address-radar/aggregation";
 import { openMonitoringRegistry } from "@address-radar/identity";
 import { createGatewayClient, createGatewayDeliveryWorker } from "@address-radar/delivery";
@@ -17,7 +17,7 @@ import { createPollingRuntimeJob, createScannerRuntime } from "./runtime.js";
 import { createRecoveryRuntime } from "./recovery-runtime.js";
 import { createConfiguredCollectors } from "./collectors.js";
 import { createDiskHeadroomGuard, createRateLimitedErrorReporter } from "./resilience.js";
-import { createSourceRecoveryHandlers } from "./source-recovery-handlers.js";
+import { createSourceRecoveryHandlers, reconcileCandidateSourceRecovery } from "./source-recovery-handlers.js";
 
 export async function main(env: Readonly<Record<string, string | undefined>> = process.env): Promise<void> {
   const config = parseScannerConfig(env);
@@ -32,6 +32,8 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
   const automationJobs = createAutomationJobStore(historyDatabase);
   const monitoringRegistry = openMonitoringRegistry(config.databasePath);
   const marketProvider = createDexScreenerClient({ ...(config.marketBaseUrl ? { baseUrl: config.marketBaseUrl } : {}) });
+  const historicalMarketProvider = createGeckoTerminalClient();
+  if (config.recoveryEnabled) reconcileCandidateSourceRecovery({ database: historyDatabase, ledger: sourceLedger });
   const lifecycleResolver = createTokenLifecycleResolver({});
   const collectors = createConfiguredCollectors({ config, repository, monitoringRegistry });
   const errorReporter = createRateLimitedErrorReporter({
@@ -123,6 +125,7 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
       history: historyStore,
       facts: tokenFacts,
       marketProvider,
+      historicalMarketProvider,
       fomoProducer: new FomoTokenLookupProducer({ filePath: config.fomoLookupQueuePath }),
       now: Date.now,
     }),

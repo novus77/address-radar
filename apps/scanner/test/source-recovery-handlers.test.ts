@@ -11,7 +11,7 @@ import {
 import { describe, expect, it } from "vitest";
 
 import { createRecoveryRuntime } from "../src/recovery-runtime.js";
-import { createSourceRecoveryHandlers } from "../src/source-recovery-handlers.js";
+import { createSourceRecoveryHandlers, reconcileCandidateSourceRecovery } from "../src/source-recovery-handlers.js";
 
 const NOW = 10_000;
 
@@ -112,6 +112,41 @@ describe("source recovery handlers", () => {
 
     await expect(runtime.runOnce()).resolves.toMatchObject({ outcome: "retry" });
     expect(requests).toEqual([expect.objectContaining({ chainId: "solana", tokenAddress: "Mint", purpose: "milestone_backfill", milestoneId: "solana:Mint:500000", beforeAt: 2_000 })]);
+    database.close();
+  });
+
+  it("backfills historical OHLCV and wakes blocked candidate evidence", async () => {
+    const database = new DatabaseSync(":memory:");
+    migrateAddressRadarDatabase(database);
+    initializeCandidateHistorySchema(database);
+    const ledger = createSourceLedgerStore(database);
+    const jobs = createAutomationJobStore(database);
+    database.prepare("INSERT INTO trader_entities(entity_id, lifecycle, manual, locked, created_at, updated_at) VALUES ('trader', 'candidate', 0, 0, 1, 1)").run();
+    database.prepare("INSERT INTO canonical_trader_events(canonical_event_id, entity_id, chain, token_address, side, amount_usd, occurred_at, source_status, updated_at) VALUES ('event', 'trader', 'base', '0xabc', 'buy', 100, 1000, 'FOMO_ONLY', 1000)").run();
+    jobs.enqueue({ ...automationJob, payload: JSON.stringify({ tokenId: "base:0xabc", evaluatedAt: 5_000 }) });
+    jobs.claim("trader_backfill", 1, 100, "worker");
+    jobs.waitForSource(automationJob.jobId, "worker", { diagnostic: "missing", reasonCode: "missing_market_history", context: { tokenId: "base:0xabc", evaluatedAt: 5_000 }, recoveryJobIds: [], retryAt: 100, updatedAt: 2 });
+    expect(reconcileCandidateSourceRecovery({ database, ledger, now: () => NOW })).toEqual({ resolvedBlocks: 0, enqueued: 1 });
+    const handlers = createSourceRecoveryHandlers({
+      database,
+      ledger,
+      jobs,
+      history: createCandidateHistoryStore(database),
+      facts: createTokenFactStore(database),
+      marketProvider: { async lookup() { return null; } },
+      historicalMarketProvider: {
+        async topPool() { return { network: "base", poolAddress: "pool", tokenAddress: "0xabc", tokenSide: "base", tokenPriceUsd: 2, reserveUsd: 1000, marketCapUsd: null, fdvUsd: null, createdAt: 0 }; },
+        async ohlcv() { return [{ timestamp: 0, open: 1, high: 2, low: 1, close: 1.5, volumeUsd: 100 }]; },
+        async trades() { return []; },
+      },
+      fomoProducer: { async enqueue() { throw new Error("not used"); } },
+      now: () => NOW,
+    });
+    const runtime = createRecoveryRuntime({ ledger, handlers, clock: { now: () => NOW }, onReEvaluate: request => jobs.wakeBlockedSource(request.key, NOW, "candidate_evidence") });
+
+    await expect(runtime.runOnce()).resolves.toMatchObject({ outcome: "completed" });
+    expect(database.prepare("SELECT observed_at AS observedAt, price_usd AS priceUsd FROM market_observations WHERE source = 'geckoterminal_ohlcv'").all()).toEqual([{ observedAt: 0, priceUsd: 1.5 }]);
+    expect(jobs.job(automationJob.jobId)).toMatchObject({ status: "pending" });
     database.close();
   });
 });

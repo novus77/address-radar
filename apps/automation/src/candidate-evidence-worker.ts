@@ -277,7 +277,7 @@ async function evaluateToken(input: {
       status: "waiting_source",
       retryAt: input.evaluatedAt + SOURCE_RETRY_MS,
       diagnostic: "historical token metadata is not available",
-      sourceBlock: { reasonCode: "missing_token_identity", context: { tokenId }, recoveryJobIds },
+      sourceBlock: { reasonCode: "missing_token_identity", context: { tokenId, evaluatedAt: input.evaluatedAt }, recoveryJobIds },
     };
   }
 
@@ -340,7 +340,7 @@ async function evaluateToken(input: {
       status: "waiting_source",
       retryAt: input.evaluatedAt + SOURCE_RETRY_MS,
       diagnostic: "token milestone data is not available",
-      sourceBlock: { reasonCode: "missing_milestone", context: { tokenId: token.tokenId }, recoveryJobIds },
+      sourceBlock: { reasonCode: "missing_milestone", context: { tokenId: token.tokenId, evaluatedAt: input.evaluatedAt }, recoveryJobIds },
     };
   }
 
@@ -363,7 +363,7 @@ async function evaluateToken(input: {
       status: "waiting_source",
       retryAt: input.evaluatedAt + SOURCE_RETRY_MS,
       diagnostic: "canonical early buy events are not available",
-      sourceBlock: { reasonCode: "missing_early_trades", context: { tokenId: token.tokenId }, recoveryJobIds },
+      sourceBlock: { reasonCode: "missing_early_trades", context: { tokenId: token.tokenId, evaluatedAt: input.evaluatedAt }, recoveryJobIds },
     };
   }
 
@@ -384,7 +384,7 @@ async function evaluateToken(input: {
       status: "waiting_source",
       retryAt: input.evaluatedAt + SOURCE_RETRY_MS,
       diagnostic: "token price history is not available",
-      sourceBlock: { reasonCode: "missing_market_history", context: { tokenId: token.tokenId }, recoveryJobIds },
+      sourceBlock: { reasonCode: "missing_market_history", context: { tokenId: token.tokenId, evaluatedAt: input.evaluatedAt }, recoveryJobIds },
     };
   }
 

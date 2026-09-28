@@ -994,8 +994,8 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
         const token = database.prepare("SELECT chain, token_address AS tokenAddress FROM token_observation_state WHERE token_id = ?").get(tokenId) as { chain: "solana" | "eth" | "bsc" | "base" | "robinhood"; tokenAddress: string } | undefined;
         if (!token) return { status: 404, body: { error: "token_observation_not_found" } };
         const now = Date.now();
-        const queued: RecoveryJobType[] = ["market_enrichment", "fomo_token_history", "milestone_early_buyers"];
-        const priorities: Record<RecoveryJobType, number> = { rpc_gap: 10, market_enrichment: 20, fomo_token_history: 30, milestone_early_buyers: 35, identity_resolution: 40, historical_research: 60 };
+        const queued: RecoveryJobType[] = ["market_enrichment", "market_history", "fomo_token_history", "milestone_early_buyers"];
+        const priorities: Record<RecoveryJobType, number> = { rpc_gap: 10, market_enrichment: 20, market_history: 25, fomo_token_history: 30, milestone_early_buyers: 35, identity_resolution: 40, historical_research: 60 };
         for (const jobType of queued) {
           const existing = database.prepare("UPDATE recovery_jobs SET status = 'pending', next_attempt_at = ?, lease_expires_at = NULL, last_error = NULL, completed_at = NULL, updated_at = ? WHERE job_type = ? AND chain = ? AND subject_key = ?").run(now, now, jobType, token.chain, tokenId);
           if (existing.changes === 0) sourceLedger.enqueueRecoveryJob({ jobId: `recovery:${jobType}:${tokenId}`, jobType, chain: token.chain, subjectKey: tokenId, priority: priorities[jobType], cursor: null, nextAttemptAt: now, createdAt: now });

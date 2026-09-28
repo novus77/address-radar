@@ -18,6 +18,7 @@ export type RecoveryJobType =
   | "rpc_gap"
   | "fomo_token_history"
   | "market_enrichment"
+  | "market_history"
   | "identity_resolution"
   | "milestone_early_buyers"
   | "historical_research";

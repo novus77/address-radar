@@ -249,6 +249,11 @@ export function createAutomationJobStore(
             lease_owner = NULL, last_error = NULL, completed_at = ?, updated_at = ?
           WHERE job_id = ?
         `).run(result.cursor, result.completedAt, result.completedAt, jobId);
+        database.prepare(`
+          UPDATE automation_job_blocks
+          SET resolved_at = ?, updated_at = ?
+          WHERE job_id = ? AND resolved_at IS NULL
+        `).run(result.completedAt, result.completedAt, jobId);
       });
     },
     retry(jobId, owner, result) {
@@ -327,6 +332,11 @@ export function createAutomationJobStore(
             last_error = ?, completed_at = ?, updated_at = ?
           WHERE job_id = ?
         `).run(result.reason, result.terminatedAt, result.terminatedAt, jobId);
+        database.prepare(`
+          UPDATE automation_job_blocks
+          SET resolved_at = ?, updated_at = ?
+          WHERE job_id = ? AND resolved_at IS NULL
+        `).run(result.terminatedAt, result.terminatedAt, jobId);
       });
     },
     dueLanes(now, enabledJobTypes) {
