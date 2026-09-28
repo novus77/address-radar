@@ -5,6 +5,34 @@ import type { MonitoringRegistry } from "@address-radar/identity";
 import type { ScannerConfig } from "./config.js";
 import type { ScannerCollector, ScannerObservation } from "./runtime.js";
 
+export function createProjectionReplayCollector(input: {
+  readonly repository: AddressRadarRepository;
+  readonly strategyVersion: string;
+  readonly now?: () => number;
+  readonly lookbackMs: number;
+  readonly batchSize: number;
+}): ScannerCollector {
+  if (!Number.isSafeInteger(input.lookbackMs) || input.lookbackMs < 1) throw new Error("lookbackMs must be a positive safe integer");
+  if (!Number.isSafeInteger(input.batchSize) || input.batchSize < 1) throw new Error("batchSize must be a positive safe integer");
+  const now = input.now ?? Date.now;
+  return Object.freeze({
+    name: "projection-replay",
+    async collect() {
+      const events = input.repository.eventsMissingProjection({
+        projectionType: "address_signal_evidence_v1",
+        sourceRevision: input.strategyVersion,
+        since: Math.max(0, now() - input.lookbackMs),
+        limit: input.batchSize,
+      });
+      return Object.freeze({
+        observations: Object.freeze(events.map(event => Object.freeze({ event }))),
+        status: "ready" as const,
+        queueOldestAt: events[0]?.occurredAt ?? null,
+      });
+    },
+  });
+}
+
 const timestamp = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 const lifecycleEvidence = (value: unknown): Pick<ScannerObservation, "createdAt" | "launchedAt"> => {
   if (typeof value !== "object" || value === null) return {};

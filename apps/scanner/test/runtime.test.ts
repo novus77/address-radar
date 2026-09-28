@@ -112,6 +112,44 @@ describe("scanner runtime", () => {
     expect(repository.addressSignalEvidenceForToken("solana", "Token", 0)).toEqual([expect.objectContaining({ contribution: 0, traderTags: [] })]);
   });
 
+  it("projects signal evidence when another service inserted the trader event first", async () => {
+    repository = openAddressRadarRepository(":memory:");
+    const event = {
+      eventId: "wallet-monitor-event",
+      accountId: "account",
+      entityId: "entity",
+      chain: "solana",
+      tokenAddress: "Token",
+      side: "buy" as const,
+      amountUsd: 1_000,
+      priceUsd: 0.01,
+      marketCapUsd: 100_000,
+      tokenAgeMs: 60_000,
+      occurredAt: 1_000,
+      collectedAt: 1_000,
+      source: "onchain_wallet" as const,
+    };
+    repository.upsertFomoAccount({ accountId: "account", handle: "trader", firstSeenAt: 1, lastSeenAt: 1 });
+    repository.upsertTraderEntity({ entityId: "entity", lifecycle: "active", manual: false, locked: false, createdAt: 1, updatedAt: 1 });
+    repository.linkAccountToEntity({ accountId: "account", entityId: "entity", confidence: "confirmed", source: "test", observedAt: 1 });
+    repository.saveTraderAbilitySnapshot(ability("entity"));
+    expect(repository.insertTraderEvent(event)).toEqual({ inserted: true });
+
+    const runtime = createScannerRuntime({
+      repository,
+      collectors: [{ collect: async () => ({ observations: [{ event }], status: "ready" as const }) }],
+      clock: { now: () => 2_000 },
+      lifecycleResolver: { resolve: async () => "launched_0_2h" },
+      config: { strategyVersion: "address-v1", signalThreshold: 0.7, minimumPurchaseUsd: 0, minimumAggregateBuyUsd: 0, allowedChains: ["solana"], excludedTokenIds: [] },
+    });
+
+    await runtime.runOnce();
+
+    expect(repository.addressSignalEvidenceForToken("solana", "Token", 0)).toEqual([
+      expect.objectContaining({ eventId: "wallet-monitor-event", entityId: "entity", contribution: 0.8 }),
+    ]);
+  });
+
   it("degrades a failing lifecycle token, continues unrelated tokens, and leaves the batch uncommitted", async () => {
     repository = openAddressRadarRepository(":memory:");
     for (const id of ["a", "b"]) {

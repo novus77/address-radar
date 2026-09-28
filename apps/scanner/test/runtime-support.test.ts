@@ -47,6 +47,7 @@ describe("scanner runtime support", () => {
     });
 
     expect(config.allowedChains).toEqual(["solana", "base"]);
+    expect(config.projectionReplayEnabled).toBe(false);
     expect(report).toEqual({ ready: true, delivery: "disabled_outbox_only", failures: [] });
   });
 

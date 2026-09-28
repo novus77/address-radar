@@ -17,6 +17,8 @@ const state = {
   sourceHealth: [],
   sourceCursors: [],
   tokenFunnel: {},
+  fomoVerificationQuality: {},
+  projectionQuality: {},
   factCoverage: {},
   traderFunnel: {},
   recoveryJobs: [],
@@ -292,6 +294,12 @@ const renderMilestones = () => {
 const renderSourceOperations = () => {
   const funnelCards = (target, items) => { $(target).innerHTML = items.map(([label, value]) => `<article><span>${escapeHtml(label)}</span><strong>${text(value, 0)}</strong></article>`).join(""); };
   funnelCards("#token-funnel-summary", [["原始代币", state.tokenFunnel.raw], ["身份已解析", state.tokenFunnel.identityResolved], ["市场已补全", state.tokenFunnel.marketResolved], ["Fomo 已确认", state.tokenFunnel.fomoConfirmed], ["里程碑命中", state.tokenFunnel.milestoneObserved], ["早期买家证据", state.tokenFunnel.candidateEvidence], ["进入聚合", state.tokenFunnel.aggregation], ["本地信号合格", state.tokenFunnel.qualifiedSignal]]);
+  const fomoQuality = state.fomoVerificationQuality || {};
+  funnelCards("#fomo-verification-summary", [["验证总量", fomoQuality.total], ["活跃查询", fomoQuality.activeLookupCount], ["超时重排", fomoQuality.timedOutCount], ["结果已关联", fomoQuality.correlatedResultCount], ["本轮请求字节", fomoQuality.transfer?.requestBytesCopied], ["本轮结果字节", fomoQuality.transfer?.resultBytesCopied], ["最早排队", time(fomoQuality.oldestQueuedAt)], ["最近回传", time(fomoQuality.lastResultReceivedAt)], ["同步水位", time(fomoQuality.transfer?.generatedAt)]]);
+  $("#fomo-verification-diagnostic").textContent = text(fomoQuality.transferDiagnosticZh, "尚未生成 Fomo 同步水位");
+  $("#fomo-verification-grid").innerHTML = fomoQuality.statuses?.length ? `<table class="operator-table"><thead><tr><th>状态</th><th>数量</th><th>最早排队</th><th>最近结果</th><th>诊断</th></tr></thead><tbody>${fomoQuality.statuses.map(item => `<tr><td><span class="tag ${escapeHtml(item.status)}">${escapeHtml(automationStatusLabel(item.status))}</span></td><td><strong>${text(item.count, 0)}</strong></td><td>${time(item.oldestQueuedAt)}</td><td>${time(item.lastResultReceivedAt)}</td><td>${escapeHtml(item.diagnosticZh)}</td></tr>`).join("")}</tbody></table>` : empty("尚无 Fomo 验证任务。 ");
+  const projectionQuality = state.projectionQuality || {};
+  funnelCards("#projection-quality-summary", [["规范交易事件", projectionQuality.canonicalEventCount], ["投影已完成", projectionQuality.completedCount], ["等待重试", projectionQuality.retryableCount], ["执行中", projectionQuality.activeCount], ["永久失败", projectionQuality.terminalFailureCount], ["缺少信号投影", projectionQuality.missingSignalProjectionCount], ["最早缺口事件", time(projectionQuality.oldestMissingEventAt)], ["最近投影完成", time(projectionQuality.lastCompletedAt)]]);
   const facts = state.factCoverage || {};
   const availableFacts = (facts.factCounts || []).filter(item => item.status === "available").reduce((sum, item) => sum + Number(item.count || 0), 0);
   const partialFacts = (facts.factCounts || []).filter(item => item.status === "partial").reduce((sum, item) => sum + Number(item.count || 0), 0);
@@ -374,7 +382,7 @@ const refreshAutomationOperations = async () => {
 };
 
 const load = async () => {
-  const [overview, chainPage, aggregationPage, candidateFunnel, candidatePage, historicalTokenPage, historicalPartitionPage, historicalOperations, tokenCoverage, sourceHealth, sourceCursors, tokenFunnel, factCoverage, automationOverview, recoveryJobs, automationBackfills, automationPartitions, automationTokens, automationCoverage, automationSources] = await Promise.all([apiV2("workbench/summary"), apiV2("chains"), apiV2("token-aggregates"), apiV2("candidate-funnel"), apiV2("candidates"), apiV2("historical-tokens"), apiV2("historical-partitions"), apiV2("historical-operations"), apiV2("token-coverage"), apiV2("sources/health"), apiV2("sources/cursors"), apiV2("discovery/token-funnel"), apiV2("discovery/fact-coverage"), apiV2("automation/overview"), apiV2("recovery/jobs"), apiV2("backfill/traders"), apiV2("mining/partitions"), apiV2("mining/tokens"), apiV2("coverage/traders"), apiV2("coverage/sources")]);
+  const [overview, chainPage, aggregationPage, candidateFunnel, candidatePage, historicalTokenPage, historicalPartitionPage, historicalOperations, tokenCoverage, sourceHealth, sourceCursors, tokenFunnel, fomoVerificationQuality, projectionQuality, factCoverage, automationOverview, recoveryJobs, automationBackfills, automationPartitions, automationTokens, automationCoverage, automationSources] = await Promise.all([apiV2("workbench/summary"), apiV2("chains"), apiV2("token-aggregates"), apiV2("candidate-funnel"), apiV2("candidates"), apiV2("historical-tokens"), apiV2("historical-partitions"), apiV2("historical-operations"), apiV2("token-coverage"), apiV2("sources/health"), apiV2("sources/cursors"), apiV2("discovery/token-funnel"), apiV2("fomo-verification/quality"), apiV2("projections/quality"), apiV2("discovery/fact-coverage"), apiV2("automation/overview"), apiV2("recovery/jobs"), apiV2("backfill/traders"), apiV2("mining/partitions"), apiV2("mining/tokens"), apiV2("coverage/traders"), apiV2("coverage/sources")]);
   const metrics = { traders: overview.addressLibraryCount, candidates: candidateFunnel.currentAdmittedCount, aggregations: overview.aggregatedTokenCount, broadcasts: overview.deliveredSignalCount };
   for (const [key, value] of Object.entries(metrics)) { const node = $(`#metric-${key}`); if (node) node.textContent = text(value, "0"); }
   for (const selector of ["#aggregation-chain", "#signal-chain"]) $(selector).insertAdjacentHTML("beforeend", chainPage.items.map(chain => `<option value="${escapeHtml(chain.id)}">${escapeHtml(chain.labelZh)}</option>`).join(""));
@@ -398,6 +406,8 @@ const load = async () => {
   state.sourceHealth = sourceHealth.items;
   state.sourceCursors = sourceCursors.items;
   state.tokenFunnel = tokenFunnel;
+  state.fomoVerificationQuality = fomoVerificationQuality;
+  state.projectionQuality = projectionQuality;
   state.factCoverage = factCoverage;
   state.traderFunnel = automationOverview.funnel;
   state.recoveryJobs = recoveryJobs.items;

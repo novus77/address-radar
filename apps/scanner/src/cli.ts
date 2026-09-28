@@ -15,7 +15,7 @@ import { pathToFileURL } from "node:url";
 import { parseScannerConfig, runScannerPreflight } from "./config.js";
 import { createPollingRuntimeJob, createScannerRuntime } from "./runtime.js";
 import { createRecoveryRuntime } from "./recovery-runtime.js";
-import { createConfiguredCollectors } from "./collectors.js";
+import { createConfiguredCollectors, createProjectionReplayCollector } from "./collectors.js";
 import { createDiskHeadroomGuard, createRateLimitedErrorReporter } from "./resilience.js";
 import { createSourceRecoveryHandlers, reconcileCandidateSourceRecovery } from "./source-recovery-handlers.js";
 
@@ -36,7 +36,15 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
   const historicalPriceFallback = createDefiLlamaPriceClient();
   if (config.recoveryEnabled) reconcileCandidateSourceRecovery({ database: historyDatabase, ledger: sourceLedger });
   const lifecycleResolver = createTokenLifecycleResolver({});
-  const collectors = createConfiguredCollectors({ config, repository, monitoringRegistry });
+  const collectors = Object.freeze([
+    ...createConfiguredCollectors({ config, repository, monitoringRegistry }),
+    ...(config.projectionReplayEnabled ? [createProjectionReplayCollector({
+      repository,
+      strategyVersion: config.strategyVersion,
+      lookbackMs: config.projectionReplayLookbackMs ?? 24 * 60 * 60_000,
+      batchSize: config.projectionReplayBatchSize ?? 100,
+    })] : []),
+  ]);
   const errorReporter = createRateLimitedErrorReporter({
     emit: (message, error) => console.error(message, error),
     windowMs: config.errorLogWindowMs,

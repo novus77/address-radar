@@ -54,6 +54,9 @@ export function initializeCandidateHistorySchema(database: DatabaseSync): void {
       provider_url TEXT,
       last_error TEXT,
       last_checked_at INTEGER,
+      last_lookup_id TEXT,
+      queued_at INTEGER,
+      result_received_at INTEGER,
       next_retry_at INTEGER NOT NULL DEFAULT 0,
       updated_at INTEGER NOT NULL
     );

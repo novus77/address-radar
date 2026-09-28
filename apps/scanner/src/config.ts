@@ -35,6 +35,9 @@ export interface ScannerConfig extends ScannerPolicyConfig {
   readonly minimumFreeDiskBytes: number;
   readonly diskCheckIntervalMs: number;
   readonly errorLogWindowMs: number;
+  readonly projectionReplayEnabled?: boolean;
+  readonly projectionReplayLookbackMs?: number;
+  readonly projectionReplayBatchSize?: number;
 }
 
 const required = (env: Readonly<Record<string, string | undefined>>, key: string): string => {
@@ -94,6 +97,9 @@ export function parseScannerConfig(env: Readonly<Record<string, string | undefin
     minimumFreeDiskBytes: finiteNumber(env.ADDRESS_RADAR_MINIMUM_FREE_DISK_BYTES, 2 * 1024 * 1024 * 1024, "ADDRESS_RADAR_MINIMUM_FREE_DISK_BYTES"),
     diskCheckIntervalMs: finiteNumber(env.ADDRESS_RADAR_DISK_CHECK_INTERVAL_MS, 60_000, "ADDRESS_RADAR_DISK_CHECK_INTERVAL_MS"),
     errorLogWindowMs: finiteNumber(env.ADDRESS_RADAR_ERROR_LOG_WINDOW_MS, 60_000, "ADDRESS_RADAR_ERROR_LOG_WINDOW_MS"),
+    projectionReplayEnabled: env.ADDRESS_RADAR_PROJECTION_REPLAY_ENABLED === "true",
+    projectionReplayLookbackMs: finiteNumber(env.ADDRESS_RADAR_PROJECTION_REPLAY_LOOKBACK_MS, 24 * 60 * 60_000, "ADDRESS_RADAR_PROJECTION_REPLAY_LOOKBACK_MS"),
+    projectionReplayBatchSize: finiteNumber(env.ADDRESS_RADAR_PROJECTION_REPLAY_BATCH_SIZE, 100, "ADDRESS_RADAR_PROJECTION_REPLAY_BATCH_SIZE"),
   });
 }
 

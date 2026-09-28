@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { SQLInputValue } from "node:sqlite";
 
 import { normalizeFomoHandle, normalizeWalletAddress } from "@address-radar/domain";
@@ -52,6 +54,18 @@ const sourceHealthDiagnosticZh: Readonly<Record<string, string>> = Object.freeze
   unavailable: "数据源当前不可用",
   misconfigured: "数据源配置不完整",
 });
+
+const fomoVerificationDiagnosticZh = (status: string, lastError?: unknown): string => {
+  if (status === "queued") return "等待 Fomo 查询结果";
+  if (status === "confirmed") return "Fomo 已确认并返回历史数据";
+  if (status === "deferred" && lastError === "fomo_result_timeout") return "查询超时，已按退避计划重排";
+  if (status === "deferred") return "查询暂缓，等待下一次重试";
+  if (status === "pending") return "等待进入 Fomo 查询队列";
+  if (status === "not_found") return "Fomo 未找到对应代币";
+  if (status === "mismatch") return "查询结果与目标合约不一致";
+  if (status === "unsupported") return "当前链暂不支持 Fomo 验证";
+  return "Fomo 验证状态需要检查";
+};
 
 const automationStatusDiagnosticZh = (status: string, lastError?: unknown): string => {
   if (status === "pending") return "等待调度执行";
@@ -345,6 +359,91 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
       SELECT source, chain, cursor, position, updated_at AS updatedAt
       FROM source_cursors ORDER BY source, chain
     `) } };
+    if (pathname === "/api/v2/fomo-verification/quality") {
+      let transfer: Readonly<Record<string, unknown>> | null = null;
+      let transferDiagnosticZh = "尚未生成 Fomo 同步水位";
+      try {
+        const parsed = JSON.parse(readFileSync(join(dirname(databasePath), "fomo", "fomo-sync-status.json"), "utf8")) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          transfer = Object.freeze(parsed as Record<string, unknown>);
+          const generatedAt = Number(transfer.generatedAt ?? 0);
+          transferDiagnosticZh = generatedAt > 0 && Date.now() - generatedAt <= 5 * 60_000
+            ? "Fomo 同步水位正常更新"
+            : "Fomo 同步水位已陈旧，需要检查定时器或跨端文件";
+        }
+      } catch {
+        transfer = null;
+      }
+      const summary = database.prepare(`
+        SELECT COUNT(*) AS total,
+          SUM(CASE WHEN status = 'queued' AND last_lookup_id IS NOT NULL THEN 1 ELSE 0 END) AS activeLookupCount,
+          SUM(CASE WHEN last_error = 'fomo_result_timeout' THEN 1 ELSE 0 END) AS timedOutCount,
+          SUM(CASE WHEN last_lookup_id IS NOT NULL AND result_received_at IS NOT NULL THEN 1 ELSE 0 END) AS correlatedResultCount,
+          MIN(CASE WHEN status = 'queued' THEN queued_at ELSE NULL END) AS oldestQueuedAt,
+          MAX(result_received_at) AS lastResultReceivedAt
+        FROM historical_token_verifications
+      `).get() as Record<string, number | null>;
+      const statuses = rows(`
+        SELECT status, last_error AS lastError, COUNT(*) AS count,
+          MIN(queued_at) AS oldestQueuedAt,
+          MAX(result_received_at) AS lastResultReceivedAt,
+          MAX(updated_at) AS updatedAt
+        FROM historical_token_verifications
+        GROUP BY status, last_error
+        ORDER BY status, last_error
+      `).map(item => {
+        const row = item as Record<string, unknown>;
+        return Object.freeze({
+          ...row,
+          diagnosticZh: fomoVerificationDiagnosticZh(String(row.status), row.lastError),
+        });
+      });
+      return { status: 200, body: {
+        total: Number(summary.total ?? 0),
+        activeLookupCount: Number(summary.activeLookupCount ?? 0),
+        timedOutCount: Number(summary.timedOutCount ?? 0),
+        correlatedResultCount: Number(summary.correlatedResultCount ?? 0),
+        oldestQueuedAt: summary.oldestQueuedAt ?? null,
+        lastResultReceivedAt: summary.lastResultReceivedAt ?? null,
+        transfer,
+        transferDiagnosticZh,
+        statuses,
+        updatedAt: Date.now(),
+      } };
+    }
+    if (pathname === "/api/v2/projections/quality") {
+      const summary = database.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM trader_events) AS canonicalEventCount,
+          SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completedCount,
+          SUM(CASE WHEN status = 'retryable' THEN 1 ELSE 0 END) AS retryableCount,
+          SUM(CASE WHEN status IN ('pending', 'running') THEN 1 ELSE 0 END) AS activeCount,
+          SUM(CASE WHEN status = 'terminal_failed' THEN 1 ELSE 0 END) AS terminalFailureCount,
+          MAX(CASE WHEN status = 'completed' THEN completed_at ELSE NULL END) AS lastCompletedAt
+        FROM event_projections
+      `).get() as Record<string, number | null>;
+      const missing = database.prepare(`
+        SELECT COUNT(*) AS count, MIN(event.occurred_at) AS oldestOccurredAt
+        FROM trader_events event
+        WHERE NOT EXISTS (
+          SELECT 1 FROM event_projections projection
+          WHERE projection.event_id = event.event_id
+            AND projection.projection_type = 'address_signal_evidence_v1'
+            AND projection.status = 'completed'
+        )
+      `).get() as { count: number | null; oldestOccurredAt: number | null };
+      return { status: 200, body: {
+        canonicalEventCount: Number(summary.canonicalEventCount ?? 0),
+        completedCount: Number(summary.completedCount ?? 0),
+        retryableCount: Number(summary.retryableCount ?? 0),
+        activeCount: Number(summary.activeCount ?? 0),
+        terminalFailureCount: Number(summary.terminalFailureCount ?? 0),
+        missingSignalProjectionCount: Number(missing.count ?? 0),
+        oldestMissingEventAt: missing.oldestOccurredAt ?? null,
+        lastCompletedAt: summary.lastCompletedAt ?? null,
+        updatedAt: Date.now(),
+      } };
+    }
     if (pathname === "/api/v2/discovery/token-funnel") {
       const scalar = (sql: string): number => Number((database.prepare(sql).get() as { count: number | null }).count ?? 0);
       return { status: 200, body: {

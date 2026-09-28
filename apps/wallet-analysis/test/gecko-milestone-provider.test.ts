@@ -10,6 +10,7 @@ describe("GeckoMilestoneProvider", () => {
         { timestamp: 200_000, open: 2, high: 6, low: 1, close: 5, volumeUsd: 1 },
         { timestamp: 100_000, open: 1, high: 3, low: 1, close: 2, volumeUsd: 1 },
       ],
+      trades: async () => [],
     };
     const provider = createGeckoMilestoneProvider({ client, thresholdsUsd: [100_000, 300_000, 500_000] });
     await expect(provider.reconstruct({ chain: "base", tokenAddress: "0xToken", fromTimestamp: 0, toTimestamp: 300_000 })).resolves.toMatchObject({
@@ -29,13 +30,14 @@ describe("GeckoMilestoneProvider", () => {
     const client: GeckoTerminalClient = {
       topPool: async () => ({ network: "solana", poolAddress: "pool", tokenAddress: "token", tokenSide: "quote", tokenPriceUsd: 0.5, reserveUsd: null, marketCapUsd: null, fdvUsd: 500_000, createdAt: null }),
       ohlcv: async () => [],
+      trades: async () => [],
     };
     const provider = createGeckoMilestoneProvider({ client });
     await expect(provider.reconstruct({ chain: "solana", tokenAddress: "token", fromTimestamp: 0, toTimestamp: 1 })).resolves.toMatchObject({ status: "insufficient_market_data", supplyEstimate: 1_000_000, supplyBasis: "fdv", milestones: [] });
   });
 
   it("returns not_found when no pool exists", async () => {
-    const client: GeckoTerminalClient = { topPool: async () => null, ohlcv: async () => [] };
+    const client: GeckoTerminalClient = { topPool: async () => null, ohlcv: async () => [], trades: async () => [] };
     const provider = createGeckoMilestoneProvider({ client });
     await expect(provider.reconstruct({ chain: "robinhood", tokenAddress: "0xToken", fromTimestamp: 0, toTimestamp: 1 })).resolves.toMatchObject({ status: "not_found", milestones: [] });
   });

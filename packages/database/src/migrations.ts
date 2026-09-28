@@ -14,6 +14,9 @@ export function migrateAddressRadarDatabase(database: DatabaseSync): void {
   withAddressRadarWriteTransaction(database, () => {
     initializeAddressRadarSchema(database);
     initializeCandidateHistorySchema(database);
+    ensureColumn(database, "historical_token_verifications", "last_lookup_id", "TEXT");
+    ensureColumn(database, "historical_token_verifications", "queued_at", "INTEGER");
+    ensureColumn(database, "historical_token_verifications", "result_received_at", "INTEGER");
     initializeSourceLedgerSchema(database);
     initializeTokenFactSchema(database);
     initializeCanonicalRegistrySchema(database);

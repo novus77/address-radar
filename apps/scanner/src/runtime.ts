@@ -66,6 +66,9 @@ export interface ScannerRuntimeOptions {
 }
 
 export function createScannerRuntime(options: ScannerRuntimeOptions) {
+  const projectionType = "address_signal_evidence_v1";
+  const projectionOwner = `scanner:${process.pid}`;
+  const projectionLeaseMs = 60_000;
   const service = createTokenSignalService({ repository: options.repository, threshold: options.config.signalThreshold, minimumTotalBuyUsd: options.config.minimumAggregateBuyUsd, strategyVersion: options.config.strategyVersion, now: options.clock.now });
   const allowed = new Set(options.config.allowedChains.map(value => value.toLowerCase()));
   const excluded = new Set(options.config.excludedTokenIds);
@@ -230,6 +233,7 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
           return resolution;
         };
         for (const observation of batch.observations) {
+          let claimedProjection: { eventId: string; projectionType: string; sourceRevision: string } | null = null;
           try {
             let chain: string;
             let tokenAddress: string;
@@ -243,10 +247,13 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
               }
               const mappedEntity = options.repository.entityForAccount(observation.event.accountId);
               const event = mappedEntity ? { ...observation.event, entityId: mappedEntity } : observation.event;
-              const eventWrite = options.repository.insertTraderEvent(event);
-              if (!eventWrite.inserted) continue;
+              options.repository.insertTraderEvent(event);
               chain = event.chain.toLowerCase();
               tokenAddress = event.tokenAddress;
+              const projectionKey = { eventId: event.eventId, projectionType, sourceRevision: options.config.strategyVersion };
+              const projectionStatus = options.repository.claimEventProjection({ ...projectionKey, owner: projectionOwner, now: options.clock.now(), leaseMs: projectionLeaseMs });
+              if (projectionStatus !== "claimed") continue;
+              claimedProjection = projectionKey;
               const resolved = await resolveToken(chain, tokenAddress);
               market = resolved.market;
               batchFailed ||= resolved.failed;
@@ -273,10 +280,29 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
             }
             const tokenId = addressRadarTokenId(chain, tokenAddress);
             if ((allowed.size > 0 && !allowed.has(chain)) || excluded.has(tokenId) || (evidence.amountUsd ?? 0) < options.config.minimumPurchaseUsd) {
+              if (claimedProjection) {
+                options.repository.completeEventProjection({
+                  ...claimedProjection,
+                  owner: projectionOwner,
+                  resultKey: `filtered:${evidence.eventId}`,
+                  completedAt: options.clock.now(),
+                });
+                claimedProjection = null;
+              }
               rejected += 1;
               continue;
             }
             options.repository.saveAddressSignalEvidence(chain, tokenAddress, evidence);
+            if (claimedProjection) {
+              const completed = options.repository.completeEventProjection({
+                ...claimedProjection,
+                owner: projectionOwner,
+                resultKey: evidence.eventId,
+                completedAt: options.clock.now(),
+              });
+              if (!completed) throw new Error(`Lost event projection lease for ${evidence.eventId}`);
+              claimedProjection = null;
+            }
             options.tokenStateStore?.saveTokenObservation({ tokenId, chain, tokenAddress, observedAt: evidence.occurredAt, evidenceStatus: "observed" });
             const group = groups.get(tokenId) ?? { chain, tokenAddress, evidence: [], market };
             group.evidence.push(evidence);
@@ -285,6 +311,15 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
             lastEventAt = Math.max(lastEventAt ?? 0, evidence.occurredAt);
             accepted += 1;
           } catch (error) {
+            if (claimedProjection) {
+              options.repository.failEventProjection({
+                ...claimedProjection,
+                owner: projectionOwner,
+                error: error instanceof Error ? error.message : String(error),
+                failedAt: options.clock.now(),
+                nextAttemptAt: options.clock.now() + 30_000,
+              });
+            }
             batchFailed = true;
             options.onCollectorError?.(error, index);
           }

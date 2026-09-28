@@ -15,6 +15,7 @@ import {
 import { createSourceObservationIngestor } from "@address-radar/collectors";
 import { createHistoricalEvidenceService } from "../../wallet-analysis/src/historical-evidence.js";
 import { createScannerRuntime } from "../src/runtime.js";
+import { createProjectionReplayCollector } from "../src/collectors.js";
 
 const directories: string[] = [];
 afterEach(() => { while (directories.length) rmSync(directories.pop()!, { recursive: true, force: true }); });
@@ -36,6 +37,28 @@ const event = (source: TraderEvent["source"]): TraderEvent => ({
 });
 
 describe("multi-source replay", () => {
+  it("replays only canonical events missing the requested signal projection", async () => {
+    const repository = openAddressRadarRepository(":memory:");
+    repository.upsertFomoAccount({ accountId: "account-1", handle: "alpha", firstSeenAt: 1, lastSeenAt: 1 });
+    repository.ensureTraderEntity({ entityId: "entity-1", lifecycle: "active", manual: false, locked: false, createdAt: 1, updatedAt: 1 });
+    repository.linkAccountToEntity({ entityId: "entity-1", accountId: "account-1", confidence: "confirmed", source: "test", observedAt: 1 });
+    repository.insertTraderEvent(event("onchain_wallet"));
+
+    const collector = createProjectionReplayCollector({
+      repository,
+      strategyVersion: "address-v1",
+      now: () => 2_000,
+      lookbackMs: 2_000,
+      batchSize: 10,
+    });
+
+    await expect(collector.collect()).resolves.toMatchObject({
+      status: "ready",
+      observations: [{ event: expect.objectContaining({ eventId: "canonical-trade-1" }) }],
+    });
+    repository.close();
+  });
+
   it("keeps source observations while converging canonical events and candidate evidence", async () => {
     const directory = mkdtempSync(join(tmpdir(), "address-radar-replay-"));
     directories.push(directory);

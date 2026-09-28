@@ -73,7 +73,7 @@ describe("source recovery handlers", () => {
       ledger,
       handlers,
       clock: { now: () => NOW },
-      onReEvaluate: request => jobs.wakeBlockedSource(request.key, NOW, "candidate_evidence"),
+      onReEvaluate: request => { jobs.wakeBlockedSource(request.key, NOW, "candidate_evidence"); },
     });
 
     await expect(runtime.runOnce()).resolves.toMatchObject({ outcome: "completed" });
@@ -142,7 +142,7 @@ describe("source recovery handlers", () => {
       fomoProducer: { async enqueue() { throw new Error("not used"); } },
       now: () => NOW,
     });
-    const runtime = createRecoveryRuntime({ ledger, handlers, clock: { now: () => NOW }, onReEvaluate: request => jobs.wakeBlockedSource(request.key, NOW, "candidate_evidence") });
+    const runtime = createRecoveryRuntime({ ledger, handlers, clock: { now: () => NOW }, onReEvaluate: request => { jobs.wakeBlockedSource(request.key, NOW, "candidate_evidence"); } });
 
     await expect(runtime.runOnce()).resolves.toMatchObject({ outcome: "completed" });
     expect(database.prepare("SELECT observed_at AS observedAt, price_usd AS priceUsd FROM market_observations WHERE source = 'geckoterminal_ohlcv'").all()).toEqual([{ observedAt: 0, priceUsd: 1.5 }]);
@@ -182,7 +182,7 @@ describe("source recovery handlers", () => {
       fomoProducer: { async enqueue() { throw new Error("not used"); } },
       now: () => NOW,
     });
-    const runtime = createRecoveryRuntime({ ledger, handlers, clock: { now: () => NOW }, onReEvaluate: request => jobs.wakeBlockedSource(request.key, NOW, "candidate_evidence") });
+    const runtime = createRecoveryRuntime({ ledger, handlers, clock: { now: () => NOW }, onReEvaluate: request => { jobs.wakeBlockedSource(request.key, NOW, "candidate_evidence"); } });
 
     await expect(runtime.runOnce()).resolves.toMatchObject({ outcome: "completed" });
     expect(database.prepare("SELECT observed_at AS observedAt, price_usd AS priceUsd, source FROM market_observations").all())

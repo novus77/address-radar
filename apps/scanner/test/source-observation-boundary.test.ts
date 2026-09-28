@@ -13,6 +13,9 @@ describe("scanner source observation boundary", () => {
       entityForAccount: () => null,
       latestTraderAbility: () => null,
       insertTraderEvent: () => { calls.push("event"); return { inserted: true }; },
+      claimEventProjection: () => "claimed",
+      completeEventProjection: () => true,
+      failEventProjection: () => true,
       saveRuntimeQualitySnapshot: () => undefined,
     } as unknown as AddressRadarRepository;
     const runtime = createScannerRuntime({

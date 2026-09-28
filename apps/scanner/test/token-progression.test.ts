@@ -20,6 +20,9 @@ function setup() {
     entityForAccount: () => null,
     latestTraderAbility: () => null,
     insertTraderEvent: () => ({ inserted: true }),
+    claimEventProjection: () => "claimed",
+    completeEventProjection: () => true,
+    failEventProjection: () => true,
     saveRuntimeQualitySnapshot: () => undefined,
   } as unknown as AddressRadarRepository;
   return { ledger, repository };
@@ -63,7 +66,7 @@ describe("scanner token progression", () => {
         tokenAddress: "0xabc", side: "buy", amountUsd: 25, priceUsd: 0.1, marketCapUsd: 500_000,
         tokenAgeMs: null, occurredAt: 2_000, collectedAt: 2_100, source: "fomo_stream",
       } }]; } }],
-      marketProvider: { async lookup() { return { chain: "base", tokenAddress: "0xabc", symbol: "ABC", name: "Alpha", imageUrl: null, priceUsd: 0.2, marketCapUsd: 600_000, liquidityUsd: 50_000, createdAt: 1_000, launchedAt: 1_500 }; } },
+      marketProvider: { async lookup() { return { chain: "base", tokenAddress: "0xabc", symbol: "ABC", name: "Alpha", imageUrl: null, priceUsd: 0.2, marketCapUsd: 600_000, liquidityUsd: 50_000, createdAt: 1_000, launchedAt: 1_500, observedAt: new Date(3_000).toISOString() }; } },
       clock: { now: () => 3_000 },
       config: { signalThreshold: 0.7, minimumAggregateBuyUsd: 100, strategyVersion: "test", allowedChains: ["base"], excludedTokenIds: [], minimumPurchaseUsd: 100 } as never,
     });

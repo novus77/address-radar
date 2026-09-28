@@ -497,6 +497,24 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       dedupe_key TEXT
     );
     CREATE INDEX IF NOT EXISTS address_signal_evidence_token_time ON address_signal_evidence(chain, token_address, occurred_at);
+    CREATE TABLE IF NOT EXISTS event_projections (
+      event_id TEXT NOT NULL REFERENCES trader_events(event_id),
+      projection_type TEXT NOT NULL,
+      source_revision TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'retryable', 'terminal_failed')),
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at INTEGER NOT NULL,
+      lease_owner TEXT,
+      lease_expires_at INTEGER,
+      result_key TEXT,
+      last_error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      PRIMARY KEY(event_id, projection_type, source_revision)
+    );
+    CREATE INDEX IF NOT EXISTS event_projections_claim
+      ON event_projections(status, next_attempt_at, lease_expires_at, updated_at);
     CREATE TABLE IF NOT EXISTS wallet_bundle_pair_tokens (
       pair_key TEXT NOT NULL,
       token_id TEXT NOT NULL,

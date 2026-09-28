@@ -116,4 +116,42 @@ describe("FOMO historical verification", () => {
     await service.runOnce();
     expect(database.prepare("SELECT next_retry_at AS nextRetryAt FROM historical_token_verifications WHERE token_id = 'base:0xretry'").get()).toEqual({ nextRetryAt: timestamp + 2 * 60 * 60_000 });
   });
+
+  it("recovers expired queued lookups and persists the active lookup identity", async () => {
+    database = new DatabaseSync(":memory:");
+    initializeCandidateHistorySchema(database);
+    const store = createCandidateHistoryStore(database);
+    for (const address of ["0xold-a", "0xold-b"]) store.saveHistoricalToken({
+      tokenId: `base:${address}`,
+      chain: "base",
+      tokenAddress: address,
+      symbol: "TOK",
+      imageUrl: null,
+      firstTradeAt: 1,
+      firstReached1mAt: 2,
+      peakMarketCapUsd: 1_100_000,
+      source: "test",
+      sourceQueryId: null,
+      provenance: {},
+    });
+    database.prepare("UPDATE historical_token_verifications SET status = 'queued', next_retry_at = 50, updated_at = 10").run();
+    directory = mkdtempSync(join(tmpdir(), "address-radar-fomo-verification-"));
+    const service = createFomoHistoricalVerificationService({
+      database,
+      producer: new FomoTokenLookupProducer({ filePath: join(directory, "lookups.jsonl") }),
+      consumer: new FomoTokenLookupResultConsumer({ filePath: join(directory, "results.jsonl"), cursorPath: join(directory, "cursor.json") }),
+      maximumActiveLookups: 1,
+      now: () => 100,
+    });
+
+    await expect(service.runOnce()).resolves.toEqual({ processed: true, action: "queued" });
+
+    const rows = database.prepare("SELECT status, last_lookup_id AS lookupId, queued_at AS queuedAt, last_error AS lastError FROM historical_token_verifications ORDER BY token_id").all() as Array<Record<string, unknown>>;
+    expect(rows.filter(row => row.status === "queued")).toEqual([
+      expect.objectContaining({ lookupId: expect.any(String), queuedAt: 100, lastError: null }),
+    ]);
+    expect(rows.filter(row => row.status === "deferred")).toEqual([
+      expect.objectContaining({ lookupId: null, queuedAt: null, lastError: "fomo_result_timeout" }),
+    ]);
+  });
 });

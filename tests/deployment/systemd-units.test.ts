@@ -32,6 +32,16 @@ describe("standalone systemd units", () => {
     );
   });
 
+  it("publishes an atomic Fomo verification transfer watermark", async () => {
+    const content = await readFile(resolve("scripts/sync-fomo-verification.sh"), "utf8");
+    expect(content).toContain("fomo-sync-status.json");
+    expect(content).toContain('"requestBytesCopied"');
+    expect(content).toContain('"resultBytesCopied"');
+    expect(content).toContain('"requestSourceSize"');
+    expect(content).toContain('"resultSourceSize"');
+    expect(content).toContain('mv -f "$temporary_status" "$status_file"');
+  });
+
   it("bounds backup resource usage and publishes completed snapshots atomically", async () => {
     const content = await readFile(resolve("scripts/backup-production-state.sh"), "utf8");
     const unit = await readFile(resolve("deployment/systemd/address-radar-backup.service"), "utf8");

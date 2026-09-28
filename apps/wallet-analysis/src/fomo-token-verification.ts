@@ -31,6 +31,7 @@ interface VerificationRow {
   readonly chain: string;
   readonly tokenAddress: string;
   readonly attemptCount: number;
+  readonly lastLookupId?: string | null;
 }
 
 function inferredStatus(result: FomoTokenLookupResult): NonNullable<FomoTokenLookupResult["verificationStatus"]> {
@@ -72,13 +73,16 @@ export function createFomoHistoricalVerificationService(input: {
       return true;
     }
     const row = input.database.prepare(`
-      SELECT h.token_id AS tokenId, h.chain, h.token_address AS tokenAddress
+      SELECT h.token_id AS tokenId, h.chain, h.token_address AS tokenAddress,
+        v.last_lookup_id AS lastLookupId
       FROM historical_tokens h
+      JOIN historical_token_verifications v ON v.token_id = h.token_id
       WHERE (CASE LOWER(h.chain) WHEN 'ethereum' THEN 'eth' WHEN 'bnb' THEN 'bsc' WHEN 'binance' THEN 'bsc' ELSE LOWER(h.chain) END) = ?
         AND (CASE WHEN LOWER(h.chain) = 'solana' THEN h.token_address ELSE LOWER(h.token_address) END) = ?
       LIMIT 1
     `).get(chain, tokenAddress) as VerificationRow | undefined;
     if (!row) return false;
+    if (row.lastLookupId && row.lastLookupId !== result.lookupId) return true;
 
     const completedAt = result.completedAt;
     const status = inferredStatus(result);
@@ -88,9 +92,9 @@ export function createFomoHistoricalVerificationService(input: {
         UPDATE historical_token_verifications
         SET status = 'mismatch', exact_ca_match = 0, history_available = 0,
           provider_token_id = ?, provider_url = ?, last_error = 'fomo_ca_mismatch',
-          last_checked_at = ?, next_retry_at = 0, updated_at = ?
+          last_checked_at = ?, result_received_at = ?, next_retry_at = 0, updated_at = ?
         WHERE token_id = ?
-      `).run(result.providerTokenId ?? null, result.providerUrl ?? null, completedAt, completedAt, row.tokenId));
+      `).run(result.providerTokenId ?? null, result.providerUrl ?? null, completedAt, completedAt, completedAt, row.tokenId));
       return true;
     }
 
@@ -101,18 +105,18 @@ export function createFomoHistoricalVerificationService(input: {
         UPDATE historical_token_verifications
         SET status = ?, consecutive_not_found = ?, exact_ca_match = 0,
           history_available = 0, last_error = 'fomo_token_not_found', last_checked_at = ?,
-          next_retry_at = ?, updated_at = ?
+          result_received_at = ?, next_retry_at = ?, updated_at = ?
         WHERE token_id = ?
-      `).run(misses >= 2 ? "not_found" : "pending", misses, completedAt, misses >= 2 ? 0 : completedAt + retryDelayMs(misses - 1), completedAt, row.tokenId));
+      `).run(misses >= 2 ? "not_found" : "pending", misses, completedAt, completedAt, misses >= 2 ? 0 : completedAt + retryDelayMs(misses - 1), completedAt, row.tokenId));
       return true;
     }
 
     if (status === "deferred") {
       write(() => input.database.prepare(`
         UPDATE historical_token_verifications
-        SET status = 'deferred', last_error = ?, last_checked_at = ?, next_retry_at = ?, updated_at = ?
+        SET status = 'deferred', last_error = ?, last_checked_at = ?, result_received_at = ?, next_retry_at = ?, updated_at = ?
         WHERE token_id = ?
-      `).run(result.errorCode ?? "fomo_lookup_deferred", completedAt, completedAt + retryDelayMs(1), completedAt, row.tokenId));
+      `).run(result.errorCode ?? "fomo_lookup_deferred", completedAt, completedAt, completedAt + retryDelayMs(1), completedAt, row.tokenId));
       return true;
     }
 
@@ -121,9 +125,9 @@ export function createFomoHistoricalVerificationService(input: {
         UPDATE historical_token_verifications
         SET status = 'mismatch', exact_ca_match = 0, history_available = 0,
           provider_token_id = ?, provider_url = ?, last_error = ?, last_checked_at = ?,
-          next_retry_at = 0, updated_at = ?
+          result_received_at = ?, next_retry_at = 0, updated_at = ?
         WHERE token_id = ?
-      `).run(result.providerTokenId ?? null, result.providerUrl ?? null, result.errorCode ?? "fomo_ca_mismatch", completedAt, completedAt, row.tokenId));
+      `).run(result.providerTokenId ?? null, result.providerUrl ?? null, result.errorCode ?? "fomo_ca_mismatch", completedAt, completedAt, completedAt, row.tokenId));
       return true;
     }
 
@@ -132,10 +136,10 @@ export function createFomoHistoricalVerificationService(input: {
       UPDATE historical_token_verifications
       SET status = 'confirmed', consecutive_not_found = 0, exact_ca_match = 1,
         history_available = ?, provider_token_id = ?, provider_url = ?, last_error = ?,
-        last_checked_at = ?, next_retry_at = 0, updated_at = ?
+        last_checked_at = ?, result_received_at = ?, next_retry_at = 0, updated_at = ?
       WHERE token_id = ?
     `).run(historyAvailable ? 1 : 0, result.providerTokenId ?? null, result.providerUrl ?? null,
-      historyAvailable ? null : "fomo_history_unavailable", completedAt, completedAt, row.tokenId));
+      historyAvailable ? null : "fomo_history_unavailable", completedAt, completedAt, completedAt, row.tokenId));
     return true;
   };
 
@@ -149,6 +153,12 @@ export function createFomoHistoricalVerificationService(input: {
       }
 
       const timestamp = now();
+      write(() => input.database.prepare(`
+        UPDATE historical_token_verifications
+        SET status = 'deferred', last_error = 'fomo_result_timeout',
+          last_lookup_id = NULL, queued_at = NULL, updated_at = ?
+        WHERE status = 'queued' AND next_retry_at <= ?
+      `).run(timestamp, timestamp));
       const active = input.database.prepare("SELECT COUNT(*) AS count FROM historical_token_verifications WHERE status = 'queued' AND next_retry_at > ?").get(timestamp) as { count: number };
       if (Number(active.count) >= maximumActiveLookups) return Object.freeze({ processed: false, action: "idle" as const });
       const row = input.database.prepare(`
@@ -164,13 +174,14 @@ export function createFomoHistoricalVerificationService(input: {
       `).get(timestamp, timestamp) as VerificationRow | undefined;
       if (!row) return Object.freeze({ processed: false, action: "idle" as const });
 
-      await input.producer.enqueue({ chainId: canonicalChain(row.chain), tokenAddress: row.tokenAddress, requestedAt: timestamp });
+      const queued = await input.producer.enqueue({ chainId: canonicalChain(row.chain), tokenAddress: row.tokenAddress, requestedAt: timestamp });
       write(() => input.database.prepare(`
         UPDATE historical_token_verifications
         SET status = 'queued', attempt_count = attempt_count + 1,
-          next_retry_at = ?, updated_at = ?
+          last_lookup_id = ?, queued_at = ?, result_received_at = NULL,
+          last_error = NULL, next_retry_at = ?, updated_at = ?
         WHERE token_id = ?
-      `).run(timestamp + retryDelayMs(row.attemptCount), timestamp, row.tokenId));
+      `).run(queued.request.lookupId, timestamp, timestamp + retryDelayMs(row.attemptCount), timestamp, row.tokenId));
       return Object.freeze({ processed: true, action: "queued" as const });
     },
 

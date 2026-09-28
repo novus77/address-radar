@@ -46,6 +46,12 @@ export interface AddressSignalEvidence {
   readonly traderTags?: readonly string[];
   readonly dedupeKey?: string;
 }
+export type EventProjectionClaimStatus = "claimed" | "completed" | "busy";
+export interface EventProjectionKey {
+  readonly eventId: string;
+  readonly projectionType: string;
+  readonly sourceRevision: string;
+}
 
 export type LeaderboardWindow = "24h" | "30d";
 export interface LeaderboardObservationInput { readonly accountId: string; readonly window: LeaderboardWindow; readonly rank: number; readonly profitUsd: number | null; readonly observedAt: number }
@@ -116,6 +122,7 @@ export interface AddressRadarRepository extends TokenAggregationRepository, Runt
   insertTraderEvent(event: TraderEvent): { readonly inserted: boolean };
   eventsForEntity(entityId: string): readonly TraderEvent[];
   eventsForToken(chain: string, tokenAddress: string): readonly TraderEvent[];
+  eventsMissingProjection(input: { readonly projectionType: string; readonly sourceRevision: string; readonly since: number; readonly limit: number }): readonly TraderEvent[];
   traderEntity(entityId: string): TraderEntityRecord | null;
   traderEntityIdsWithEvents(): readonly string[];
   traderEntityIdsRequiringPerformance(asOf: number, limit: number): readonly string[];
@@ -168,6 +175,9 @@ export interface AddressRadarRepository extends TokenAggregationRepository, Runt
   candidateDiscoveriesForEntity(entityId: string): readonly CandidateDiscoveryInput[];
   saveAddressSignalEvidence(chain: string, tokenAddress: string, evidence: AddressSignalEvidence): void;
   addressSignalEvidenceForToken(chain: string, tokenAddress: string, since: number): readonly AddressSignalEvidence[];
+  claimEventProjection(input: EventProjectionKey & { readonly owner: string; readonly now: number; readonly leaseMs: number }): EventProjectionClaimStatus;
+  completeEventProjection(input: EventProjectionKey & { readonly owner: string; readonly resultKey: string; readonly completedAt: number }): boolean;
+  failEventProjection(input: EventProjectionKey & { readonly owner: string; readonly error: string; readonly nextAttemptAt: number; readonly failedAt: number }): boolean;
   saveTokenEvaluation(input: Omit<TokenEvaluationRecord, "tokenId">): void;
   tokenEvaluationState(chain: string, tokenAddress: string): TokenEvaluationRecord | null;
   tokenAggregationState(chain: string, tokenAddress: string): TokenAggregationStateRecord | null;
@@ -788,6 +798,26 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
 
     eventsForToken(chain, tokenAddress) {
       const rows = database.prepare("SELECT * FROM trader_events WHERE chain = ? AND token_address = ? ORDER BY occurred_at, event_id").all(chain, tokenAddress) as TraderEventRow[];
+      return Object.freeze(rows.map(toTraderEvent));
+    },
+
+    eventsMissingProjection(input) {
+      assertTimestamp(input.since, "since");
+      if (!Number.isSafeInteger(input.limit) || input.limit < 1) throw new Error("limit must be a positive safe integer");
+      const rows = database.prepare(`
+        SELECT events.*
+        FROM trader_events events
+        WHERE events.occurred_at >= ?
+          AND NOT EXISTS (
+            SELECT 1 FROM event_projections projections
+            WHERE projections.event_id = events.event_id
+              AND projections.projection_type = ?
+              AND projections.source_revision = ?
+              AND projections.status = 'completed'
+          )
+        ORDER BY events.occurred_at, events.event_id
+        LIMIT ?
+      `).all(input.since, input.projectionType, input.sourceRevision, input.limit) as TraderEventRow[];
       return Object.freeze(rows.map(toTraderEvent));
     },
 
@@ -1423,6 +1453,84 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         traderTags: Object.freeze(JSON.parse(record.traderTags) as string[]),
         ...(record.dedupeKey ? { dedupeKey: record.dedupeKey } : {}),
       })));
+    },
+
+    claimEventProjection(input) {
+      assertTimestamp(input.now, "now");
+      if (!Number.isSafeInteger(input.leaseMs) || input.leaseMs <= 0) throw new Error("leaseMs must be a positive safe integer");
+      return transaction(() => {
+        database.prepare(`
+          INSERT OR IGNORE INTO event_projections(
+            event_id, projection_type, source_revision, status, attempt_count,
+            next_attempt_at, created_at, updated_at
+          ) VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
+        `).run(input.eventId, input.projectionType, input.sourceRevision, input.now, input.now, input.now);
+        const claimed = database.prepare(`
+          UPDATE event_projections
+          SET status = 'running', attempt_count = attempt_count + 1,
+            lease_owner = ?, lease_expires_at = ?, updated_at = ?, last_error = NULL
+          WHERE event_id = ? AND projection_type = ? AND source_revision = ?
+            AND status != 'completed'
+            AND next_attempt_at <= ?
+            AND (status != 'running' OR lease_expires_at IS NULL OR lease_expires_at <= ?)
+        `).run(
+          input.owner,
+          input.now + input.leaseMs,
+          input.now,
+          input.eventId,
+          input.projectionType,
+          input.sourceRevision,
+          input.now,
+          input.now,
+        );
+        if (claimed.changes === 1) return "claimed" as const;
+        const row = database.prepare(`
+          SELECT status FROM event_projections
+          WHERE event_id = ? AND projection_type = ? AND source_revision = ?
+        `).get(input.eventId, input.projectionType, input.sourceRevision) as { status: string } | undefined;
+        return row?.status === "completed" ? "completed" as const : "busy" as const;
+      });
+    },
+
+    completeEventProjection(input) {
+      assertTimestamp(input.completedAt, "completedAt");
+      const result = database.prepare(`
+        UPDATE event_projections
+        SET status = 'completed', result_key = ?, completed_at = ?, updated_at = ?,
+          lease_owner = NULL, lease_expires_at = NULL, last_error = NULL
+        WHERE event_id = ? AND projection_type = ? AND source_revision = ?
+          AND status = 'running' AND lease_owner = ?
+      `).run(
+        input.resultKey,
+        input.completedAt,
+        input.completedAt,
+        input.eventId,
+        input.projectionType,
+        input.sourceRevision,
+        input.owner,
+      );
+      return result.changes === 1;
+    },
+
+    failEventProjection(input) {
+      assertTimestamp(input.failedAt, "failedAt");
+      assertTimestamp(input.nextAttemptAt, "nextAttemptAt");
+      const result = database.prepare(`
+        UPDATE event_projections
+        SET status = 'retryable', next_attempt_at = ?, updated_at = ?, last_error = ?,
+          lease_owner = NULL, lease_expires_at = NULL
+        WHERE event_id = ? AND projection_type = ? AND source_revision = ?
+          AND status = 'running' AND lease_owner = ?
+      `).run(
+        input.nextAttemptAt,
+        input.failedAt,
+        input.error.slice(0, 1_000),
+        input.eventId,
+        input.projectionType,
+        input.sourceRevision,
+        input.owner,
+      );
+      return result.changes === 1;
     },
 
     recordWalletBundlePairs(chain, tokenAddress, pairs) {

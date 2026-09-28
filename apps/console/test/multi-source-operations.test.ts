@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -46,6 +46,74 @@ describe("multi-source operator APIs", () => {
     expect(app.handle("GET", "/api/v2/discovery/trader-funnel")).toMatchObject({ status: 200, body: expect.objectContaining({ observed: expect.any(Number), candidateEvidence: expect.any(Number), currentAdmitted: expect.any(Number) }) });
     expect(app.handle("GET", "/api/v2/discovery/fact-coverage")).toMatchObject({ status: 200, body: { unresolvedDependencies: 0, unresolvedConflicts: 0 } });
     expect(app.handle("GET", "/api/v2/automation/overview")).toMatchObject({ status: 200, body: { funnel: expect.objectContaining({ observedFomoHandles: 0, canonicalTraders: 0, walletResolvedTraders: 0, monitoringEligibleTraders: 0 }) } });
+    expect(app.handle("GET", "/api/v2/projections/quality")).toMatchObject({
+      status: 200,
+      body: {
+        canonicalEventCount: 0,
+        completedCount: 0,
+        retryableCount: 0,
+        activeCount: 0,
+        missingSignalProjectionCount: 0,
+      },
+    });
+    app.close();
+  });
+
+  it("reports Fomo verification queue correlation and timeout quality", () => {
+    const { path, app } = setup();
+    const database = openAddressRadarDatabase(path);
+    const insertToken = database.prepare(`
+      INSERT INTO historical_tokens(
+        token_id, chain, token_address, symbol, image_url, first_trade_at,
+        first_reached_1m_at, peak_market_cap_usd, source, source_query_id, provenance
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insertToken.run("base:0xqueued", "base", "0xqueued", null, null, 1_000, 1_000, 1_000_000, "test", null, "{}");
+    insertToken.run("solana:deferred", "solana", "deferred", null, null, 1_000, 1_000, 1_000_000, "test", null, "{}");
+    insertToken.run("bsc:0xconfirmed", "bsc", "0xconfirmed", null, null, 1_000, 1_000, 1_000_000, "test", null, "{}");
+    const updateVerification = database.prepare(`
+      UPDATE historical_token_verifications
+      SET status = ?, last_lookup_id = ?, queued_at = ?, result_received_at = ?,
+        next_retry_at = ?, last_error = ?, updated_at = ?
+      WHERE token_id = ?
+    `);
+    updateVerification.run("queued", "lookup-active", 1_000, null, 10_000, null, 1_000, "base:0xqueued");
+    updateVerification.run("deferred", null, null, null, 20_000, "fomo_result_timeout", 2_000, "solana:deferred");
+    updateVerification.run("confirmed", "lookup-complete", 3_000, 4_000, 0, null, 4_000, "bsc:0xconfirmed");
+    database.close();
+    const transferDirectory = join(path, "..", "fomo");
+    mkdirSync(transferDirectory, { recursive: true });
+    writeFileSync(join(transferDirectory, "fomo-sync-status.json"), JSON.stringify({
+      generatedAt: 5_000,
+      requestSourceSize: 900,
+      requestBytesCopied: 120,
+      resultSourceSize: 700,
+      resultBytesCopied: 80,
+    }));
+
+    const response = app.handle("GET", "/api/v2/fomo-verification/quality");
+    expect(response).toMatchObject({
+      status: 200,
+      body: {
+        total: 3,
+        activeLookupCount: 1,
+        timedOutCount: 1,
+        correlatedResultCount: 1,
+        oldestQueuedAt: 1_000,
+        lastResultReceivedAt: 4_000,
+        transfer: {
+          generatedAt: 5_000,
+          requestBytesCopied: 120,
+          resultBytesCopied: 80,
+        },
+      },
+    });
+    const statuses = (response.body as { statuses: unknown[] }).statuses;
+    expect(statuses).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: "queued", count: 1, diagnosticZh: "等待 Fomo 查询结果" }),
+      expect.objectContaining({ status: "deferred", count: 1, diagnosticZh: "查询超时，已按退避计划重排" }),
+      expect.objectContaining({ status: "confirmed", count: 1, diagnosticZh: "Fomo 已确认并返回历史数据" }),
+    ]));
     app.close();
   });
 
