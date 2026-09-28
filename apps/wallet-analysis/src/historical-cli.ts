@@ -73,7 +73,14 @@ const worker = createDuneHistoricalBackfillWorker({
 });
 const scheduler = createHistoricalBackfillScheduler({ repository, worker, dailyCreditBudget: config.dailyCreditBudget });
 const endAt = Date.now();
-const stagePlanner = createHistoricalStagePlanner({ database, repository, historyStore, chains: config.chains, startAt: config.startAt });
+const stagePlanner = createHistoricalStagePlanner({
+  database,
+  repository,
+  historyStore,
+  chains: config.chains,
+  startAt: config.startAt,
+  onMilestoneMaterialized: tokenId => automationJobs.wakeBlockedSource(tokenId, Date.now(), "candidate_evidence"),
+});
 
 const seedStage = (queryKind: "token_universe" | "milestone_crossings" | "pre_milestone_trades", tokenAddressesByChain?: Readonly<Record<string, readonly string[]>>): void => {
   for (const partition of createHistoricalPartitions({ queryKind, chains: config.chains, from: config.startAt, to: endAt, ...(tokenAddressesByChain ? { tokenAddressesByChain } : {}), createdAt: Date.now() })) repository.enqueueHistoricalBackfillPartition(partition);

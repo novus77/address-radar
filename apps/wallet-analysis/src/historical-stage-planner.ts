@@ -24,6 +24,7 @@ export function createHistoricalStagePlanner(input: {
   readonly database: DatabaseSync;
   readonly repository: AddressRadarRepository;
   readonly historyStore?: CandidateHistoryStore;
+  readonly onMilestoneMaterialized?: (tokenId: string) => void;
   readonly chains: readonly string[];
   readonly startAt: number;
   readonly now?: () => number;
@@ -31,6 +32,7 @@ export function createHistoricalStagePlanner(input: {
 }) {
   const now = input.now ?? Date.now;
   const configuredChains = new Set(input.chains.map(chain => chain.trim().toLowerCase()).filter(Boolean));
+  const materializedMilestoneTokens = new Set<string>();
 
   const eligibleRows = (requireMilestone: boolean): readonly HistoricalTokenRow[] => {
     const rows = input.database.prepare(`
@@ -82,6 +84,7 @@ export function createHistoricalStagePlanner(input: {
       const milestoneRows = eligibleRows(false);
       for (const row of milestoneRows) {
         if (row.firstReached1mAt === null || row.peakMarketCapUsd < 1_000_000) continue;
+        if (materializedMilestoneTokens.has(row.tokenId)) continue;
         input.historyStore?.saveMilestoneCrossing({
           milestoneId: `${row.tokenId}:1000000`,
           tokenId: row.tokenId,
@@ -92,6 +95,8 @@ export function createHistoricalStagePlanner(input: {
           sourceEventIds: [`${row.tokenId}:${row.firstReached1mAt}:1000000`],
           strategyVersion: "candidate-history-v3",
         });
+        input.onMilestoneMaterialized?.(row.tokenId);
+        materializedMilestoneTokens.add(row.tokenId);
       }
       const earlyTradeRows = eligibleRows(true);
       return Object.freeze({
