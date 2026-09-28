@@ -17,6 +17,7 @@ export function migrateAddressRadarDatabase(database: DatabaseSync): void {
   database.exec(`PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${ADDRESS_RADAR_BUSY_TIMEOUT_MS};`);
   withAddressRadarWriteTransaction(database, () => {
     initializeAddressRadarSchema(database);
+    migrateActiveWalletAnalysisUniqueness(database);
     initializeCandidateHistorySchema(database);
     ensureColumn(database, "historical_token_verifications", "last_lookup_id", "TEXT");
     ensureColumn(database, "historical_token_verifications", "queued_at", "INTEGER");
@@ -59,6 +60,39 @@ export function migrateAddressRadarDatabase(database: DatabaseSync): void {
     `);
     migrateHistoricalBroadcasts(database);
   }, { maximumAttempts: 20, baseDelayMs: 25, maximumDelayMs: 1_000 });
+}
+
+function migrateActiveWalletAnalysisUniqueness(database: DatabaseSync): void {
+  const now = Date.now();
+  database.prepare(`
+    UPDATE wallet_analysis_jobs
+    SET status = 'failed', last_error = 'superseded_duplicate', updated_at = ?
+    WHERE analysis_id IN (
+      SELECT analysis_id
+      FROM (
+        SELECT analysis_id,
+          ROW_NUMBER() OVER (
+            PARTITION BY chain_family, address, requested_sample_count
+            ORDER BY
+              CASE
+                WHEN status = 'review_required' THEN 0
+                WHEN analysis_id LIKE 'initial-wallet-backfill:%' THEN 1
+                ELSE 2
+              END,
+              updated_at DESC,
+              analysis_id
+          ) AS duplicate_rank
+        FROM wallet_analysis_jobs
+        WHERE status IN ('collecting', 'review_required')
+      ) ranked
+      WHERE duplicate_rank > 1
+    )
+  `).run(now);
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS wallet_analysis_jobs_one_active
+    ON wallet_analysis_jobs(chain_family, address, requested_sample_count)
+    WHERE status IN ('collecting', 'review_required');
+  `);
 }
 
 function backfillLegacyTokenFacts(database: DatabaseSync): void {

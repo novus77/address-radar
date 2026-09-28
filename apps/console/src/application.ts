@@ -1302,6 +1302,28 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
         const requestedSampleCount = typeof input.requestedSampleCount === "number" ? input.requestedSampleCount : 300;
         if (!chainFamily || !address) return { status: 400, body: { error: "chain_family_and_address_required" } };
         if (!Number.isSafeInteger(requestedSampleCount) || requestedSampleCount < 1 || requestedSampleCount > 300) return { status: 400, body: { error: "requested_sample_count_invalid" } };
+        const activeAnalysis = database.prepare(`
+          SELECT analysis_id AS analysisId, status, valid_sample_count AS validSampleCount,
+            coverage_rate AS coverageRate, metrics
+          FROM wallet_analysis_jobs
+          WHERE chain_family = ? AND address = ? AND requested_sample_count = ?
+            AND status IN ('collecting', 'review_required')
+          ORDER BY CASE status WHEN 'review_required' THEN 0 ELSE 1 END, updated_at DESC
+          LIMIT 1
+        `).get(chainFamily, address, requestedSampleCount) as { analysisId: string; status: string; validSampleCount: number; coverageRate: number; metrics: string | null } | undefined;
+        if (activeAnalysis) {
+          return {
+            status: 200,
+            body: {
+              analysisId: activeAnalysis.analysisId,
+              chainFamily,
+              address,
+              status: activeAnalysis.status,
+              metrics: activeAnalysis.metrics ? JSON.parse(activeAnalysis.metrics) : null,
+              reused: true,
+            },
+          };
+        }
         const now = Date.now();
         const analysisId = randomUUID();
         const positions = Array.isArray(input.positions) ? input.positions as WalletAnalysisPosition[] : null;
@@ -1332,7 +1354,7 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
           VALUES (?, ?, 0, ?, ?, ?, NULL, ?)
         `).run(analysisId, metrics ? "completed" : "queued", metrics?.validSamples ?? 0, metrics ? 100 : 0, now, now);
         audit("wallet_analysis.create", { analysisId, chainFamily, address, requestedSampleCount, status });
-        return { status: 201, body: { analysisId, chainFamily, address, status, metrics } };
+        return { status: 201, body: { analysisId, chainFamily, address, status, metrics, reused: false } };
       }
       const walletAnalysisResultMatch = pathname.match(/^\/api\/v1\/wallet-analyses\/([^/]+)\/result$/);
       if (method === "PUT" && walletAnalysisResultMatch) {
@@ -1406,39 +1428,98 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
         if (!rawHandle && evmAddresses.length === 0 && solanaAddresses.length === 0) return { status: 400, body: { error: "identity_required" } };
         const now = Date.now();
         const identityId = randomUUID();
-        const handle = rawHandle ? normalizeFomoHandle(rawHandle) : `wallet-${identityId}`;
-        const existingAccount = rawHandle ? database.prepare("SELECT account_id AS accountId FROM fomo_accounts WHERE handle = ? COLLATE NOCASE").get(handle) as { accountId: string } | undefined : undefined;
-        const accountId = typeof input.accountId === "string" ? input.accountId : existingAccount?.accountId ?? `manual-account:${identityId}`;
-        const existingEntity = database.prepare("SELECT entity_id AS entityId FROM entity_accounts WHERE account_id = ? ORDER BY last_observed_at DESC LIMIT 1").get(accountId) as { entityId: string } | undefined;
-        const entityId = typeof input.entityId === "string" ? input.entityId : existingEntity?.entityId ?? `manual-entity:${identityId}`;
+        const requestedHandle = rawHandle ? normalizeFomoHandle(rawHandle) : null;
         const wallets = [
           ...evmAddresses.map(address => ({ family: "evm" as const, address: normalizeWalletAddress("evm", address) })),
           ...solanaAddresses.map(address => ({ family: "solana" as const, address: normalizeWalletAddress("solana", address) })),
         ];
-        for (const wallet of wallets) {
-          const owner = resolutionRepository.walletOwner(wallet.family, wallet.address);
-          if (owner && owner !== accountId) return { status: 409, body: { error: "wallet_identity_conflict", chainFamily: wallet.family, address: wallet.address } };
+        const ownedWallets = wallets.flatMap(wallet => {
+          const accountId = resolutionRepository.walletOwner(wallet.family, wallet.address);
+          return accountId ? [{ wallet, accountId }] : [];
+        });
+        const walletOwnerIds = [...new Set(ownedWallets.map(item => item.accountId))];
+        const conflictResult = (conflictingAccountId: string, wallet: typeof wallets[number], reason: string) => {
+          const owner = database.prepare(`
+            SELECT ea.entity_id AS entityId, p.display_name AS displayName, f.handle
+            FROM entity_accounts ea
+            LEFT JOIN trader_profiles p ON p.entity_id = ea.entity_id
+            LEFT JOIN fomo_accounts f ON f.account_id = ea.account_id
+            WHERE ea.account_id = ?
+            ORDER BY ea.last_observed_at DESC LIMIT 1
+          `).get(conflictingAccountId) as { entityId: string; displayName: string | null; handle: string | null } | undefined;
+          return {
+            status: 409,
+            body: {
+              error: "wallet_identity_conflict",
+              reason,
+              chainFamily: wallet.family,
+              address: wallet.address,
+              conflictingAccountId,
+              conflictingEntityId: owner?.entityId ?? null,
+              conflictingDisplayName: owner?.displayName ?? owner?.handle ?? null,
+            },
+          };
+        };
+        if (walletOwnerIds.length > 1) {
+          const conflicting = ownedWallets.find(item => item.accountId !== walletOwnerIds[0]) ?? ownedWallets[0]!;
+          return conflictResult(conflicting.accountId, conflicting.wallet, "wallets_owned_by_multiple_traders");
         }
+        const walletOwnerId = walletOwnerIds[0] ?? null;
+        const handleAccount = requestedHandle
+          ? database.prepare("SELECT account_id AS accountId, handle FROM fomo_accounts WHERE handle = ? COLLATE NOCASE").get(requestedHandle) as { accountId: string; handle: string } | undefined
+          : undefined;
+        const explicitAccountId = typeof input.accountId === "string" && input.accountId.trim() ? input.accountId.trim() : null;
+        const requestedAccountId = explicitAccountId ?? handleAccount?.accountId ?? walletOwnerId;
+        if (walletOwnerId && requestedAccountId && walletOwnerId !== requestedAccountId) {
+          return conflictResult(walletOwnerId, ownedWallets[0]!.wallet, "wallet_owned_by_another_trader");
+        }
+        const ownerAccount = walletOwnerId
+          ? database.prepare("SELECT account_id AS accountId, handle FROM fomo_accounts WHERE account_id = ?").get(walletOwnerId) as { accountId: string; handle: string } | undefined
+          : undefined;
+        if (requestedHandle && ownerAccount && !handleAccount && !ownerAccount.handle.startsWith("wallet-") && ownerAccount.handle.toLowerCase() !== requestedHandle.toLowerCase()) {
+          return conflictResult(ownerAccount.accountId, ownedWallets[0]!.wallet, "wallet_owned_by_named_trader");
+        }
+        const accountId = requestedAccountId ?? `manual-account:${identityId}`;
+        const existingEntity = database.prepare("SELECT entity_id AS entityId FROM entity_accounts WHERE account_id = ? ORDER BY last_observed_at DESC LIMIT 1").get(accountId) as { entityId: string } | undefined;
+        const explicitEntityId = typeof input.entityId === "string" && input.entityId.trim() ? input.entityId.trim() : null;
+        if (explicitEntityId && existingEntity && explicitEntityId !== existingEntity.entityId) {
+          return { status: 409, body: { error: "entity_account_conflict", accountId, conflictingEntityId: existingEntity.entityId } };
+        }
+        const entityId = explicitEntityId ?? existingEntity?.entityId ?? `manual-entity:${identityId}`;
+        const handle = requestedHandle ?? ownerAccount?.handle ?? `wallet-${identityId}`;
+        const created = !existingEntity;
         const priority = input.priority === "important" ? "important" : "normal";
         const notes = typeof input.notes === "string" && input.notes.trim() ? input.notes.trim() : null;
         const tags: Array<{ category: typeof allowedTagCategories[number]; tag: string }> = allowedTagCategories.flatMap(category => typedTags(input, category).map(tag => ({ category, tag })));
         if (!tags.some(item => item.category === "source")) tags.push({ category: "source", tag: "source.manual" });
         withAddressRadarWriteTransaction(database, () => {
           database.prepare("INSERT INTO fomo_accounts(account_id, handle, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?) ON CONFLICT(account_id) DO UPDATE SET handle = excluded.handle, last_seen_at = excluded.last_seen_at").run(accountId, handle, now, now);
-          database.prepare("INSERT INTO trader_entities(entity_id, lifecycle, manual, locked, created_at, updated_at) VALUES (?, 'probation', 1, ?, ?, ?) ON CONFLICT(entity_id) DO UPDATE SET manual = 1, locked = excluded.locked, lifecycle = CASE WHEN trader_entities.lifecycle = 'candidate' THEN 'probation' ELSE trader_entities.lifecycle END, updated_at = excluded.updated_at").run(entityId, Number(priority === "important"), now, now);
+          database.prepare("INSERT INTO trader_entities(entity_id, lifecycle, manual, locked, created_at, updated_at) VALUES (?, 'probation', 1, ?, ?, ?) ON CONFLICT(entity_id) DO UPDATE SET manual = 1, locked = MAX(trader_entities.locked, excluded.locked), lifecycle = CASE WHEN trader_entities.lifecycle = 'candidate' THEN 'probation' ELSE trader_entities.lifecycle END, updated_at = excluded.updated_at").run(entityId, Number(priority === "important"), now, now);
           database.prepare("INSERT INTO entity_accounts(entity_id, account_id, confidence, source, first_observed_at, last_observed_at) VALUES (?, ?, 'confirmed', ?, ?, ?) ON CONFLICT(entity_id, account_id) DO UPDATE SET confidence = 'confirmed', source = excluded.source, last_observed_at = excluded.last_observed_at").run(entityId, accountId, rawHandle ? "manual" : "manual_wallet", now, now);
-          database.prepare("INSERT INTO trader_profiles(entity_id, display_name, priority, notes, monitoring_enabled, fomo_monitoring_enabled, onchain_monitoring_enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?) ON CONFLICT(entity_id) DO UPDATE SET display_name = excluded.display_name, priority = excluded.priority, notes = excluded.notes, monitoring_enabled = 1, fomo_monitoring_enabled = excluded.fomo_monitoring_enabled, onchain_monitoring_enabled = excluded.onchain_monitoring_enabled, updated_at = excluded.updated_at")
+          database.prepare("INSERT INTO trader_profiles(entity_id, display_name, priority, notes, monitoring_enabled, fomo_monitoring_enabled, onchain_monitoring_enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?) ON CONFLICT(entity_id) DO UPDATE SET display_name = excluded.display_name, priority = excluded.priority, notes = excluded.notes, monitoring_enabled = 1, fomo_monitoring_enabled = MAX(trader_profiles.fomo_monitoring_enabled, excluded.fomo_monitoring_enabled), onchain_monitoring_enabled = MAX(trader_profiles.onchain_monitoring_enabled, excluded.onchain_monitoring_enabled), updated_at = excluded.updated_at")
             .run(entityId, displayName, priority, notes, Number(Boolean(rawHandle)), Number(wallets.length > 0), now, now);
           const attach = database.prepare("INSERT INTO wallet_identities(account_id, chain_family, address, confidence, source, first_observed_at, last_observed_at) VALUES (?, ?, ?, 'confirmed', 'manual', ?, ?) ON CONFLICT(account_id, chain_family, address) DO UPDATE SET confidence = 'confirmed', source = 'manual', last_observed_at = excluded.last_observed_at");
           for (const wallet of wallets) attach.run(accountId, wallet.family, wallet.address, now, now);
           const addTag = database.prepare("INSERT OR IGNORE INTO trader_tags(entity_id, category, tag, created_at) VALUES (?, ?, ?, ?)");
           for (const tag of tags) addTag.run(entityId, tag.category, tag.tag, now);
-          database.prepare("INSERT INTO monitoring_registry_outbox(event_id, entity_id, event_type, payload, status, created_at, published_at) VALUES (?, ?, 'identity.created', ?, 'published', ?, ?)")
-            .run(`identity-registry:${entityId}:${now}`, entityId, JSON.stringify({ entityId, accountId, wallets, lifecycle: "probation" }), now, now);
+          const eventType = created ? "identity.created" : "identity.updated";
+          database.prepare("INSERT INTO monitoring_registry_outbox(event_id, entity_id, event_type, payload, status, created_at, published_at) VALUES (?, ?, ?, ?, 'published', ?, ?)")
+            .run(`identity-registry:${entityId}:${created ? "created" : "updated"}:${now}`, entityId, eventType, JSON.stringify({ entityId, accountId, wallets, lifecycle: "probation" }), now, now);
           database.prepare("UPDATE monitoring_registry_state SET version = version + 1, updated_at = ? WHERE singleton = 1").run(now);
         }, { label: "console_create_manual_trader" });
-        audit("trader.manual_add", { entityId, accountId, displayName, fomoHandle: rawHandle ? handle : null, wallets, tags });
-        return { status: 201, body: { entityId, accountId, displayName, fomoHandle: rawHandle ? handle : null, lifecycleStatus: "observing" } };
+        audit(created ? "trader.manual_add" : "trader.manual_update", { entityId, accountId, displayName, fomoHandle: rawHandle ? handle : null, wallets, tags });
+        return {
+          status: created ? 201 : 200,
+          body: {
+            entityId,
+            accountId,
+            displayName,
+            fomoHandle: rawHandle ? handle : null,
+            lifecycleStatus: "observing",
+            created,
+            updated: !created,
+          },
+        };
       }
       const stateMatch = pathname.match(/^\/api\/v1\/traders\/([^/]+)\/state$/);
       if (method === "PUT" && stateMatch) {

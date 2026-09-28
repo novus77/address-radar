@@ -375,4 +375,100 @@ describe("address intelligence developer console", () => {
     verificationDatabase.close();
     expect(queued).toMatchObject({ tokenId: "solana:TokenA", status: "pending" });
   });
+
+  it("updates the existing trader when a manual wallet is submitted again", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "address-console-manual-idempotency-"));
+    const databasePath = join(directory, "address.sqlite");
+    const server = await startAddressRadarConsole({ application: createAddressConsoleApplication(databasePath), developerToken: TOKEN, host: "127.0.0.1", port: 0 });
+    servers.push(server);
+    const address = "11111111111111111111111111111111";
+
+    const created = await authorizedJson(server.url, "/api/v1/traders/manual", "POST", {
+      displayName: "Manual Alpha",
+      solanaAddresses: [address],
+      sourceTags: ["source.manual"],
+      priority: "important",
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await created.json() as Record<string, unknown>;
+    expect(createdBody).toMatchObject({ created: true, updated: false, displayName: "Manual Alpha" });
+
+    const updated = await authorizedJson(server.url, "/api/v1/traders/manual", "POST", {
+      displayName: "Manual Alpha Updated",
+      solanaAddresses: [address],
+      sourceTags: ["source.manual"],
+      styleTags: ["style.early_launch"],
+      priority: "important",
+    });
+    expect(updated.status).toBe(200);
+    expect(await updated.json()).toMatchObject({
+      created: false,
+      updated: true,
+      entityId: createdBody.entityId,
+      accountId: createdBody.accountId,
+      displayName: "Manual Alpha Updated",
+    });
+
+    const database = new DatabaseSync(databasePath);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM trader_entities").get()).toEqual({ count: 1 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM wallet_identities WHERE chain_family = 'solana' AND address = ?").get(address)).toEqual({ count: 1 });
+    expect(database.prepare("SELECT display_name AS displayName, priority FROM trader_profiles").get()).toEqual({ displayName: "Manual Alpha Updated", priority: "important" });
+    expect(database.prepare("SELECT tag FROM trader_tags ORDER BY category, tag").all()).toEqual([
+      { tag: "source.manual" },
+      { tag: "style.early_launch" },
+    ]);
+    database.close();
+  });
+
+  it("keeps a real identity conflict when a known handle owns another wallet", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "address-console-manual-conflict-"));
+    const databasePath = join(directory, "address.sqlite");
+    const server = await startAddressRadarConsole({ application: createAddressConsoleApplication(databasePath), developerToken: TOKEN, host: "127.0.0.1", port: 0 });
+    servers.push(server);
+
+    expect((await authorizedJson(server.url, "/api/v1/traders/manual", "POST", {
+      displayName: "Alpha",
+      fomoHandle: "Alpha",
+      solanaAddresses: ["11111111111111111111111111111111"],
+    })).status).toBe(201);
+    expect((await authorizedJson(server.url, "/api/v1/traders/manual", "POST", {
+      displayName: "Beta",
+      fomoHandle: "Beta",
+      solanaAddresses: ["SysvarRent111111111111111111111111111111111"],
+    })).status).toBe(201);
+
+    const conflict = await authorizedJson(server.url, "/api/v1/traders/manual", "POST", {
+      displayName: "Beta",
+      fomoHandle: "Beta",
+      solanaAddresses: ["11111111111111111111111111111111"],
+    });
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toMatchObject({
+      error: "wallet_identity_conflict",
+      reason: "wallet_owned_by_another_trader",
+      chainFamily: "solana",
+      conflictingDisplayName: "Alpha",
+    });
+  });
+
+  it("reuses an active wallet analysis for the same address and sample target", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "address-console-analysis-idempotency-"));
+    const databasePath = join(directory, "address.sqlite");
+    const server = await startAddressRadarConsole({ application: createAddressConsoleApplication(databasePath), developerToken: TOKEN, host: "127.0.0.1", port: 0 });
+    servers.push(server);
+    const request = { chainFamily: "solana", address: "11111111111111111111111111111111", requestedSampleCount: 300 };
+
+    const created = await authorizedJson(server.url, "/api/v1/wallet-analyses", "POST", request);
+    expect(created.status).toBe(201);
+    const createdBody = await created.json() as Record<string, unknown>;
+    expect(createdBody).toMatchObject({ reused: false, status: "collecting" });
+
+    const reused = await authorizedJson(server.url, "/api/v1/wallet-analyses", "POST", request);
+    expect(reused.status).toBe(200);
+    expect(await reused.json()).toMatchObject({ analysisId: createdBody.analysisId, reused: true, status: "collecting" });
+
+    const database = new DatabaseSync(databasePath);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM wallet_analysis_jobs").get()).toEqual({ count: 1 });
+    database.close();
+  });
 });

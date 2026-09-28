@@ -557,6 +557,7 @@ $("#identity-import-form").addEventListener("submit", async event => {
 
 $("#manual-trader-form").addEventListener("submit", async event => {
   event.preventDefault();
+  const form = event.currentTarget;
   const feedback = $("#manual-trader-feedback");
   const abilityTag = $("#manual-ability-tag").value;
   const styleTag = $("#manual-style-tag").value;
@@ -571,20 +572,34 @@ $("#manual-trader-form").addEventListener("submit", async event => {
     priority: $("#manual-priority").value,
     notes: $("#manual-notes").value.trim(),
   };
+  let result;
   try {
-    const result = await api("traders/manual", { method: "POST", body: JSON.stringify(body) });
+    result = await api("traders/manual", { method: "POST", body: JSON.stringify(body) });
+  } catch (error) {
+    feedback.textContent = error.message === "wallet_identity_conflict"
+      ? "保存失败：该钱包已属于另一个交易员，请在身份冲突中核对后再处理。"
+      : `新增失败：${error.message}`;
+    return;
+  }
+  let associationWarning = "";
+  try {
     if (state.selectedWalletAnalysisId) {
       await api(`wallet-analyses/${encodeURIComponent(state.selectedWalletAnalysisId)}/accept`, { method: "POST", body: JSON.stringify({ entityId: result.entityId }) });
       state.selectedWalletAnalysisId = null;
       state.walletAnalyses = await api("wallet-analyses");
       renderWalletAnalyses();
     }
-    feedback.textContent = `已加入观察地址库：${result.displayName}`;
-    event.currentTarget.reset();
+  } catch (error) {
+    associationWarning = `；地址分析关联未完成：${error.message}`;
+  }
+  const actionLabel = result.created === false ? "已更新观察交易员" : "已加入观察地址库";
+  feedback.textContent = `${actionLabel}：${result.displayName}${associationWarning}`;
+  form.reset();
+  try {
     state.traders = await api("traders");
     renderTraders();
   } catch (error) {
-    feedback.textContent = `新增失败：${error.message}`;
+    feedback.textContent = `${actionLabel}，但列表刷新失败：${error.message}`;
   }
 });
 
