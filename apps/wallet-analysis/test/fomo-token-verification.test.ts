@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -153,5 +153,50 @@ describe("FOMO historical verification", () => {
     expect(rows.filter(row => row.status === "deferred")).toEqual([
       expect.objectContaining({ lookupId: null, queuedAt: null, lastError: "fomo_result_timeout" }),
     ]);
+  });
+
+  it("recovers expired lookups even while result consumption stays busy", async () => {
+    database = new DatabaseSync(":memory:");
+    initializeCandidateHistorySchema(database);
+    const store = createCandidateHistoryStore(database);
+    for (const address of ["0xresult", "0xstarved"]) store.saveHistoricalToken({
+      tokenId: `base:${address}`,
+      chain: "base",
+      tokenAddress: address,
+      symbol: "TOK",
+      imageUrl: null,
+      firstTradeAt: 1,
+      firstReached1mAt: 2,
+      peakMarketCapUsd: 1_100_000,
+      source: "test",
+      sourceQueryId: null,
+      provenance: {},
+    });
+    database.prepare("UPDATE historical_token_verifications SET status = 'queued', next_retry_at = 50, updated_at = 10").run();
+    directory = mkdtempSync(join(tmpdir(), "address-radar-fomo-verification-"));
+    const resultPath = join(directory, "results.jsonl");
+    writeFileSync(resultPath, `${JSON.stringify({
+      version: 1,
+      lookupId: "lookup-result",
+      chainId: "base",
+      tokenAddress: "0xresult",
+      completedAt: 100,
+      holderCount: 1,
+      queriedTraderCount: 1,
+      observationCount: 1,
+      verificationStatus: "confirmed",
+      exactAddressMatch: true,
+      historyAvailable: true,
+    })}\n`);
+    const service = createFomoHistoricalVerificationService({
+      database,
+      producer: new FomoTokenLookupProducer({ filePath: join(directory, "lookups.jsonl") }),
+      consumer: new FomoTokenLookupResultConsumer({ filePath: resultPath, cursorPath: join(directory, "cursor.json") }),
+      now: () => 100,
+    });
+
+    await expect(service.runOnce()).resolves.toEqual({ processed: true, action: "result" });
+    expect(database.prepare("SELECT status, last_error AS lastError FROM historical_token_verifications WHERE token_id = 'base:0xstarved'").get())
+      .toEqual({ status: "deferred", lastError: "fomo_result_timeout" });
   });
 });
