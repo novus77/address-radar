@@ -37,6 +37,8 @@ export {
 export type { TraderBackfillPlan } from "./trader-backfill-planner.js";
 export { createTraderLightweightWorker } from "./trader-lightweight-worker.js";
 export { createProviderRouteRegistry } from "./provider-route-registry.js";
+export { initializeClosedLoopReconciliationSchema, reconcileClosedLoopV1 } from "./migrations/reconcile-closed-loop-v1.js";
+export type { ClosedLoopReconciliationSummary } from "./migrations/reconcile-closed-loop-v1.js";
 export type { FactProviderRoute, ProviderCostClass, ProviderRouteContext, ProviderRouteRegistry } from "./provider-route-registry.js";
 export { createTokenFactOrchestrator } from "./token-fact-orchestrator.js";
 export type { TokenFactPlanResult, TokenFactProviderResult, TokenFactRecoveryDispatcher, TokenFactRecoveryRequest } from "./token-fact-orchestrator.js";

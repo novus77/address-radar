@@ -1,9 +1,11 @@
 import {
+  createWalletCoverageStore,
   createSourceLedgerStore,
   openAddressRadarDatabase,
   openAddressRadarRepository,
   withAddressRadarWriteTransaction,
 } from "@address-radar/database";
+import type { WalletChainCoverage } from "@address-radar/database";
 import { sourceObservationForTraderEvent } from "@address-radar/collectors";
 import type { TraderEvent } from "@address-radar/domain";
 
@@ -32,6 +34,7 @@ export interface WalletMonitorStore {
   recordFailure(source: string, error: string, updatedAt: number): void;
   recordProviderResult(source: string, successfulPartitionKeys: readonly string[], failures: readonly { readonly partitionKey: string; readonly error: string }[], updatedAt: number): void;
   recordDiagnostics(source: string, diagnostics: readonly { readonly partitionKey: string; readonly reason: string; readonly sourceReference: string }[], updatedAt: number): void;
+  recordCoverage(input: WalletChainCoverage): void;
   providerStatus(source: string): WalletMonitorProviderStatus | null;
   diagnostics(): readonly WalletMonitorDiagnostic[];
   observations(): readonly NormalizedWalletObservation[];
@@ -42,6 +45,7 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
   const database = openAddressRadarDatabase(databasePath);
   const eventRepository = openAddressRadarRepository(databasePath);
   const sourceLedger = createSourceLedgerStore(database);
+  const walletCoverage = createWalletCoverageStore(database);
 
   const transaction = <T>(operation: () => T): T =>
     withAddressRadarWriteTransaction(database, operation);
@@ -214,6 +218,16 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
         for (const diagnostic of diagnostics) {
           insert.run(source, diagnostic.partitionKey, diagnostic.reason, diagnostic.sourceReference, updatedAt);
         }
+      });
+    },
+    recordCoverage(input) {
+      const previous = walletCoverage.get(input.identityId, input.chain, input.provider);
+      walletCoverage.upsert({
+        ...input,
+        cursor: input.cursor ?? previous?.cursor ?? null,
+        coverageStartAt: input.coverageStartAt ?? previous?.coverageStartAt ?? null,
+        coverageEndAt: input.coverageEndAt ?? previous?.coverageEndAt ?? null,
+        lastSuccessAt: input.lastSuccessAt ?? previous?.lastSuccessAt ?? null,
       });
     },
     providerStatus(source) {

@@ -14,7 +14,7 @@ export interface CandidateSourceRecoveryPlan {
 
 const recoveryTypes = (reason: CandidateSourceBlockReason, chain: string) => {
   if (reason === "missing_early_trades") return [{ jobType: "milestone_early_buyers" as const, priority: 35 }];
-  if (reason === "missing_wallet_mapping") return [{ jobType: "identity_resolution" as const, priority: 40 }];
+  if (reason === "missing_wallet_mapping") return [];
   if (reason === "missing_market_history") {
     return chain.toLowerCase() === "robinhood"
       ? [{ jobType: "fomo_token_history" as const, priority: 25 }]

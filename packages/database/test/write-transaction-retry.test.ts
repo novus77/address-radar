@@ -12,6 +12,18 @@ import {
 } from "../src/index.js";
 
 describe("write transaction retry", () => {
+  it("reuses an existing write transaction without nesting", () => {
+    const database = openAddressRadarDatabase(":memory:");
+    database.exec("CREATE TABLE values_table(value TEXT PRIMARY KEY)");
+    withAddressRadarWriteTransaction(database, () => {
+      withAddressRadarWriteTransaction(database, () => {
+        database.prepare("INSERT INTO values_table(value) VALUES ('nested')").run();
+      });
+    });
+    expect(database.prepare("SELECT value FROM values_table").get()).toEqual({ value: "nested" });
+    database.close();
+  });
+
   it("retries a real lock conflict without losing an event or advancing only the checkpoint", async () => {
     const directory = mkdtempSync(join(tmpdir(), "address-radar-write-retry-"));
     const databasePath = join(directory, "radar.sqlite");

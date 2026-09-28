@@ -1,4 +1,5 @@
 export { createWalletMonitorRuntime } from "./runtime.js";
+export { recordCollectorCoverage, recordCollectorFailure } from "./coverage-controller.js";
 export { createEvmBlockWalletCollector, createSolanaWalletCollector } from "./collectors.js";
 export { createIndexedEvmWalletCollector } from "./indexed-wallet-collector.js";
 export { loadWalletMonitorConfig } from "./config.js";

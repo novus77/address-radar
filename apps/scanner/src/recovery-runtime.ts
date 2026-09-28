@@ -1,8 +1,11 @@
 import type {
   RecoveryJobRecord,
   RecoveryJobType,
+  ReturnTypeOfCreateRecoveryFactLinkStore,
   SourceLedgerStore,
 } from "@address-radar/database";
+
+import { expectedRecoveryFact, type RecoveryPostcondition } from "./recovery-postcondition.js";
 
 export class RetryableRecoveryError extends Error {
   constructor(message: string) {
@@ -31,6 +34,7 @@ class ProviderBudgetExhaustedError extends Error {
 export interface RecoveryHandlerResult {
   readonly cursor?: string;
   readonly reEvaluate?: { readonly kind: "token" | "trader"; readonly key: string };
+  readonly postcondition?: RecoveryPostcondition;
 }
 
 export interface RecoveryHandlerContext {
@@ -59,6 +63,7 @@ export function createRecoveryRuntime(input: {
   readonly clock: { now(): number };
   readonly leaseMs?: number;
   readonly retryBaseMs?: number;
+  readonly factLinks?: ReturnTypeOfCreateRecoveryFactLinkStore;
   readonly onReEvaluate?: (request: NonNullable<RecoveryHandlerResult["reEvaluate"]>) => void | Promise<void>;
 }) {
   const leaseMs = input.leaseMs ?? 60_000;
@@ -70,6 +75,8 @@ export function createRecoveryRuntime(input: {
       const job = input.ledger.claimRecoveryJob(now, leaseMs);
       if (!job) return Object.freeze({ jobId: null, outcome: "idle" as const });
       const handler = input.handlers[job.jobType];
+      const expectedFact = expectedRecoveryFact(job);
+      if (expectedFact) input.factLinks?.ensure(job.jobId, expectedFact.factType, expectedFact.factKey, now);
 
       try {
         if (!handler) throw new RetryableRecoveryError(`handler_unavailable:${job.jobType}`);
@@ -88,6 +95,14 @@ export function createRecoveryRuntime(input: {
         });
         checkpoint = result?.cursor ?? checkpoint;
         if (checkpoint !== null) input.ledger.checkpointRecoveryJob(job.jobId, checkpoint, input.clock.now());
+        if (result?.postcondition) {
+          const verification = result.postcondition.verify();
+          if (verification.status === "deferred") throw new RetryableRecoveryError(verification.reasonCode);
+          if (verification.status === "terminal") throw new TerminalRecoveryError(verification.reasonCode);
+          input.factLinks?.satisfy(job.jobId, result.postcondition.factType, result.postcondition.factKey, input.clock.now());
+        } else if (expectedFact && input.factLinks) {
+          throw new RetryableRecoveryError(`postcondition_missing:${expectedFact.factType}`);
+        }
         input.ledger.completeRecoveryJob(job.jobId, input.clock.now());
         if (result?.reEvaluate) await input.onReEvaluate?.(result.reEvaluate);
         return Object.freeze({ jobId: job.jobId, outcome: "completed" as const });
@@ -98,6 +113,7 @@ export function createRecoveryRuntime(input: {
           return Object.freeze({ jobId: job.jobId, outcome: "budget_exhausted" as const });
         }
         if (error instanceof TerminalRecoveryError) {
+          if (expectedFact) input.factLinks?.terminal(job.jobId, expectedFact.factType, expectedFact.factKey, message, input.clock.now());
           input.ledger.failRecoveryJob(job.jobId, message, input.clock.now(), true);
           return Object.freeze({ jobId: job.jobId, outcome: "dead_letter" as const });
         }

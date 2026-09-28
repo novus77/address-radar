@@ -38,6 +38,8 @@ export interface ScannerConfig extends ScannerPolicyConfig {
   readonly projectionReplayEnabled?: boolean;
   readonly projectionReplayLookbackMs?: number;
   readonly projectionReplayBatchSize?: number;
+  readonly projectionReplayRealtimeWindowMs?: number;
+  readonly projectionReplayRealtimeBatchSize?: number;
 }
 
 const required = (env: Readonly<Record<string, string | undefined>>, key: string): string => {
@@ -100,6 +102,8 @@ export function parseScannerConfig(env: Readonly<Record<string, string | undefin
     projectionReplayEnabled: env.ADDRESS_RADAR_PROJECTION_REPLAY_ENABLED === "true",
     projectionReplayLookbackMs: finiteNumber(env.ADDRESS_RADAR_PROJECTION_REPLAY_LOOKBACK_MS, 24 * 60 * 60_000, "ADDRESS_RADAR_PROJECTION_REPLAY_LOOKBACK_MS"),
     projectionReplayBatchSize: finiteNumber(env.ADDRESS_RADAR_PROJECTION_REPLAY_BATCH_SIZE, 100, "ADDRESS_RADAR_PROJECTION_REPLAY_BATCH_SIZE"),
+    projectionReplayRealtimeWindowMs: finiteNumber(env.ADDRESS_RADAR_PROJECTION_REPLAY_REALTIME_WINDOW_MS, 60 * 60_000, "ADDRESS_RADAR_PROJECTION_REPLAY_REALTIME_WINDOW_MS"),
+    projectionReplayRealtimeBatchSize: finiteNumber(env.ADDRESS_RADAR_PROJECTION_REPLAY_REALTIME_BATCH_SIZE, 25, "ADDRESS_RADAR_PROJECTION_REPLAY_REALTIME_BATCH_SIZE"),
   });
 }
 

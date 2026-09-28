@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const SOURCE_OBSERVATION_FINGERPRINT_VERSION = 2;
+export const SOURCE_OBSERVATION_FINGERPRINT_VERSION = 3;
 
 export type SourceObservationWriteResult =
   | Readonly<{ status: "inserted" }>
@@ -98,18 +98,21 @@ export function sourceObservationId(source: SourceId, sourceEventId: string, pay
   return `source-observation:${digest}`;
 }
 
-const semanticValue = (value: unknown, stripCollectionTime = false): unknown => {
+const MUTABLE_ENRICHMENT_KEYS = new Set([
+  "amountUsd",
+  "priceUsd",
+  "marketCapUsd",
+  "liquidityUsd",
+  "collectedAt",
+  "confidence",
+  "provenance",
+]);
+
+const semanticValue = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map((item) => semanticValue(item));
   if (!value || typeof value !== "object") return value;
-
-  const record = value as Record<string, unknown>;
-  const isTraderEventPayload = stripCollectionTime
-    && typeof record.eventId === "string"
-    && typeof record.source === "string"
-    && typeof record.occurredAt === "number";
-
-  return Object.fromEntries(Object.entries(record)
-    .filter(([key]) => !(isTraderEventPayload && key === "collectedAt"))
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([key]) => !MUTABLE_ENRICHMENT_KEYS.has(key))
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, item]) => [key, semanticValue(item)]));
 };
@@ -122,10 +125,7 @@ export function semanticSourceObservationFingerprint(observation: SourceObservat
       chain: observation.chain,
       observedAt: observation.observedAt,
       payloadVersion: observation.payloadVersion,
-      payload: semanticValue(observation.payload, true),
-      confidence: observation.confidence,
-      extractionMode: observation.extractionMode,
-      provenance: semanticValue(observation.provenance),
+      payload: semanticValue(observation.payload),
     }))
     .digest("hex");
 }

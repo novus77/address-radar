@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { withAddressRadarWriteTransaction } from "./connection.js";
 
 import type {
   TraderAutomationState,
@@ -107,8 +108,7 @@ export function createTraderAutomationStore(database: DatabaseSync): TraderAutom
       }));
     },
     saveState(input) {
-      database.exec("BEGIN IMMEDIATE");
-      try {
+      withAddressRadarWriteTransaction(database, () => {
         database.prepare(`
           INSERT INTO trader_coverage_state(
             trader_id, tier, coverage_state, last_covered_at,
@@ -137,11 +137,7 @@ export function createTraderAutomationStore(database: DatabaseSync): TraderAutom
             policy = excluded.policy,
             updated_at = excluded.updated_at
         `).run(input.traderId, input.monitoringPolicy, input.updatedAt);
-        database.exec("COMMIT");
-      } catch (error) {
-        database.exec("ROLLBACK");
-        throw error;
-      }
+      }, { label: "save_trader_automation_state" });
     },
     updateCoverage(traderId, update) {
       const result = database.prepare(`

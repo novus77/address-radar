@@ -10,6 +10,7 @@ import type {
   TokenFactStore,
   TokenFactType,
 } from "@address-radar/database";
+import { withAddressRadarWriteTransaction } from "@address-radar/database";
 import { CANDIDATE_MILESTONES } from "@address-radar/scoring";
 
 import {
@@ -17,6 +18,7 @@ import {
   TerminalRecoveryError,
   type RecoveryHandlers,
 } from "./recovery-runtime.js";
+import type { RecoveryPostcondition } from "./recovery-postcondition.js";
 
 const HOUR_MS = 60 * 60_000;
 const GECKO_TERMINAL_CALLS_PER_MINUTE = 8;
@@ -84,6 +86,21 @@ export function createSourceRecoveryHandlers(input: {
     `).get(token.chain, token.tokenAddress);
     return Boolean(milestone && price);
   };
+
+  const factPostcondition = (factType: TokenFactType, tokenId: string): RecoveryPostcondition => ({
+    factType,
+    factKey: tokenId,
+    verify() {
+      const fact = input.facts.fact(tokenId, factType);
+      if (fact?.status === "available" || fact?.status === "partial") {
+        return { status: "satisfied", producedCount: 1 };
+      }
+      if (fact?.status === "terminal_unavailable") {
+        return { status: "terminal", reasonCode: fact.terminalReason ?? "fact_terminal_unavailable" };
+      }
+      return { status: "deferred", reasonCode: `fact_not_ready:${factType}` };
+    },
+  });
 
   return Object.freeze({
     async market_enrichment({ job }) {
@@ -157,7 +174,7 @@ export function createSourceRecoveryHandlers(input: {
           provenance: { observedAt },
         });
       }
-      return { reEvaluate: { kind: "token" as const, key: job.subjectKey } };
+      return { reEvaluate: { kind: "token" as const, key: job.subjectKey }, postcondition: factPostcondition("market_identity", job.subjectKey) };
     },
 
     async market_history({ job, consumeBudget }) {
@@ -170,7 +187,7 @@ export function createSourceRecoveryHandlers(input: {
       const local = localHistoricalPrices(input.database, token.chain, token.tokenAddress, range);
       if (hasEntryCoverage(local, range)) {
         saveFact("price_history", job.subjectKey, "available", "derived", "market_observations", observedAt, local[0]![0], local.at(-1)![0]);
-        return { reEvaluate: { kind: "token" as const, key: job.subjectKey } };
+        return { reEvaluate: { kind: "token" as const, key: job.subjectKey }, postcondition: factPostcondition("price_history", job.subjectKey) };
       }
       const usageWindow = String(Math.floor(observedAt / 60_000));
       const consumeGecko = (): void => consumeBudget({
@@ -233,7 +250,7 @@ export function createSourceRecoveryHandlers(input: {
       }
       saveHistoricalPrices(input.database, token.chain, token.tokenAddress, ordered, source);
       saveFact("price_history", job.subjectKey, "available", source === "geckoterminal_ohlcv" ? "exact" : "derived", source, observedAt, ordered[0]![0], ordered.at(-1)![0]);
-      return { reEvaluate: { kind: "token" as const, key: job.subjectKey } };
+      return { reEvaluate: { kind: "token" as const, key: job.subjectKey }, postcondition: factPostcondition("price_history", job.subjectKey) };
     },
 
     async milestone_early_buyers({ job }) {
@@ -252,7 +269,7 @@ export function createSourceRecoveryHandlers(input: {
       `).get(token.chain, token.tokenAddress, milestone.crossedAt);
       if (event) {
         saveFact("early_trades", job.subjectKey, "available", "exact", "canonical_trader_events", now(), null, milestone.crossedAt);
-        return { reEvaluate: { kind: "token" as const, key: job.subjectKey } };
+        return { reEvaluate: { kind: "token" as const, key: job.subjectKey }, postcondition: factPostcondition("early_trades", job.subjectKey) };
       }
       await input.fomoProducer.enqueue({
         chainId: token.chain,
@@ -275,7 +292,7 @@ export function createSourceRecoveryHandlers(input: {
       saveFact("price_history", job.subjectKey, "partial", "derived", "market_observations", observedAt, priceRange.coverageStartAt, priceRange.coverageEndAt);
       const milestoneRange = input.database.prepare(`SELECT MIN(crossed_at) AS coverageStartAt, MAX(crossed_at) AS coverageEndAt FROM token_milestone_crossings WHERE token_id=? AND precision!='unavailable' AND crossed_at IS NOT NULL`).get(job.subjectKey) as { coverageStartAt: number | null; coverageEndAt: number | null };
       saveFact("milestone_crossings", job.subjectKey, "partial", "estimated", "token_milestone_crossings", observedAt, milestoneRange.coverageStartAt, milestoneRange.coverageEndAt);
-      return { reEvaluate: { kind: "token" as const, key: job.subjectKey } };
+      return { reEvaluate: { kind: "token" as const, key: job.subjectKey }, postcondition: factPostcondition("milestone_crossings", job.subjectKey) };
     },
 
     async fomo_token_history({ job }) {
@@ -286,7 +303,7 @@ export function createSourceRecoveryHandlers(input: {
         const local = localHistoricalPrices(input.database, token.chain, token.tokenAddress, range);
         if (hasEntryCoverage(local, range)) {
           saveFact("price_history", job.subjectKey, "available", "derived", "market_observations", observedAt, local[0]![0], local.at(-1)![0]);
-          return { reEvaluate: { kind: "token" as const, key: job.subjectKey } };
+          return { reEvaluate: { kind: "token" as const, key: job.subjectKey }, postcondition: factPostcondition("price_history", job.subjectKey) };
         }
       }
       await input.fomoProducer.enqueue({ chainId: token.chain, tokenAddress: token.tokenAddress, requestedAt: observedAt });
@@ -300,7 +317,7 @@ export function createSourceRecoveryHandlers(input: {
         WHERE entity_id = ? OR address = ? LIMIT 1
       `).get(job.subjectKey, job.subjectKey);
       if (!mapping) throw new RetryableRecoveryError("identity_resolution_pending");
-      return { reEvaluate: { kind: "trader" as const, key: job.subjectKey } };
+      return { reEvaluate: { kind: "trader" as const, key: job.subjectKey }, postcondition: factPostcondition("trader_attribution", job.subjectKey) };
     },
 
     async rpc_gap() {
@@ -349,15 +366,9 @@ function saveHistoricalPrices(database: DatabaseSync, chain: string, tokenAddres
     ON CONFLICT(chain, token_address, observed_at, source)
     DO UPDATE SET price_usd = excluded.price_usd
   `);
-  const nested = database.isTransaction;
-  if (!nested) database.exec("BEGIN IMMEDIATE");
-  try {
+  withAddressRadarWriteTransaction(database, () => {
     for (const [observedAt, priceUsd] of prices) insert.run(chain, tokenAddress, observedAt, priceUsd, source);
-    if (!nested) database.exec("COMMIT");
-  } catch (error) {
-    if (!nested && database.isTransaction) database.exec("ROLLBACK");
-    throw error;
-  }
+  }, { label: "save_historical_prices", maximumAttempts: 20, maximumDelayMs: 1_000 });
 }
 
 export function reconcileCandidateSourceRecovery(input: { readonly database: DatabaseSync; readonly ledger: SourceLedgerStore; readonly now?: () => number }): { readonly resolvedBlocks: number; readonly enqueued: number } {

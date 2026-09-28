@@ -48,6 +48,8 @@ describe("scanner runtime support", () => {
 
     expect(config.allowedChains).toEqual(["solana", "base"]);
     expect(config.projectionReplayEnabled).toBe(false);
+    expect(config.projectionReplayRealtimeWindowMs).toBe(60 * 60_000);
+    expect(config.projectionReplayRealtimeBatchSize).toBe(25);
     expect(report).toEqual({ ready: true, delivery: "disabled_outbox_only", failures: [] });
   });
 

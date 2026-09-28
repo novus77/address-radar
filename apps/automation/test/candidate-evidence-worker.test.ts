@@ -32,6 +32,17 @@ function addTrader(database: DatabaseSync, traderId: string): void {
   `).run(traderId);
 }
 
+function addFomoIdentity(database: DatabaseSync, traderId: string, accountId: string, handle: string): void {
+  database.prepare(`
+    INSERT INTO fomo_accounts(account_id, handle, first_seen_at, last_seen_at)
+    VALUES (?, ?, 1, 1)
+  `).run(accountId, handle);
+  database.prepare(`
+    INSERT INTO entity_accounts(entity_id, account_id, confidence, source, first_observed_at, last_observed_at)
+    VALUES (?, ?, 'confirmed', 'test', 1, 1)
+  `).run(traderId, accountId);
+}
+
 function addToken(input: {
   readonly database: DatabaseSync;
   readonly tokenId: string;
@@ -153,6 +164,60 @@ describe("candidate evidence worker", () => {
       expect.objectContaining({ sourceEventIds: ["event-a:FOMO_AND_ONCHAIN"] }),
     ]);
     expect(history.admissionSnapshots("fomo:trader-a")).toHaveLength(2);
+    database.close();
+  });
+
+  it("evaluates historical evidence at processing time and queues unresolved admitted traders", async () => {
+    const { database, history, worker } = setup();
+    database.prepare(`
+      INSERT INTO trader_entities(entity_id, lifecycle, manual, locked, created_at, updated_at)
+      VALUES ('fomo:account-stale', 'suspended', 0, 0, 1, 1)
+    `).run();
+    addFomoIdentity(database, "fomo:account-stale", "account-stale", "stale-handle");
+    addToken({ database, tokenId: "base:token-stale", milestoneMarketCapUsd: 300_000, crossingPrice: 5 });
+    addBuy({ database, eventId: "event-stale", traderId: "fomo:account-stale", tokenId: "base:token-stale", amountUsd: 100 });
+
+    await worker.execute({
+      payload: JSON.stringify({ tokenId: "base:token-stale", evaluatedAt: 150 }),
+      cursor: null,
+    } as never, new AbortController().signal);
+
+    expect(history.latestAdmissionSnapshot("fomo:account-stale")).toMatchObject({
+      currentAdmission: true,
+      status: "current_admitted",
+      evaluatedAt: NOW,
+    });
+    expect(database.prepare("SELECT lifecycle FROM trader_entities WHERE entity_id = 'fomo:account-stale'").get())
+      .toEqual({ lifecycle: "candidate" });
+    expect(database.prepare("SELECT policy FROM trader_monitoring_policy WHERE trader_id = 'fomo:account-stale'").get())
+      .toEqual({ policy: "lightweight" });
+    expect(database.prepare("SELECT account_id AS accountId, status FROM identity_resolution_queue WHERE handle = 'stale-handle'").get())
+      .toEqual({ accountId: "account-stale", status: "pending" });
+    database.close();
+  });
+
+  it("promotes admitted traders with resolved wallets to realtime probation", async () => {
+    const { database, worker } = setup();
+    database.prepare(`
+      INSERT INTO trader_entities(entity_id, lifecycle, manual, locked, created_at, updated_at)
+      VALUES ('fomo:account-wallet', 'suspended', 0, 0, 1, 1)
+    `).run();
+    addFomoIdentity(database, "fomo:account-wallet", "account-wallet", "wallet-handle");
+    database.prepare(`
+      INSERT INTO wallet_identities(account_id, chain_family, address, confidence, source, first_observed_at, last_observed_at)
+      VALUES ('account-wallet', 'evm', '0xabc', 'confirmed', 'test', 1, 1)
+    `).run();
+    addToken({ database, tokenId: "bsc:token-wallet", milestoneMarketCapUsd: 300_000, crossingPrice: 5 });
+    addBuy({ database, eventId: "event-wallet", traderId: "fomo:account-wallet", tokenId: "bsc:token-wallet", amountUsd: 100 });
+
+    await evaluate(worker, "bsc:token-wallet");
+
+    expect(database.prepare("SELECT lifecycle FROM trader_entities WHERE entity_id = 'fomo:account-wallet'").get())
+      .toEqual({ lifecycle: "probation" });
+    expect(database.prepare("SELECT policy FROM trader_monitoring_policy WHERE trader_id = 'fomo:account-wallet'").get())
+      .toEqual({ policy: "realtime" });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM identity_resolution_queue WHERE handle = 'wallet-handle'").get())
+      .toEqual({ count: 0 });
     database.close();
   });
 

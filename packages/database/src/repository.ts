@@ -122,7 +122,7 @@ export interface AddressRadarRepository extends TokenAggregationRepository, Runt
   insertTraderEvent(event: TraderEvent): { readonly inserted: boolean };
   eventsForEntity(entityId: string): readonly TraderEvent[];
   eventsForToken(chain: string, tokenAddress: string): readonly TraderEvent[];
-  eventsMissingProjection(input: { readonly projectionType: string; readonly sourceRevision: string; readonly since: number; readonly limit: number }): readonly TraderEvent[];
+  eventsMissingProjection(input: { readonly projectionType: string; readonly sourceRevision: string; readonly since: number; readonly limit: number; readonly order?: "oldest" | "newest" }): readonly TraderEvent[];
   traderEntity(entityId: string): TraderEntityRecord | null;
   traderEntityIdsWithEvents(): readonly string[];
   traderEntityIdsRequiringPerformance(asOf: number, limit: number): readonly string[];
@@ -804,6 +804,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     eventsMissingProjection(input) {
       assertTimestamp(input.since, "since");
       if (!Number.isSafeInteger(input.limit) || input.limit < 1) throw new Error("limit must be a positive safe integer");
+      const direction = input.order === "newest" ? "DESC" : "ASC";
       const rows = database.prepare(`
         SELECT events.*
         FROM trader_events events
@@ -815,7 +816,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
               AND projections.source_revision = ?
               AND projections.status = 'completed'
           )
-        ORDER BY events.occurred_at, events.event_id
+        ORDER BY events.occurred_at ${direction}, events.event_id ${direction}
         LIMIT ?
       `).all(input.since, input.projectionType, input.sourceRevision, input.limit) as TraderEventRow[];
       return Object.freeze(rows.map(toTraderEvent));

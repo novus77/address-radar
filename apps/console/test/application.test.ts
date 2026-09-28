@@ -315,6 +315,12 @@ describe("address intelligence developer console", () => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run("evidence-alpha", "wallet:solana:WalletA", "solana:TokenA", "milestone-alpha", "market_cap_500k_10x", "strong", 120, 200_000, 12, 8, null, now - 5_000, "[]", "candidate-history-v1");
     database.prepare(`
+      INSERT INTO token_fact_status(
+        token_id, fact_type, status, primary_source, observed_at, known_at,
+        strategy_version, updated_at
+      ) VALUES (?, 'early_trades', 'available', ?, ?, ?, ?, ?)
+    `).run("solana:TokenA", "test", now - 5_000, now - 5_000, "test-v1", now - 5_000);
+    database.prepare(`
       INSERT INTO historical_backfill_partitions(
         partition_id, query_kind, chain, day_start, day_end, token_addresses,
         status, execution_id, next_offset, row_count, attempt_count, watermark,
@@ -336,7 +342,7 @@ describe("address intelligence developer console", () => {
       tokenId: "solana:TokenA",
       symbol: "ALPHA",
       milestoneStatus: "complete",
-      backfillStatus: "failed",
+      backfillStatus: "completed",
       eligibleBuyerCount: 1,
       evidenceTraderCount: 1,
     })]);

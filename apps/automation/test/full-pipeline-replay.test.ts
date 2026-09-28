@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   createAutomationJobStore,
   createCandidateHistoryStore,
+  createWalletCoverageStore,
   initializeCandidateHistorySchema,
   migrateAddressRadarDatabase,
 } from "@address-radar/database";
@@ -80,6 +81,18 @@ describe("full automation pipeline replay", () => {
       },
     };
     const miningWorker = createTokenMiningWorker({ database, jobs, source, now: () => NOW });
+    createWalletCoverageStore(database).upsert({
+      identityId: "strong",
+      chain: "robinhood",
+      provider: "replay",
+      status: "unsupported",
+      cursor: null,
+      coverageStartAt: null,
+      coverageEndAt: null,
+      lastSuccessAt: null,
+      diagnostic: { code: "no_historical_provider" },
+      updatedAt: NOW,
+    });
     let resumeCursor: string | null = null;
     for (const chain of CHAINS) {
       const partition = partitions[chain];
@@ -127,6 +140,8 @@ describe("full automation pipeline replay", () => {
       .toEqual({ sourceStatus: "FOMO_AND_ONCHAIN" });
     expect(database.prepare("SELECT status, last_error AS lastError FROM historical_token_partitions WHERE chain = 'solana'").get())
       .toMatchObject({ status: "waiting_source", lastError: "dune_unavailable_after_solana_rate_limit" });
+    expect(database.prepare("SELECT status FROM wallet_chain_coverage WHERE identity_id='strong' AND chain='robinhood'").get())
+      .toEqual({ status: "unsupported" });
     database.close();
   });
 });
@@ -202,4 +217,3 @@ function miningJob(partition: HistoricalTokenPartition, cursor: string | null = 
     completedAt: null,
   } as Parameters<ReturnType<typeof createTokenMiningWorker>["execute"]>[0];
 }
-

@@ -59,6 +59,30 @@ describe("multi-source replay", () => {
     repository.close();
   });
 
+  it("reserves capacity for newest realtime events while retaining historical progress", async () => {
+    const repository = openAddressRadarRepository(":memory:");
+    repository.upsertFomoAccount({ accountId: "account-1", handle: "alpha", firstSeenAt: 1, lastSeenAt: 1 });
+    repository.ensureTraderEntity({ entityId: "entity-1", lifecycle: "active", manual: false, locked: false, createdAt: 1, updatedAt: 1 });
+    repository.linkAccountToEntity({ entityId: "entity-1", accountId: "account-1", confidence: "confirmed", source: "test", observedAt: 1 });
+    for (const [eventId, occurredAt] of [["oldest", 1_000], ["older", 2_000], ["realtime", 99_500]] as const) {
+      repository.insertTraderEvent({ ...event("onchain_wallet"), eventId, occurredAt, collectedAt: occurredAt + 1 });
+    }
+
+    const collector = createProjectionReplayCollector({
+      repository,
+      strategyVersion: "address-v1",
+      now: () => 100_000,
+      lookbackMs: 100_000,
+      batchSize: 2,
+      realtimeWindowMs: 1_000,
+      realtimeBatchSize: 1,
+    });
+
+    const batch = await collector.collect() as { observations: readonly { event: TraderEvent }[] };
+    expect(batch.observations.map(item => item.event.eventId)).toEqual(["realtime", "oldest"]);
+    repository.close();
+  });
+
   it("keeps source observations while converging canonical events and candidate evidence", async () => {
     const directory = mkdtempSync(join(tmpdir(), "address-radar-replay-"));
     directories.push(directory);

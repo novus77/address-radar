@@ -3,9 +3,9 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { SQLInputValue } from "node:sqlite";
 
-import { normalizeFomoHandle, normalizeWalletAddress } from "@address-radar/domain";
+import { CLOSED_LOOP_STAGES, normalizeFomoHandle, normalizeWalletAddress, type ClosedLoopStage } from "@address-radar/domain";
 import { analyzeWalletPositions, type WalletAnalysisPosition } from "@address-radar/domain";
-import { createSourceLedgerStore, migrateAddressRadarDatabase, openAddressRadarDatabase, openAddressRadarRepository, type RecoveryJobType } from "@address-radar/database";
+import { createAutomationJobStore, createSourceLedgerStore, migrateAddressRadarDatabase, openAddressRadarDatabase, openAddressRadarRepository, withAddressRadarWriteTransaction, type RecoveryJobType } from "@address-radar/database";
 
 import { createManualResolutionService } from "@address-radar/identity";
 import { explainTokenMissingCondition } from "@address-radar/aggregation";
@@ -103,6 +103,150 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
 
   const read = (pathname: string): ConsoleResult | null => {
     if (pathname === "/api/v2/chains") return { status: 200, body: { items: chainRegistry } };
+    if (pathname === "/api/v2/operations/closed-loop") {
+      const now = Date.now();
+      const count = (sql: string, ...params: SQLInputValue[]): number => Number(
+        (database.prepare(sql).get(...params) as { count: number | null }).count ?? 0,
+      );
+      const timestamp = (sql: string, ...params: SQLInputValue[]): string | null => {
+        const value = (database.prepare(sql).get(...params) as { value: number | null }).value;
+        return value === null ? null : new Date(Number(value)).toISOString();
+      };
+      const newCounts = (table: string, column: string, where = "1 = 1") => ({
+        completed15m: count(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where} AND ${column} >= ?`, now - 15 * 60_000),
+        completed1h: count(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where} AND ${column} >= ?`, now - 60 * 60_000),
+        completed24h: count(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where} AND ${column} >= ?`, now - 24 * 60 * 60_000),
+      });
+      const metric = (stage: ClosedLoopStage, input: {
+        readonly discovered: number;
+        readonly eligible: number;
+        readonly pending: number;
+        readonly blocked: number;
+        readonly completed: number;
+        readonly terminal: number;
+        readonly producedFacts: number;
+        readonly oldestPendingAt?: string | null;
+        readonly lastProgressAt?: string | null;
+        readonly completed15m?: number;
+        readonly completed1h?: number;
+        readonly completed24h?: number;
+        readonly drilldown: string;
+      }) => Object.freeze({
+        stage,
+        discovered: input.discovered,
+        eligible: input.eligible,
+        pending: input.pending,
+        blocked: input.blocked,
+        completed: input.completed,
+        terminal: input.terminal,
+        producedFacts: input.producedFacts,
+        completed15m: input.completed15m ?? 0,
+        completed1h: input.completed1h ?? 0,
+        completed24h: input.completed24h ?? 0,
+        oldestPendingAt: input.oldestPendingAt ?? null,
+        lastProgressAt: input.lastProgressAt ?? null,
+        drilldown: input.drilldown,
+      });
+
+      const tokens = count("SELECT COUNT(*) AS count FROM token_observation_state");
+      const markets = count("SELECT COUNT(DISTINCT token_id) AS count FROM token_market_snapshots");
+      const milestones = count("SELECT COUNT(DISTINCT token_id) AS count FROM token_milestone_crossings WHERE precision != 'unavailable' AND crossed_at IS NOT NULL");
+      const unavailableMilestones = count("SELECT COUNT(DISTINCT token_id) AS count FROM token_milestone_crossings WHERE precision = 'unavailable'");
+      const earlyFacts = count("SELECT COUNT(*) AS count FROM token_fact_status WHERE fact_type = 'early_trades' AND status IN ('available','partial','degraded')");
+      const earlyPending = count("SELECT COUNT(*) AS count FROM token_fact_status WHERE fact_type = 'early_trades' AND status IN ('scheduled','fetching','retry_scheduled')");
+      const earlyBlocked = count("SELECT COUNT(*) AS count FROM token_fact_status WHERE fact_type = 'early_trades' AND status = 'conflicted'");
+      const earlyTerminal = count("SELECT COUNT(*) AS count FROM token_fact_status WHERE fact_type = 'early_trades' AND status = 'terminal_unavailable'");
+      const traders = count("SELECT COUNT(*) AS count FROM trader_entities");
+      const resolvedTraders = count(`SELECT COUNT(*) AS count FROM (
+        SELECT entity_id FROM entity_wallet_identities
+        UNION SELECT ea.entity_id FROM entity_accounts ea JOIN wallet_identities w ON w.account_id = ea.account_id
+      )`);
+      const unresolvedIdentities = count("SELECT COUNT(*) AS count FROM identity_resolution_queue WHERE status = 'pending'");
+      const evidenceTokens = count("SELECT COUNT(DISTINCT token_id) AS count FROM candidate_evidence_v3");
+      const evidenceTraders = count("SELECT COUNT(DISTINCT trader_id) AS count FROM candidate_evidence_v3");
+      const abilityTraders = count("SELECT COUNT(DISTINCT entity_id) AS count FROM trader_repeatable_ability_snapshots");
+      const admissionEvaluated = count("SELECT COUNT(DISTINCT trader_id) AS count FROM candidate_admission_snapshots");
+      const admitted = count("SELECT COUNT(DISTINCT trader_id) AS count FROM candidate_admission_snapshots WHERE current_admission = 1");
+      const monitored = count("SELECT COUNT(*) AS count FROM trader_monitoring_policy WHERE policy != 'off'");
+      const coveredWallets = count("SELECT COUNT(DISTINCT identity_id) AS count FROM wallet_chain_coverage WHERE status IN ('healthy','complete')");
+      const aggregations = count("SELECT COUNT(*) AS count FROM token_evaluation_state");
+      const signals = count("SELECT COUNT(*) AS count FROM broadcast_records");
+      const automationStage = (jobType: string, status: string): number => count(
+        "SELECT COUNT(*) AS count FROM automation_jobs WHERE job_type = ? AND status = ?",
+        jobType,
+        status,
+      );
+      const stages = Object.freeze([
+        metric("token_discovery", { discovered: tokens, eligible: tokens, pending: 0, blocked: 0, completed: tokens, terminal: 0, producedFacts: tokens, ...newCounts("token_observation_state", "last_observed_at"), lastProgressAt: timestamp("SELECT MAX(last_observed_at) AS value FROM token_observation_state"), drilldown: "/api/v2/historical-tokens" }),
+        metric("market_history", { discovered: tokens, eligible: tokens, pending: Math.max(0, tokens - markets), blocked: 0, completed: markets, terminal: 0, producedFacts: markets, ...newCounts("token_market_snapshots", "observed_at"), lastProgressAt: timestamp("SELECT MAX(observed_at) AS value FROM token_market_snapshots"), drilldown: "/api/v2/discovery/fact-coverage" }),
+        metric("milestone_confirmation", { discovered: markets, eligible: markets, pending: Math.max(0, markets - milestones - unavailableMilestones), blocked: 0, completed: milestones, terminal: unavailableMilestones, producedFacts: milestones, ...newCounts("token_milestone_crossings", "crossed_at", "precision != 'unavailable' AND crossed_at IS NOT NULL"), lastProgressAt: timestamp("SELECT MAX(crossed_at) AS value FROM token_milestone_crossings WHERE crossed_at IS NOT NULL"), drilldown: "/api/v2/historical-tokens" }),
+        metric("early_trade_recovery", { discovered: milestones, eligible: milestones, pending: earlyPending, blocked: earlyBlocked, completed: earlyFacts, terminal: earlyTerminal, producedFacts: earlyFacts, lastProgressAt: timestamp("SELECT MAX(updated_at) AS value FROM token_fact_status WHERE fact_type = 'early_trades'"), drilldown: "/api/v2/recovery/jobs" }),
+        metric("identity_resolution", { discovered: traders, eligible: traders, pending: unresolvedIdentities, blocked: 0, completed: resolvedTraders, terminal: 0, producedFacts: resolvedTraders, lastProgressAt: timestamp("SELECT MAX(last_observed_at) AS value FROM entity_wallet_identities"), drilldown: "/api/v1/identity-queue" }),
+        metric("candidate_evidence", { discovered: earlyFacts, eligible: earlyFacts, pending: automationStage("candidate_evidence", "pending") + automationStage("candidate_evidence", "retryable"), blocked: automationStage("candidate_evidence", "blocked_source"), completed: evidenceTokens, terminal: automationStage("candidate_evidence", "terminal"), producedFacts: count("SELECT COUNT(*) AS count FROM candidate_evidence_v3"), ...newCounts("candidate_evidence_v3", "evidence_at"), lastProgressAt: timestamp("SELECT MAX(evidence_at) AS value FROM candidate_evidence_v3"), drilldown: "/api/v2/candidates" }),
+        metric("ability_evaluation", { discovered: evidenceTraders, eligible: evidenceTraders, pending: automationStage("ability_evaluation", "pending") + automationStage("ability_evaluation", "retryable"), blocked: automationStage("ability_evaluation", "blocked_source"), completed: abilityTraders, terminal: automationStage("ability_evaluation", "terminal"), producedFacts: abilityTraders, lastProgressAt: timestamp("SELECT MAX(evaluated_at) AS value FROM trader_repeatable_ability_snapshots"), drilldown: "/api/v2/backfill/traders" }),
+        metric("candidate_admission", { discovered: abilityTraders, eligible: abilityTraders, pending: Math.max(0, abilityTraders - admissionEvaluated), blocked: 0, completed: admissionEvaluated, terminal: 0, producedFacts: admitted, ...newCounts("candidate_admission_snapshots", "evaluated_at"), lastProgressAt: timestamp("SELECT MAX(evaluated_at) AS value FROM candidate_admission_snapshots"), drilldown: "/api/v2/candidates" }),
+        metric("wallet_monitoring", { discovered: monitored, eligible: monitored, pending: count("SELECT COUNT(*) AS count FROM wallet_chain_coverage WHERE status IN ('pending','running')"), blocked: count("SELECT COUNT(*) AS count FROM wallet_chain_coverage WHERE status IN ('blocked','degraded')"), completed: coveredWallets, terminal: count("SELECT COUNT(*) AS count FROM wallet_chain_coverage WHERE status = 'unsupported'"), producedFacts: count("SELECT COUNT(*) AS count FROM wallet_monitor_observations"), ...newCounts("wallet_chain_coverage", "last_success_at", "last_success_at IS NOT NULL"), lastProgressAt: timestamp("SELECT MAX(last_success_at) AS value FROM wallet_chain_coverage"), drilldown: "/api/v2/coverage/sources" }),
+        metric("token_aggregation", { discovered: aggregations, eligible: aggregations, pending: 0, blocked: 0, completed: aggregations, terminal: 0, producedFacts: aggregations, ...newCounts("token_evaluation_state", "updated_at"), lastProgressAt: timestamp("SELECT MAX(updated_at) AS value FROM token_evaluation_state"), drilldown: "/api/v1/aggregations" }),
+        metric("signal_readiness", { discovered: aggregations, eligible: aggregations, pending: Math.max(0, aggregations - signals), blocked: 0, completed: signals, terminal: 0, producedFacts: signals, ...newCounts("broadcast_records", "triggered_at"), lastProgressAt: timestamp("SELECT MAX(triggered_at) AS value FROM broadcast_records"), drilldown: "/api/v1/broadcasts" }),
+      ]);
+      const missingStages = CLOSED_LOOP_STAGES.filter(stage => !stages.some(metricItem => metricItem.stage === stage));
+      if (missingStages.length > 0) throw new Error(`Closed-loop metrics are incomplete: ${missingStages.join(",")}`);
+      const outcomes = database.prepare(`
+        SELECT COUNT(*) AS total,
+          SUM(CASE WHEN outcome = 'produced' THEN 1 ELSE 0 END) AS productive,
+          SUM(CASE WHEN outcome = 'no_output' THEN 1 ELSE 0 END) AS noOutput
+        FROM automation_job_outcomes WHERE created_at >= ?
+      `).get(now - 24 * 60 * 60_000) as { total: number; productive: number | null; noOutput: number | null };
+      const factClosure = database.prepare(`
+        SELECT COUNT(*) AS total,
+          SUM(CASE WHEN status = 'satisfied' THEN 1 ELSE 0 END) AS satisfied,
+          SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+          SUM(CASE WHEN status = 'terminal' THEN 1 ELSE 0 END) AS terminal
+        FROM recovery_fact_links
+      `).get() as { total: number; satisfied: number | null; pending: number | null; terminal: number | null };
+      const queue = createAutomationJobStore(database).metrics(now, 15 * 60_000);
+      const walletCoverage = rows(`
+        SELECT chain, provider, status, COUNT(*) AS count, MAX(last_success_at) AS lastSuccessAt,
+          MAX(updated_at) AS updatedAt
+        FROM wallet_chain_coverage GROUP BY chain, provider, status
+        ORDER BY chain, provider, status
+      `);
+      const recoveryReasons = rows(`
+        SELECT COALESCE(terminal_reason, status) AS reasonCode, COUNT(*) AS count
+        FROM recovery_fact_links WHERE status != 'satisfied'
+        GROUP BY COALESCE(terminal_reason, status) ORDER BY count DESC LIMIT 10
+      `);
+      const conflictWrites24h = count("SELECT COUNT(*) AS count FROM source_observation_conflicts WHERE last_seen_at >= ?", now - 24 * 60 * 60_000);
+      return { status: 200, body: {
+        updatedAt: now,
+        stages,
+        outcomes: {
+          total24h: Number(outcomes.total ?? 0),
+          productive24h: Number(outcomes.productive ?? 0),
+          noOutput24h: Number(outcomes.noOutput ?? 0),
+          productiveRate24h: Number(outcomes.total ?? 0) === 0 ? 0 : Number(outcomes.productive ?? 0) / Number(outcomes.total),
+        },
+        recoveryClosure: {
+          total: Number(factClosure.total ?? 0),
+          satisfied: Number(factClosure.satisfied ?? 0),
+          pending: Number(factClosure.pending ?? 0),
+          terminal: Number(factClosure.terminal ?? 0),
+          rate: Number(factClosure.total ?? 0) === 0 ? 0 : Number(factClosure.satisfied ?? 0) / Number(factClosure.total),
+          reasons: recoveryReasons,
+        },
+        queue: {
+          ...queue,
+          runnableDelta15m: queue.admitted - queue.completed,
+          converging: queue.completed > queue.admitted && queue.oldestRunnableAgeMs === 0,
+        },
+        walletCoverage,
+        contention: {
+          sqliteTelemetryAvailable: false,
+          diagnosticZh: "SQLite 重试已在写事务层生效，进程级聚合遥测尚未上报",
+          sourceConflictWrites24h: conflictWrites24h,
+        },
+      } };
+    }
     if (pathname === "/api/v2/automation/overview") {
       const now = Date.now();
       const scalar = (sql: string): number => Number(
@@ -119,7 +263,11 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
           SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed
         FROM automation_jobs GROUP BY lane ORDER BY lane
       `) as Array<{ lane: string; total: number; backlog: number | null; completed: number | null }>;
-      const backlog = scalar("SELECT COUNT(*) AS count FROM automation_jobs WHERE status IN ('pending', 'waiting_source', 'blocked_source', 'retryable')");
+      const backlog = scalar("SELECT COUNT(*) AS count FROM automation_jobs WHERE job_type <> 'identity_resolution' AND status IN ('pending', 'waiting_source', 'blocked_source', 'retryable')");
+      const manualIdentityBacklog = optionalScalar(
+        "identity_resolution_queue",
+        "SELECT COUNT(*) AS count FROM identity_resolution_queue WHERE status = 'pending'",
+      );
       const completed24h = scalar(`SELECT COUNT(*) AS count FROM automation_jobs WHERE status = 'completed' AND completed_at >= ${now - 24 * 60 * 60_000}`);
       const failed24h = scalar(`SELECT COUNT(*) AS count FROM automation_jobs WHERE status IN ('retryable', 'terminal') AND updated_at >= ${now - 24 * 60 * 60_000}`);
       const oldest = database.prepare(`
@@ -196,6 +344,8 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
           queue: {
             total: scalar("SELECT COUNT(*) AS count FROM automation_jobs"),
             backlog,
+            automatedRepairBacklog: scalar("SELECT COUNT(*) AS count FROM automation_jobs WHERE lane = 'repair' AND job_type <> 'identity_resolution' AND status IN ('pending', 'waiting_source', 'blocked_source', 'retryable')"),
+            manualIdentityBacklog,
             byStatus: Object.fromEntries(statusRows.map(item => [item.status, Number(item.count)])),
             lanes: laneRows.map(item => ({ ...item, backlog: Number(item.backlog ?? 0), completed: Number(item.completed ?? 0) })),
             oldestBacklogAt: oldest.createdAt,
@@ -713,20 +863,24 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
             SELECT 1 FROM token_milestone_crossings m
             WHERE m.token_id = h.token_id AND m.precision != 'unavailable'
           ) THEN 'complete' ELSE 'missing' END AS milestoneStatus,
-          COALESCE((
-            SELECT p.status FROM historical_backfill_partitions p
-            WHERE EXISTS (
-              SELECT 1 FROM json_each(p.token_addresses) a
-              WHERE LOWER(CAST(a.value AS TEXT)) = LOWER(h.token_address)
-            )
-            ORDER BY CASE p.status WHEN 'running' THEN 1 WHEN 'failed' THEN 2 WHEN 'pending' THEN 3 ELSE 4 END,
-              p.updated_at DESC LIMIT 1
-          ), 'not_scheduled') AS backfillStatus,
+          CASE early.status
+            WHEN 'available' THEN 'completed'
+            WHEN 'partial' THEN 'completed'
+            WHEN 'degraded' THEN 'completed'
+            WHEN 'fetching' THEN 'running'
+            WHEN 'scheduled' THEN 'pending'
+            WHEN 'retry_scheduled' THEN 'pending'
+            WHEN 'conflicted' THEN 'failed'
+            WHEN 'terminal_unavailable' THEN 'failed'
+            ELSE 'not_scheduled'
+          END AS backfillStatus,
           (SELECT COUNT(*) FROM candidate_evidence_v3 e WHERE e.token_id = h.token_id) AS eligibleBuyerCount,
           (SELECT COUNT(DISTINCT e.trader_id) FROM candidate_evidence_v3 e WHERE e.token_id = h.token_id) AS evidenceTraderCount,
           (SELECT r.status FROM historical_re_evaluation_requests r WHERE r.token_id = h.token_id ORDER BY r.requested_at DESC LIMIT 1) AS reEvaluationStatus
         FROM historical_tokens h
         JOIN historical_token_verifications v ON v.token_id = h.token_id
+        LEFT JOIN token_fact_status early
+          ON early.token_id = h.token_id AND early.fact_type = 'early_trades'
         WHERE LOWER(h.chain) IN ('solana', 'eth', 'ethereum', 'bsc', 'robinhood', 'base')
         ORDER BY h.first_reached_1m_at DESC, h.chain, h.token_address
         LIMIT 1000
@@ -1207,8 +1361,7 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
         const owner = resolutionRepository.walletOwner(job.chainFamily, job.address);
         if (owner && owner !== account.accountId) return { status: 409, body: { error: "wallet_identity_conflict", chainFamily: job.chainFamily, address: job.address } };
         const now = Date.now();
-        database.exec("BEGIN IMMEDIATE");
-        try {
+        withAddressRadarWriteTransaction(database, () => {
           database.prepare("INSERT INTO wallet_identities(account_id, chain_family, address, confidence, source, first_observed_at, last_observed_at) VALUES (?, ?, ?, 'confirmed', 'manual_analysis', ?, ?) ON CONFLICT(account_id, chain_family, address) DO UPDATE SET confidence = 'confirmed', source = 'manual_analysis', last_observed_at = excluded.last_observed_at")
             .run(account.accountId, job.chainFamily, job.address, now, now);
           database.prepare("UPDATE trader_profiles SET monitoring_enabled = 1, onchain_monitoring_enabled = 1, updated_at = ? WHERE entity_id = ?").run(now, entityId);
@@ -1217,11 +1370,7 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
           database.prepare("UPDATE monitoring_registry_state SET version = version + 1, updated_at = ? WHERE singleton = 1").run(now);
           database.prepare("INSERT INTO monitoring_registry_outbox(event_id, entity_id, event_type, payload, status, created_at, published_at) VALUES (?, ?, 'wallet_analysis.accepted', ?, 'published', ?, ?)")
             .run(randomUUID(), entityId, JSON.stringify({ analysisId, entityId, accountId: account.accountId, wallet: { family: job.chainFamily, address: job.address } }), now, now);
-          database.exec("COMMIT");
-        } catch (error) {
-          database.exec("ROLLBACK");
-          throw error;
-        }
+        }, { label: "console_accept_wallet_analysis" });
         audit("wallet_analysis.accept", { analysisId, entityId, chainFamily: job.chainFamily, address: job.address });
         return { status: 200, body: { analysisId, entityId, status: "accepted", monitoringEnabled: true } };
       }
@@ -1274,8 +1423,7 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
         const notes = typeof input.notes === "string" && input.notes.trim() ? input.notes.trim() : null;
         const tags: Array<{ category: typeof allowedTagCategories[number]; tag: string }> = allowedTagCategories.flatMap(category => typedTags(input, category).map(tag => ({ category, tag })));
         if (!tags.some(item => item.category === "source")) tags.push({ category: "source", tag: "source.manual" });
-        database.exec("BEGIN IMMEDIATE");
-        try {
+        withAddressRadarWriteTransaction(database, () => {
           database.prepare("INSERT INTO fomo_accounts(account_id, handle, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?) ON CONFLICT(account_id) DO UPDATE SET handle = excluded.handle, last_seen_at = excluded.last_seen_at").run(accountId, handle, now, now);
           database.prepare("INSERT INTO trader_entities(entity_id, lifecycle, manual, locked, created_at, updated_at) VALUES (?, 'probation', 1, ?, ?, ?) ON CONFLICT(entity_id) DO UPDATE SET manual = 1, locked = excluded.locked, lifecycle = CASE WHEN trader_entities.lifecycle = 'candidate' THEN 'probation' ELSE trader_entities.lifecycle END, updated_at = excluded.updated_at").run(entityId, Number(priority === "important"), now, now);
           database.prepare("INSERT INTO entity_accounts(entity_id, account_id, confidence, source, first_observed_at, last_observed_at) VALUES (?, ?, 'confirmed', ?, ?, ?) ON CONFLICT(entity_id, account_id) DO UPDATE SET confidence = 'confirmed', source = excluded.source, last_observed_at = excluded.last_observed_at").run(entityId, accountId, rawHandle ? "manual" : "manual_wallet", now, now);
@@ -1288,11 +1436,7 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
           database.prepare("INSERT INTO monitoring_registry_outbox(event_id, entity_id, event_type, payload, status, created_at, published_at) VALUES (?, ?, 'identity.created', ?, 'published', ?, ?)")
             .run(`identity-registry:${entityId}:${now}`, entityId, JSON.stringify({ entityId, accountId, wallets, lifecycle: "probation" }), now, now);
           database.prepare("UPDATE monitoring_registry_state SET version = version + 1, updated_at = ? WHERE singleton = 1").run(now);
-          database.exec("COMMIT");
-        } catch (error) {
-          database.exec("ROLLBACK");
-          throw error;
-        }
+        }, { label: "console_create_manual_trader" });
         audit("trader.manual_add", { entityId, accountId, displayName, fomoHandle: rawHandle ? handle : null, wallets, tags });
         return { status: 201, body: { entityId, accountId, displayName, fomoHandle: rawHandle ? handle : null, lifecycleStatus: "observing" } };
       }

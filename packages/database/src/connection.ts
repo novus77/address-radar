@@ -1,11 +1,17 @@
 import { DatabaseSync } from "node:sqlite";
 
-export const ADDRESS_RADAR_BUSY_TIMEOUT_MS = 1_000;
+const configuredBusyTimeout = Number(process.env.ADDRESS_RADAR_BUSY_TIMEOUT_MS ?? 5_000);
+export const ADDRESS_RADAR_BUSY_TIMEOUT_MS = Number.isSafeInteger(configuredBusyTimeout) && configuredBusyTimeout > 0
+  ? configuredBusyTimeout
+  : 5_000;
 
 export interface WriteTransactionOptions {
   readonly maximumAttempts?: number;
   readonly baseDelayMs?: number;
   readonly maximumDelayMs?: number;
+  readonly maximumRetryDurationMs?: number;
+  readonly label?: string;
+  readonly onRetry?: (event: { readonly label: string; readonly attempt: number; readonly delayMs: number }) => void;
 }
 
 const isRetryableWriteConflict = (error: unknown): boolean => {
@@ -31,16 +37,22 @@ export function withAddressRadarWriteTransaction<T>(
   operation: () => T,
   options: WriteTransactionOptions = {},
 ): T {
+  if (database.isTransaction) return operation();
   const maximumAttempts = options.maximumAttempts ?? 8;
   const baseDelayMs = options.baseDelayMs ?? 10;
   const maximumDelayMs = options.maximumDelayMs ?? 500;
+  const maximumRetryDurationMs = options.maximumRetryDurationMs ?? 2_000;
   if (!Number.isSafeInteger(maximumAttempts) || maximumAttempts < 1) {
     throw new Error("maximumAttempts must be a positive safe integer");
   }
   if (!Number.isFinite(baseDelayMs) || baseDelayMs < 0 || !Number.isFinite(maximumDelayMs) || maximumDelayMs < baseDelayMs) {
     throw new Error("Write retry delays are invalid");
   }
+  if (!Number.isFinite(maximumRetryDurationMs) || maximumRetryDurationMs <= 0) {
+    throw new Error("maximumRetryDurationMs must be positive");
+  }
 
+  const retryStartedAt = Date.now();
   for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
     let started = false;
     try {
@@ -60,7 +72,11 @@ export function withAddressRadarWriteTransaction<T>(
       if (!isRetryableWriteConflict(error) || attempt === maximumAttempts) throw error;
       const exponentialDelay = baseDelayMs * (2 ** (attempt - 1));
       const jitter = baseDelayMs === 0 ? 0 : Math.floor(Math.random() * (baseDelayMs + 1));
-      sleepSync(Math.min(maximumDelayMs, exponentialDelay + jitter));
+      const remainingMs = maximumRetryDurationMs - (Date.now() - retryStartedAt);
+      if (remainingMs <= 0) throw error;
+      const delayMs = Math.min(maximumDelayMs, exponentialDelay + jitter, remainingMs);
+      options.onRetry?.({ label: options.label ?? "unlabeled", attempt, delayMs });
+      sleepSync(delayMs);
     }
   }
   throw new Error("Unreachable write transaction state");

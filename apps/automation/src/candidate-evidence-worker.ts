@@ -21,6 +21,8 @@ const MINIMUM_CUMULATIVE_BUY_USD = 50;
 const DISPATCH_INTERVAL_MS = 5_000;
 const SOURCE_RETRY_MS = 60_000;
 const DISPATCH_BATCH_SIZE = 100;
+const ADMISSION_RECONCILE_BATCH_SIZE = 100;
+const DAY_MS = 24 * 60 * 60_000;
 
 interface CandidateEvidencePayload {
   readonly mode?: "dispatch";
@@ -60,6 +62,8 @@ interface DispatchCursor {
   readonly eventUpdatedAt: number;
   readonly eventId: string;
   readonly milestoneRowId: number;
+  readonly admissionDay: number;
+  readonly admissionTraderId: string;
 }
 
 const evidenceRank = new Map<CandidateEvidenceType, number>(
@@ -79,17 +83,118 @@ function parsePayload(payload: string): CandidateEvidencePayload {
 }
 
 function parseCursor(cursor: string | null): DispatchCursor {
-  if (!cursor) return { eventUpdatedAt: 0, eventId: "", milestoneRowId: 0 };
+  if (!cursor) return { eventUpdatedAt: 0, eventId: "", milestoneRowId: 0, admissionDay: -1, admissionTraderId: "" };
   try {
     const value = JSON.parse(cursor) as Partial<DispatchCursor>;
     return {
       eventUpdatedAt: Number(value.eventUpdatedAt) || 0,
       eventId: typeof value.eventId === "string" ? value.eventId : "",
       milestoneRowId: Number(value.milestoneRowId) || 0,
+      admissionDay: Number(value.admissionDay) || -1,
+      admissionTraderId: typeof value.admissionTraderId === "string" ? value.admissionTraderId : "",
     };
   } catch {
-    return { eventUpdatedAt: 0, eventId: "", milestoneRowId: 0 };
+    return { eventUpdatedAt: 0, eventId: "", milestoneRowId: 0, admissionDay: -1, admissionTraderId: "" };
   }
+}
+
+function hasResolvedWallet(database: DatabaseSync, traderId: string): boolean {
+  return Boolean(database.prepare(`
+    SELECT 1 AS present
+    WHERE EXISTS(SELECT 1 FROM entity_wallet_identities WHERE entity_id = ?)
+      OR EXISTS(
+        SELECT 1 FROM entity_accounts ea
+        JOIN wallet_identities wallet ON wallet.account_id = ea.account_id
+        WHERE ea.entity_id = ?
+      )
+  `).get(traderId, traderId));
+}
+
+function projectCurrentAdmission(database: DatabaseSync, traderId: string, evaluatedAt: number): void {
+  const entity = database.prepare("SELECT lifecycle FROM trader_entities WHERE entity_id = ?").get(traderId) as { lifecycle: string } | undefined;
+  if (!entity) return;
+  const resolvedWallet = hasResolvedWallet(database, traderId);
+  const nextLifecycle = resolvedWallet ? "probation" : "candidate";
+  database.prepare(`
+    UPDATE trader_entities
+    SET lifecycle = ?, updated_at = MAX(updated_at, ?)
+    WHERE entity_id = ? AND lifecycle IN ('candidate', 'suspended')
+  `).run(nextLifecycle, evaluatedAt, traderId);
+  const desiredPolicy = resolvedWallet ? "realtime" : "lightweight";
+  database.prepare(`
+    INSERT INTO trader_monitoring_policy(trader_id, policy, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(trader_id) DO UPDATE SET
+      policy = CASE
+        WHEN trader_monitoring_policy.policy = 'off' THEN 'off'
+        WHEN trader_monitoring_policy.policy = 'realtime' THEN 'realtime'
+        WHEN trader_monitoring_policy.policy = 'periodic' AND excluded.policy = 'lightweight' THEN 'periodic'
+        ELSE excluded.policy
+      END,
+      updated_at = MAX(trader_monitoring_policy.updated_at, excluded.updated_at)
+  `).run(traderId, desiredPolicy, evaluatedAt);
+  if (resolvedWallet) return;
+
+  const accounts = database.prepare(`
+    SELECT account.account_id AS accountId, account.handle
+    FROM entity_accounts link
+    JOIN fomo_accounts account ON account.account_id = link.account_id
+    WHERE link.entity_id = ?
+      AND NOT EXISTS(SELECT 1 FROM wallet_identities wallet WHERE wallet.account_id = account.account_id)
+    ORDER BY account.account_id
+  `).all(traderId) as Array<{ accountId: string; handle: string }>;
+  for (const account of accounts) {
+    const existing = database.prepare("SELECT reasons FROM identity_resolution_queue WHERE handle = ?").get(account.handle) as { reasons: string } | undefined;
+    const reasons = [...new Set([...(existing ? JSON.parse(existing.reasons) as string[] : []), "candidate_admitted_v3"])].sort();
+    database.prepare(`
+      INSERT INTO identity_resolution_queue(
+        handle, account_id, priority, reasons, status, first_seen_at,
+        last_seen_at, next_export_at, last_batch_id, resolved_at
+      ) VALUES (?, ?, 95, ?, 'pending', ?, ?, ?, NULL, NULL)
+      ON CONFLICT(handle) DO UPDATE SET
+        account_id = excluded.account_id,
+        priority = MAX(identity_resolution_queue.priority, excluded.priority),
+        reasons = excluded.reasons,
+        last_seen_at = MAX(identity_resolution_queue.last_seen_at, excluded.last_seen_at),
+        next_export_at = MIN(identity_resolution_queue.next_export_at, excluded.next_export_at)
+    `).run(account.handle, account.accountId, JSON.stringify(reasons), evaluatedAt, evaluatedAt, evaluatedAt);
+  }
+}
+
+function evaluateAndProjectAdmission(input: {
+  readonly database: DatabaseSync;
+  readonly jobs?: AutomationJobStore;
+  readonly traderId: string;
+  readonly decisionAt: number;
+}): string {
+  const historyStore = createCandidateHistoryStore(input.database);
+  const evidence = historyStore.evidenceForTrader(input.traderId);
+  const snapshot = evaluateCandidateAdmission(evidence.map(item => ({
+    tokenKey: item.tokenId,
+    evidenceType: item.evidenceType as CandidateEvidenceType,
+    evidenceAt: item.evidenceAt,
+  })), input.decisionAt);
+  const evidenceFingerprint = evidence.map(item => [item.evidenceId, item.evidenceType, item.sourceEventIds]).sort();
+  const snapshotId = stableId("candidate-snapshot", [
+    STRATEGY_VERSION,
+    input.traderId,
+    Math.floor(input.decisionAt / DAY_MS),
+    evidenceFingerprint,
+  ]);
+  historyStore.saveAdmissionSnapshot({
+    snapshotId,
+    traderId: input.traderId,
+    ...snapshot,
+    strategyVersion: STRATEGY_VERSION,
+    evaluatedAt: input.decisionAt,
+  });
+  if (snapshot.currentAdmission) {
+    projectCurrentAdmission(input.database, input.traderId, input.decisionAt);
+    if (input.jobs) {
+      enqueueTraderAbilityEvaluation(input.jobs, input.traderId, input.decisionAt, input.decisionAt, `candidate:${snapshotId}`);
+    }
+  }
+  return snapshotId;
 }
 
 function priceAtOrBefore(prices: readonly PriceRow[], at: number): number | null {
@@ -188,13 +293,35 @@ async function dispatchChanges(input: {
   readonly now: number;
 }): Promise<AutomationExecutionResult> {
   const cursor = parseCursor(input.cursor);
+  const admissionDay = Math.floor(input.now / DAY_MS);
+  const admissionCursor = cursor.admissionDay === admissionDay ? cursor.admissionTraderId : "";
+  const admissionRows = input.database.prepare(`
+    SELECT DISTINCT trader_id AS traderId
+    FROM candidate_evidence_v3
+    WHERE trader_id > ?
+    ORDER BY trader_id
+    LIMIT ?
+  `).all(admissionCursor, ADMISSION_RECONCILE_BATCH_SIZE) as Array<{ traderId: string }>;
+  for (const row of admissionRows) {
+    evaluateAndProjectAdmission({ database: input.database, jobs: input.jobs, traderId: row.traderId, decisionAt: input.now });
+  }
+  const nextAdmissionTraderId = admissionRows.length < ADMISSION_RECONCILE_BATCH_SIZE
+    ? "\uffff"
+    : admissionRows.at(-1)!.traderId;
+  const checkpoint = (eventUpdatedAt: number, eventId: string, milestoneRowId: number) => JSON.stringify({
+    eventUpdatedAt,
+    eventId,
+    milestoneRowId,
+    admissionDay,
+    admissionTraderId: nextAdmissionTraderId,
+  });
   const activeJobs = input.jobs.activeCount("candidate_evidence");
   if (activeJobs >= 2_000) {
     return {
       status: "checkpoint",
-      cursor: input.cursor,
-      retryAt: input.now + 5 * 60_000,
-      diagnostic: `candidate evidence backpressure: ${activeJobs} active jobs`,
+      cursor: checkpoint(cursor.eventUpdatedAt, cursor.eventId, cursor.milestoneRowId),
+      retryAt: input.now + (admissionRows.length === ADMISSION_RECONCILE_BATCH_SIZE ? 0 : 5 * 60_000),
+      diagnostic: `candidate evidence backpressure: ${activeJobs} active jobs; reconciled ${admissionRows.length} admissions`,
     };
   }
   const availableCapacity = 2_000 - activeJobs;
@@ -254,9 +381,9 @@ async function dispatchChanges(input: {
 
   return {
     status: "checkpoint",
-    cursor: JSON.stringify({ eventUpdatedAt, eventId, milestoneRowId }),
+    cursor: checkpoint(eventUpdatedAt, eventId, milestoneRowId),
     retryAt: input.now + (events.length === DISPATCH_BATCH_SIZE || milestones.length === DISPATCH_BATCH_SIZE ? 0 : DISPATCH_INTERVAL_MS),
-    diagnostic: `candidate evidence dispatch: ${events.length} events, ${milestones.length} milestones`,
+    diagnostic: `candidate evidence dispatch: ${events.length} events, ${milestones.length} milestones, ${admissionRows.length} admissions`,
   };
 }
 
@@ -266,6 +393,7 @@ async function evaluateToken(input: {
   readonly recovery?: CandidateSourceRecoveryPlanner;
   readonly payload: CandidateEvidencePayload;
   readonly evaluatedAt: number;
+  readonly decisionAt: number;
 }): Promise<AutomationExecutionResult> {
   const token = resolveToken(input.database, input.payload);
   if (!token) {
@@ -278,6 +406,10 @@ async function evaluateToken(input: {
       retryAt: input.evaluatedAt + SOURCE_RETRY_MS,
       diagnostic: "historical token metadata is not available",
       sourceBlock: { reasonCode: "missing_token_identity", context: { tokenId, evaluatedAt: input.evaluatedAt }, recoveryJobIds },
+      outcome: {
+        status: "deferred", reasonCode: "missing_token_identity",
+        inputCount: 1, producedCount: 0, deferredCount: 1,
+      },
     };
   }
 
@@ -341,6 +473,10 @@ async function evaluateToken(input: {
       retryAt: input.evaluatedAt + SOURCE_RETRY_MS,
       diagnostic: "token milestone data is not available",
       sourceBlock: { reasonCode: "missing_milestone", context: { tokenId: token.tokenId, evaluatedAt: input.evaluatedAt }, recoveryJobIds },
+      outcome: {
+        status: "deferred", reasonCode: "missing_milestone",
+        inputCount: 1, producedCount: 0, deferredCount: 1,
+      },
     };
   }
 
@@ -364,6 +500,10 @@ async function evaluateToken(input: {
       retryAt: input.evaluatedAt + SOURCE_RETRY_MS,
       diagnostic: "canonical early buy events are not available",
       sourceBlock: { reasonCode: "missing_early_trades", context: { tokenId: token.tokenId, evaluatedAt: input.evaluatedAt }, recoveryJobIds },
+      outcome: {
+        status: "deferred", reasonCode: "missing_early_trades",
+        inputCount: 1, producedCount: 0, deferredCount: 1,
+      },
     };
   }
 
@@ -372,7 +512,7 @@ async function evaluateToken(input: {
     FROM market_observations
     WHERE chain = ? AND token_address = ? AND observed_at <= ?
     ORDER BY observed_at
-  `).all(token.chain, token.tokenAddress, input.evaluatedAt) as unknown as PriceRow[];
+  `).all(token.chain, token.tokenAddress, input.decisionAt) as unknown as PriceRow[];
   if (prices.length === 0) {
     const recoveryJobIds = input.recovery?.plan({
       reasonCode: "missing_market_history",
@@ -385,6 +525,10 @@ async function evaluateToken(input: {
       retryAt: input.evaluatedAt + SOURCE_RETRY_MS,
       diagnostic: "token price history is not available",
       sourceBlock: { reasonCode: "missing_market_history", context: { tokenId: token.tokenId, evaluatedAt: input.evaluatedAt }, recoveryJobIds },
+      outcome: {
+        status: "deferred", reasonCode: "missing_market_history",
+        inputCount: 1, producedCount: 0, deferredCount: 1,
+      },
     };
   }
 
@@ -454,34 +598,32 @@ async function evaluateToken(input: {
       persisted += 1;
     }
 
-    const evidence = historyStore.evidenceForTrader(traderId);
-    const snapshot = evaluateCandidateAdmission(evidence.map(item => ({
-      tokenKey: item.tokenId,
-      evidenceType: item.evidenceType as CandidateEvidenceType,
-      evidenceAt: item.evidenceAt,
-    })), input.evaluatedAt);
-    const evidenceFingerprint = evidence.map(item => [item.evidenceId, item.evidenceType, item.sourceEventIds]).sort();
-    historyStore.saveAdmissionSnapshot({
-      snapshotId: stableId("candidate-snapshot", [STRATEGY_VERSION, traderId, input.evaluatedAt, evidenceFingerprint]),
+    evaluateAndProjectAdmission({
+      database: input.database,
+      ...(input.jobs ? { jobs: input.jobs } : {}),
       traderId,
-      ...snapshot,
-      strategyVersion: STRATEGY_VERSION,
-      evaluatedAt: input.evaluatedAt,
+      decisionAt: input.decisionAt,
     });
-    if (snapshot.currentAdmission && input.jobs) {
-      enqueueTraderAbilityEvaluation(
-        input.jobs,
-        traderId,
-        input.evaluatedAt,
-        input.evaluatedAt,
-        `candidate:${stableId("snapshot", [traderId, input.evaluatedAt, evidenceFingerprint])}`,
-      );
-    }
   }
 
   return {
     status: "completed",
     diagnostic: `candidate evidence persisted for ${persisted}/${eventsByTrader.size} traders`,
+    outcome: persisted > 0
+      ? {
+          status: "produced",
+          inputCount: eventsByTrader.size,
+          producedCount: persisted,
+          deferredCount: 0,
+        }
+      : {
+          status: "no_output",
+          reasonCode: "evidence_below_threshold",
+          inputCount: eventsByTrader.size,
+          producedCount: 0,
+          deferredCount: 0,
+          diagnostic: { eligibleTraderCount: eventsByTrader.size },
+        },
   };
 }
 
@@ -522,6 +664,7 @@ export function createCandidateEvidenceWorker(input: {
         ...(input.recovery ? { recovery: input.recovery } : {}),
         payload,
         evaluatedAt,
+        decisionAt: now(),
       });
     },
   };

@@ -1,5 +1,11 @@
-import type { AutomationJobStore, AutomationQueueSnapshot } from "@address-radar/database";
+import type {
+  AutomationJobStore,
+  AutomationQueueSnapshot,
+  ReturnTypeOfCreateAutomationOutcomeStore,
+} from "@address-radar/database";
 import type { AutomationJob, AutomationLane, CandidateSourceBlockReason } from "@address-radar/domain";
+
+import { inferAutomationJobOutcome, type AutomationJobOutcome } from "./job-outcome.js";
 
 export interface AutomationHandler {
   readonly jobType: string;
@@ -11,6 +17,7 @@ export interface AutomationExecutionResult {
   readonly cursor?: string | null;
   readonly retryAt?: number;
   readonly diagnostic?: string;
+  readonly outcome?: AutomationJobOutcome;
   readonly sourceBlock?: {
     readonly reasonCode: CandidateSourceBlockReason;
     readonly context: Readonly<Record<string, unknown>>;
@@ -30,6 +37,7 @@ export function createAutomationScheduler(input: {
   readonly enabled: boolean;
   readonly enabledJobTypes?: readonly string[];
   readonly store: AutomationJobStore;
+  readonly outcomeStore?: ReturnTypeOfCreateAutomationOutcomeStore;
   readonly handlers: readonly AutomationHandler[];
   readonly workerId: string;
   readonly now?: () => number;
@@ -58,6 +66,15 @@ export function createAutomationScheduler(input: {
       if (!job) return Object.freeze({ executed: false, snapshot: input.store.snapshot() });
       const handler = handlers.get(job.jobType);
       if (!handler) {
+        input.outcomeStore?.record({
+          jobId: job.jobId,
+          jobType: job.jobType,
+          attempt: job.attemptCount,
+          outcome: "terminal",
+          reasonCode: "missing_handler",
+          inputCount: 1,
+          createdAt: now(),
+        });
         input.store.terminate(job.jobId, input.workerId, {
           reason: `missing_handler:${job.jobType}`,
           terminatedAt: now(),
@@ -81,6 +98,22 @@ export function createAutomationScheduler(input: {
         };
       }
       const finishedAt = now();
+      const outcome = inferAutomationJobOutcome(result);
+      input.outcomeStore?.record({
+        jobId: job.jobId,
+        jobType: job.jobType,
+        attempt: job.attemptCount,
+        outcome: outcome.status,
+        reasonCode: outcome.reasonCode ?? null,
+        inputCount: outcome.inputCount,
+        producedCount: outcome.producedCount,
+        deferredCount: outcome.deferredCount,
+        diagnostic: {
+          ...(outcome.diagnostic ?? {}),
+          ...(result.diagnostic ? { message: result.diagnostic } : {}),
+        },
+        createdAt: finishedAt,
+      });
       if (result.status === "completed") {
         input.store.complete(job.jobId, input.workerId, {
           cursor: result.cursor === undefined ? job.cursor : result.cursor,

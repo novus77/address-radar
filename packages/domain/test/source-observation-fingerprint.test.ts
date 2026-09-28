@@ -47,7 +47,7 @@ describe("semantic source observation fingerprint", () => {
     expect(second).toBe(first);
   });
 
-  it("changes when a business field changes", () => {
+  it("is stable when mutable USD enrichment changes", () => {
     const first = semanticSourceObservationFingerprint(observation({
       collectedAt: 2_100,
       amountUsd: 100,
@@ -57,6 +57,18 @@ describe("semantic source observation fingerprint", () => {
       amountUsd: 125,
     }));
 
-    expect(second).not.toBe(first);
+    expect(second).toBe(first);
+  });
+
+  it("changes when immutable economic identity changes", () => {
+    const first = observation({ collectedAt: 2_100, amountUsd: 100 });
+    const second = createSourceObservation({
+      ...first,
+      payload: { ...(first.payload as Record<string, unknown>), tokenAddress: "0xdef" },
+    });
+
+    expect(semanticSourceObservationFingerprint(second)).not.toBe(
+      semanticSourceObservationFingerprint(first),
+    );
   });
 });

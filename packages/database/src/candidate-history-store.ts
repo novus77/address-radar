@@ -293,7 +293,7 @@ export function createCandidateHistoryStore(database: DatabaseSync) {
     },
 
     admissionSnapshots(traderId: string): readonly PersistedCandidateAdmissionSnapshot[] {
-      const rows = database.prepare("SELECT * FROM candidate_admission_snapshots WHERE trader_id = ? ORDER BY evaluated_at, snapshot_id").all(traderId) as Record<string, unknown>[];
+      const rows = database.prepare("SELECT * FROM candidate_admission_snapshots WHERE trader_id = ? ORDER BY evaluated_at, rowid").all(traderId) as Record<string, unknown>[];
       return Object.freeze(rows.map(row => Object.freeze({
         snapshotId: row.snapshot_id as string,
         traderId: row.trader_id as string,

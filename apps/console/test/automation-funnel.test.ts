@@ -21,6 +21,40 @@ afterEach(() => {
 });
 
 describe("automation funnel", () => {
+  it("reports automated repair and manual identity backlogs separately", () => {
+    const directory = mkdtempSync(join(tmpdir(), "address-radar-queue-separation-"));
+    directories.push(directory);
+    const databasePath = join(directory, "radar.sqlite");
+    const database = openAddressRadarDatabase(databasePath);
+    migrateAddressRadarDatabase(database);
+    database.prepare(`
+      INSERT INTO automation_jobs(
+        job_id, idempotency_key, lane, job_type, subject_key, priority,
+        status, cursor, attempt_count, next_attempt_at, lease_expires_at,
+        lease_owner, payload, last_error, created_at, updated_at, completed_at
+      ) VALUES ('repair-1', 'repair-1', 'repair', 'market_enrichment', 'base:0xabc', 1,
+        'pending', NULL, 0, 0, NULL, NULL, '{}', NULL, 1, 1, NULL)
+    `).run();
+    database.prepare(`
+      INSERT INTO fomo_accounts(account_id, handle, first_seen_at, last_seen_at)
+      VALUES ('manual-account', 'manual-user', 1, 1)
+    `).run();
+    database.prepare(`
+      INSERT INTO identity_resolution_queue(
+        handle, account_id, priority, reasons, status, first_seen_at,
+        last_seen_at, next_export_at, last_batch_id, resolved_at
+      ) VALUES ('manual-user', 'manual-account', 1, '[]', 'pending', 1, 1, 1, NULL, NULL)
+    `).run();
+    database.close();
+
+    const application = createAddressConsoleApplication(databasePath);
+    expect(application.handle("GET", "/api/v2/automation/overview")).toMatchObject({
+      status: 200,
+      body: { queue: { backlog: 1, automatedRepairBacklog: 1, manualIdentityBacklog: 1 } },
+    });
+    application.close();
+  });
+
   it("reports stable source block reasons and recovery queue progress", () => {
     const directory = mkdtempSync(join(tmpdir(), "address-radar-source-recovery-"));
     directories.push(directory);

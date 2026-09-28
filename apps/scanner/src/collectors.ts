@@ -11,23 +11,48 @@ export function createProjectionReplayCollector(input: {
   readonly now?: () => number;
   readonly lookbackMs: number;
   readonly batchSize: number;
+  readonly realtimeWindowMs?: number;
+  readonly realtimeBatchSize?: number;
 }): ScannerCollector {
   if (!Number.isSafeInteger(input.lookbackMs) || input.lookbackMs < 1) throw new Error("lookbackMs must be a positive safe integer");
   if (!Number.isSafeInteger(input.batchSize) || input.batchSize < 1) throw new Error("batchSize must be a positive safe integer");
+  const realtimeWindowMs = input.realtimeWindowMs ?? 60 * 60_000;
+  const realtimeBatchSize = Math.min(input.batchSize, input.realtimeBatchSize ?? 25);
+  if (!Number.isSafeInteger(realtimeWindowMs) || realtimeWindowMs < 1) throw new Error("realtimeWindowMs must be a positive safe integer");
+  if (!Number.isSafeInteger(realtimeBatchSize) || realtimeBatchSize < 1) throw new Error("realtimeBatchSize must be a positive safe integer");
   const now = input.now ?? Date.now;
   return Object.freeze({
     name: "projection-replay",
     async collect() {
-      const events = input.repository.eventsMissingProjection({
+      const collectedAt = now();
+      const realtime = input.repository.eventsMissingProjection({
         projectionType: "address_signal_evidence_v1",
         sourceRevision: input.strategyVersion,
-        since: Math.max(0, now() - input.lookbackMs),
-        limit: input.batchSize,
+        since: Math.max(0, collectedAt - realtimeWindowMs),
+        limit: realtimeBatchSize,
+        order: "newest",
       });
+      const selected = new Map(realtime.map(event => [event.eventId, event]));
+      const remaining = input.batchSize - selected.size;
+      if (remaining > 0) {
+        const historical = input.repository.eventsMissingProjection({
+          projectionType: "address_signal_evidence_v1",
+          sourceRevision: input.strategyVersion,
+          since: Math.max(0, collectedAt - input.lookbackMs),
+          limit: input.batchSize + selected.size,
+          order: "oldest",
+        });
+        for (const event of historical) {
+          if (selected.has(event.eventId)) continue;
+          selected.set(event.eventId, event);
+          if (selected.size === input.batchSize) break;
+        }
+      }
+      const events = [...selected.values()];
       return Object.freeze({
         observations: Object.freeze(events.map(event => Object.freeze({ event }))),
         status: "ready" as const,
-        queueOldestAt: events[0]?.occurredAt ?? null,
+        queueOldestAt: events.length ? Math.min(...events.map(event => event.occurredAt)) : null,
       });
     },
   });

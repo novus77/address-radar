@@ -1,5 +1,12 @@
 export { createCanonicalTrader } from "./canonical-trader.js";
 export type { CanonicalTrader, CanonicalTraderWallet, MonitoringCoverage } from "./canonical-trader.js";
+export {
+  assertCompleteClosedLoopMetrics,
+  assertValidStageProgressMetric,
+  CLOSED_LOOP_STAGES,
+  isClosedLoopStage,
+} from "./closed-loop-metrics.js";
+export type { ClosedLoopStage, StageProgressMetric } from "./closed-loop-metrics.js";
 export type {
   AutomationJob,
   AutomationJobSourceBlock,

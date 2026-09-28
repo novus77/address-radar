@@ -1,6 +1,8 @@
 export { migrateAddressRadarDatabase } from "./migrations.js";
 export { createAutomationJobStore } from "./automation-job-store.js";
 export type {
+  AutomationQueueMetrics,
+  AutomationQueueTypeMetrics,
   AutomationJobInput,
   AutomationQueueSnapshot,
   AutomationJobStore,
@@ -104,3 +106,32 @@ export type {
   TraderAutomationWallet,
   TraderCoverageUpdate,
 } from "./trader-automation-store.js";
+export {
+  createAutomationOutcomeStore,
+  initializeAutomationOutcomeSchema,
+} from "./automation-outcome-store.js";
+export type {
+  AutomationJobOutcomeRecord,
+  AutomationOutcomeStatus,
+  RecordAutomationJobOutcomeInput,
+  ReturnTypeOfCreateAutomationOutcomeStore,
+} from "./automation-outcome-store.js";
+export {
+  createRecoveryFactLinkStore,
+  initializeRecoveryFactLinkSchema,
+} from "./recovery-fact-link-store.js";
+export type {
+  RecoveryFactLink,
+  RecoveryFactLinkStatus,
+  ReturnTypeOfCreateRecoveryFactLinkStore,
+} from "./recovery-fact-link-store.js";
+export {
+  createSourceEnrichmentStore,
+  initializeSourceEnrichmentSchema,
+} from "./source-enrichment-store.js";
+export type { SourceObservationEnrichment } from "./source-enrichment-store.js";
+export {
+  createWalletCoverageStore,
+  initializeWalletCoverageSchema,
+} from "./wallet-coverage-store.js";
+export type { WalletChainCoverage, WalletCoverageStatus } from "./wallet-coverage-store.js";

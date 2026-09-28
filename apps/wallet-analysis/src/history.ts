@@ -1,5 +1,5 @@
 import { extractEvmSwapEvidence, extractSolanaSwapEvidence, type DiscoveryChain, type EvmSwapLog, type EvmSwapTransaction, type SolanaSwapTransaction } from "@address-radar/collectors";
-import { openAddressRadarDatabase } from "@address-radar/database";
+import { openAddressRadarDatabase, withAddressRadarWriteTransaction } from "@address-radar/database";
 import type { WalletAnalysisPosition } from "@address-radar/domain";
 import type { WalletHistoryProvider } from "./runtime.js";
 
@@ -29,8 +29,7 @@ export function openHistoricalEventStore(databasePath: string): HistoricalEventS
   ensureHistoryColumn(database, "orphaned_at", "INTEGER");
 
   const reconcileBlocks = (analysisId: string, blocks: readonly HistoricalCanonicalBlock[], observedAt: number): void => {
-    database.exec("BEGIN IMMEDIATE");
-    try {
+    withAddressRadarWriteTransaction(database, () => {
       const orphan = database.prepare(`
         UPDATE wallet_analysis_provider_events SET orphaned_at = ?
         WHERE analysis_id = ? AND chain = ? AND source_block_number = ?
@@ -46,14 +45,12 @@ export function openHistoricalEventStore(databasePath: string): HistoricalEventS
         orphan.run(observedAt, analysisId, block.chain, block.blockNumber, block.blockHash);
         upsert.run(analysisId, block.chain, block.blockNumber, block.blockHash, observedAt);
       }
-      database.exec("COMMIT");
-    } catch (error) { database.exec("ROLLBACK"); throw error; }
+    }, { label: "wallet_analysis_reconcile_blocks" });
   };
 
   const store: HistoricalEventStore = {
     append(analysisId, events) {
-      database.exec("BEGIN IMMEDIATE");
-      try {
+      withAddressRadarWriteTransaction(database, () => {
         const upsert = database.prepare(`
           INSERT INTO wallet_analysis_provider_events(
             analysis_id, event_id, chain, token_address, side, token_amount, occurred_at,
@@ -70,8 +67,7 @@ export function openHistoricalEventStore(databasePath: string): HistoricalEventS
           event.tokenAmount, event.occurredAt, event.source,
           event.sourceBlockNumber ?? null, event.sourceBlockHash ?? null,
         );
-        database.exec("COMMIT");
-      } catch (error) { database.exec("ROLLBACK"); throw error; }
+      }, { label: "wallet_analysis_append_events" });
     },
     reconcileBlocks,
     blockHash(analysisId, chain, blockNumber) {

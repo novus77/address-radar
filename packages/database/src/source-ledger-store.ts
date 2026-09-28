@@ -13,6 +13,7 @@ import {
   SOURCE_OBSERVATION_FINGERPRINT_VERSION,
 } from "@address-radar/domain";
 import { withAddressRadarWriteTransaction } from "./connection.js";
+import { initializeSourceEnrichmentSchema } from "./source-enrichment-store.js";
 
 export type RecoveryJobType =
   | "rpc_gap"
@@ -277,6 +278,7 @@ export function initializeSourceLedgerSchema(database: DatabaseSync): void {
   if (!sourceObservationColumns.some((column) => column.name === "fingerprint_version")) {
     database.exec("ALTER TABLE source_observations ADD COLUMN fingerprint_version INTEGER NOT NULL DEFAULT 1");
   }
+  initializeSourceEnrichmentSchema(database);
 }
 
 const stableValue = (value: unknown): unknown => {
@@ -361,6 +363,38 @@ const toTokenMarketSnapshot = (row: Record<string, unknown>): TokenMarketSnapsho
 
 export function createSourceLedgerStore(database: DatabaseSync): SourceLedgerStore {
   const transaction = <T>(operation: () => T): T => withAddressRadarWriteTransaction(database, operation);
+  const saveEnrichment = (observation: SourceObservation): void => {
+    const payload = observation.payload && typeof observation.payload === "object"
+      ? observation.payload as Record<string, unknown>
+      : {};
+    const amountUsd = typeof payload.amountUsd === "number" && Number.isFinite(payload.amountUsd) ? payload.amountUsd : null;
+    const priceUsd = typeof payload.priceUsd === "number" && Number.isFinite(payload.priceUsd) ? payload.priceUsd : null;
+    const latest = database.prepare(`
+      SELECT revision, amount_usd AS amountUsd, price_usd AS priceUsd,
+        collected_at AS collectedAt, quality_score AS qualityScore, provenance_json AS provenanceJson
+      FROM source_observation_enrichments
+      WHERE observation_id=? ORDER BY revision DESC LIMIT 1
+    `).get(observation.observationId) as {
+      revision: number; amountUsd: number | null; priceUsd: number | null;
+      collectedAt: number; qualityScore: number; provenanceJson: string | null;
+    } | undefined;
+    const provenanceJson = stableJson(observation.provenance);
+    if (latest
+      && latest.amountUsd === amountUsd
+      && latest.priceUsd === priceUsd
+      && latest.qualityScore === observation.confidence
+      && latest.provenanceJson === provenanceJson
+      && latest.collectedAt >= observation.collectedAt) return;
+    database.prepare(`
+      INSERT INTO source_observation_enrichments(
+        observation_id, revision, amount_usd, price_usd, collected_at,
+        provenance_json, quality_score, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      observation.observationId, (latest?.revision ?? 0) + 1, amountUsd, priceUsd,
+      observation.collectedAt, provenanceJson, observation.confidence, observation.collectedAt,
+    );
+  };
 
   const store: SourceLedgerStore = {
     saveObservation(observation) {
@@ -387,9 +421,15 @@ export function createSourceLedgerStore(database: DatabaseSync): SourceLedgerSto
               occurrence_count
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
             ON CONFLICT(observation_id, existing_fingerprint, incoming_fingerprint) DO UPDATE SET
-              incoming_observation = excluded.incoming_observation,
-              last_seen_at = excluded.last_seen_at,
-              occurrence_count = source_observation_conflicts.occurrence_count + 1
+              incoming_observation = CASE
+                WHEN excluded.last_seen_at - source_observation_conflicts.last_seen_at >= 60000
+                THEN excluded.incoming_observation ELSE source_observation_conflicts.incoming_observation END,
+              last_seen_at = CASE
+                WHEN excluded.last_seen_at - source_observation_conflicts.last_seen_at >= 60000
+                THEN excluded.last_seen_at ELSE source_observation_conflicts.last_seen_at END,
+              occurrence_count = source_observation_conflicts.occurrence_count + CASE
+                WHEN excluded.last_seen_at - source_observation_conflicts.last_seen_at >= 60000
+                THEN 1 ELSE 0 END
           `).run(
             conflictId,
             observation.observationId,
@@ -406,6 +446,7 @@ export function createSourceLedgerStore(database: DatabaseSync): SourceLedgerSto
           database.prepare("UPDATE source_observations SET content_fingerprint = ?, fingerprint_version = ? WHERE observation_id = ?")
             .run(contentFingerprint, SOURCE_OBSERVATION_FINGERPRINT_VERSION, observation.observationId);
         }
+        saveEnrichment(observation);
         return Object.freeze({ status: "duplicate" });
       }
       database.prepare(`
@@ -420,6 +461,7 @@ export function createSourceLedgerStore(database: DatabaseSync): SourceLedgerSto
         stableJson(observation.payload), observation.confidence, observation.extractionMode,
         stableJson(observation.provenance), contentFingerprint, SOURCE_OBSERVATION_FINGERPRINT_VERSION,
       );
+      saveEnrichment(observation);
       return Object.freeze({ status: "inserted" });
       });
     },

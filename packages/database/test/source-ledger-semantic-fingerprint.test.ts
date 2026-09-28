@@ -48,13 +48,13 @@ describe("source ledger semantic fingerprints", () => {
     const store = createSourceLedgerStore(database);
     const conflictingObservation = (collectedAt: number) => ({
       ...observation(collectedAt),
-      payload: { ...observation(collectedAt).payload, amountUsd: 250 },
+      payload: { ...observation(collectedAt).payload, tokenAddress: "0xdef" },
     });
 
     expect(store.saveObservation(observation(2_100))).toEqual({ status: "inserted" });
     const conflict = store.saveObservation(conflictingObservation(9_900));
     expect(conflict.status).toBe("conflict");
-    expect(store.saveObservation(conflictingObservation(10_000))).toEqual(conflict);
+    expect(store.saveObservation(conflictingObservation(70_000))).toEqual(conflict);
     expect(database.prepare(`
       SELECT occurrence_count AS occurrenceCount
       FROM source_observation_conflicts

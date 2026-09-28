@@ -2,6 +2,7 @@ import { addressRadarTokenId } from "@address-radar/domain";
 import {
   createCandidateHistoryStore,
   createAutomationJobStore,
+  createRecoveryFactLinkStore,
   createSourceLedgerStore,
   createTokenFactStore,
   openAddressRadarDatabase,
@@ -30,6 +31,7 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
   const sourceLedger = createSourceLedgerStore(historyDatabase);
   const tokenFacts = createTokenFactStore(historyDatabase);
   const automationJobs = createAutomationJobStore(historyDatabase);
+  const recoveryFactLinks = createRecoveryFactLinkStore(historyDatabase);
   const monitoringRegistry = openMonitoringRegistry(config.databasePath);
   const marketProvider = createDexScreenerClient({ ...(config.marketBaseUrl ? { baseUrl: config.marketBaseUrl } : {}) });
   const historicalMarketProvider = createGeckoTerminalClient({ minimumRequestIntervalMs: 12_500 });
@@ -43,6 +45,8 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
       strategyVersion: config.strategyVersion,
       lookbackMs: config.projectionReplayLookbackMs ?? 24 * 60 * 60_000,
       batchSize: config.projectionReplayBatchSize ?? 100,
+      realtimeWindowMs: config.projectionReplayRealtimeWindowMs ?? 60 * 60_000,
+      realtimeBatchSize: config.projectionReplayRealtimeBatchSize ?? 25,
     })] : []),
   ]);
   const errorReporter = createRateLimitedErrorReporter({
@@ -127,6 +131,7 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
   }) : null;
   const recovery = config.recoveryEnabled ? createRecoveryRuntime({
     ledger: sourceLedger,
+    factLinks: recoveryFactLinks,
     handlers: createSourceRecoveryHandlers({
       database: historyDatabase,
       ledger: sourceLedger,

@@ -278,6 +278,7 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       sample_count INTEGER NOT NULL,
       recorded_at INTEGER NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS trader_score_snapshots_entity_latest ON trader_score_snapshots(entity_id, recorded_at DESC);
     CREATE TABLE IF NOT EXISTS trader_style_scores (
       snapshot_id TEXT NOT NULL REFERENCES trader_score_snapshots(snapshot_id),
       style TEXT NOT NULL,
@@ -365,6 +366,7 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS trader_ability_snapshots_latest ON trader_ability_snapshots(entity_id, window, as_of DESC);
+    CREATE INDEX IF NOT EXISTS trader_ability_snapshots_as_of ON trader_ability_snapshots(as_of DESC);
     CREATE TABLE IF NOT EXISTS trader_repeatable_ability_snapshots (
       snapshot_id TEXT PRIMARY KEY,
       entity_id TEXT NOT NULL REFERENCES trader_entities(entity_id),

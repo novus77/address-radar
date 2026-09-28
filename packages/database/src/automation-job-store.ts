@@ -36,6 +36,30 @@ export interface AutomationJobInput {
 export interface AutomationJobStoreOptions {
   readonly baseRetryDelayMs?: number;
   readonly maximumRetryDelayMs?: number;
+  readonly defaultRetryBudget?: number;
+  readonly retryBudgetByJobType?: Readonly<Record<string, number>>;
+  readonly concurrencyLimitByJobType?: Readonly<Record<string, number>>;
+}
+
+export interface AutomationQueueTypeMetrics {
+  readonly runnable: number;
+  readonly deferred: number;
+  readonly blocked: number;
+  readonly terminal: number;
+}
+
+export interface AutomationQueueMetrics {
+  readonly measuredAt: number;
+  readonly windowMs: number;
+  readonly runnable: number;
+  readonly deferred: number;
+  readonly blocked: number;
+  readonly terminal: number;
+  readonly manual: number;
+  readonly admitted: number;
+  readonly completed: number;
+  readonly oldestRunnableAgeMs: number;
+  readonly byJobType: Readonly<Record<string, AutomationQueueTypeMetrics>>;
 }
 
 export interface AutomationQueueSnapshot {
@@ -71,6 +95,7 @@ export interface AutomationJobStore {
   terminate(jobId: string, owner: string, result: { readonly reason: string; readonly terminatedAt: number }): void;
   dueLanes(now: number, enabledJobTypes?: readonly string[]): readonly AutomationLane[];
   snapshot(): AutomationQueueSnapshot;
+  metrics(now: number, windowMs: number): AutomationQueueMetrics;
   selectLane(available: readonly AutomationLane[], now: number): AutomationLane | null;
 }
 
@@ -109,6 +134,7 @@ export function createAutomationJobStore(
 ): AutomationJobStore {
   const baseRetryDelayMs = options.baseRetryDelayMs ?? 1_000;
   const maximumRetryDelayMs = options.maximumRetryDelayMs ?? 60 * 60_000;
+  const defaultRetryBudget = options.defaultRetryBudget ?? 8;
 
   const transaction = <T>(operation: () => T): T =>
     withAddressRadarWriteTransaction(database, operation);
@@ -191,7 +217,7 @@ export function createAutomationJobStore(
         `).run(now, now, now);
         const filter = jobTypeFilter(enabledJobTypes);
         const qualifiedFilterSql = filter.sql.replace(/\bjob_type\b/g, "j.job_type");
-        const selectedType = database.prepare(`
+        const candidateTypes = database.prepare(`
           SELECT j.job_type AS jobType
           FROM automation_jobs j
           LEFT JOIN automation_job_type_state s ON s.job_type = j.job_type
@@ -201,8 +227,16 @@ export function createAutomationJobStore(
           GROUP BY j.job_type
           ORDER BY s.last_claimed_at IS NOT NULL, s.last_claimed_at,
             MIN(j.priority), MIN(j.created_at), j.job_type
-          LIMIT 1
-        `).get(lane, ...filter.values, now) as { jobType: string } | undefined;
+        `).all(lane, ...filter.values, now) as Array<{ jobType: string }>;
+        const selectedType = candidateTypes.find(({ jobType }) => {
+          const limit = options.concurrencyLimitByJobType?.[jobType] ?? Number.POSITIVE_INFINITY;
+          const active = database.prepare(`
+            SELECT COUNT(*) AS count FROM automation_jobs
+            WHERE job_type = ? AND status IN ('leased', 'running')
+              AND (lease_expires_at IS NULL OR lease_expires_at > ?)
+          `).get(jobType, now) as { count: number };
+          return Number(active.count) < limit;
+        });
         if (!selectedType) return null;
         const row = database.prepare(`
           SELECT job_id FROM automation_jobs
@@ -260,6 +294,16 @@ export function createAutomationJobStore(
       transaction(() => {
         const job = requireLease(jobId, owner);
         const attemptCount = Number(job.attempt_count);
+        const retryBudget = options.retryBudgetByJobType?.[String(job.job_type)] ?? defaultRetryBudget;
+        if (attemptCount >= retryBudget) {
+          database.prepare(`
+            UPDATE automation_jobs
+            SET status = 'waiting_source', lease_expires_at = NULL, lease_owner = NULL,
+              last_error = ?, next_attempt_at = ?, updated_at = ?
+            WHERE job_id = ?
+          `).run(`retry_budget_exhausted:${result.error}`, result.now, result.now, jobId);
+          return;
+        }
         const delay = Math.min(
           maximumRetryDelayMs,
           baseRetryDelayMs * (2 ** Math.max(0, attemptCount - 1)),
@@ -368,6 +412,48 @@ export function createAutomationJobStore(
         completed: count("completed"),
         terminal: count("terminal"),
         cancelled: count("cancelled"),
+      });
+    },
+    metrics(now, windowMs) {
+      if (!Number.isSafeInteger(windowMs) || windowMs <= 0) throw new Error("windowMs must be positive");
+      const since = now - windowMs;
+      const rows = database.prepare(`
+        SELECT job_type AS jobType,
+          SUM(CASE WHEN status IN ('pending','retryable') AND next_attempt_at <= ? THEN 1 ELSE 0 END) AS runnable,
+          SUM(CASE WHEN status = 'waiting_source' THEN 1 ELSE 0 END) AS deferred,
+          SUM(CASE WHEN status = 'blocked_source' THEN 1 ELSE 0 END) AS blocked,
+          SUM(CASE WHEN status IN ('terminal','cancelled') THEN 1 ELSE 0 END) AS terminal
+        FROM automation_jobs GROUP BY job_type
+      `).all(now) as Array<{ jobType: string; runnable: number; deferred: number; blocked: number; terminal: number }>;
+      const byJobType = Object.fromEntries(rows.map((row) => [row.jobType, Object.freeze({
+        runnable: Number(row.runnable),
+        deferred: Number(row.deferred),
+        blocked: Number(row.blocked),
+        terminal: Number(row.terminal),
+      })]));
+      const totals = rows.reduce((result, row) => ({
+        runnable: result.runnable + Number(row.runnable),
+        deferred: result.deferred + Number(row.deferred),
+        blocked: result.blocked + Number(row.blocked),
+        terminal: result.terminal + Number(row.terminal),
+      }), { runnable: 0, deferred: 0, blocked: 0, terminal: 0 });
+      const window = database.prepare(`
+        SELECT
+          SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS admitted,
+          SUM(CASE WHEN completed_at >= ? AND status = 'completed' THEN 1 ELSE 0 END) AS completed,
+          MIN(CASE WHEN status IN ('pending','retryable') AND next_attempt_at <= ? THEN created_at END) AS oldestCreatedAt,
+          SUM(CASE WHEN job_type = 'identity_resolution' AND status NOT IN ('completed','terminal','cancelled') THEN 1 ELSE 0 END) AS manual
+        FROM automation_jobs
+      `).get(since, since, now) as { admitted: number | null; completed: number | null; oldestCreatedAt: number | null; manual: number | null };
+      return Object.freeze({
+        measuredAt: now,
+        windowMs,
+        ...totals,
+        manual: Number(window.manual ?? 0),
+        admitted: Number(window.admitted ?? 0),
+        completed: Number(window.completed ?? 0),
+        oldestRunnableAgeMs: window.oldestCreatedAt === null ? 0 : Math.max(0, now - Number(window.oldestCreatedAt)),
+        byJobType: Object.freeze(byJobType),
       });
     },
     selectLane(available, now) {

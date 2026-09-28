@@ -76,6 +76,35 @@ describe("source ledger store", () => {
     database.close();
   });
 
+  it("stores mutable enrichment revisions without creating content conflicts", () => {
+    const database = openAddressRadarDatabase(databasePath());
+    migrateAddressRadarDatabase(database);
+    const store = createSourceLedgerStore(database);
+    const first = observation({
+      eventId: "event-1", source: "fomo", occurredAt: 100,
+      tokenAddress: "0xabc", amountUsd: 100, priceUsd: 1,
+    });
+    const second = createSourceObservation({
+      ...first,
+      collectedAt: 180,
+      confidence: 0.95,
+      payload: { ...(first.payload as Record<string, unknown>), amountUsd: 125, priceUsd: 1.25 },
+      provenance: { response: "refreshed" },
+    });
+
+    expect(store.saveObservation(first)).toEqual({ status: "inserted" });
+    expect(store.saveObservation(second)).toEqual({ status: "duplicate" });
+    expect(database.prepare(`
+      SELECT revision, amount_usd AS amountUsd, price_usd AS priceUsd
+      FROM source_observation_enrichments WHERE observation_id=? ORDER BY revision
+    `).all(first.observationId)).toEqual([
+      { revision: 1, amountUsd: 100, priceUsd: 1 },
+      { revision: 2, amountUsd: 125, priceUsd: 1.25 },
+    ]);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM source_observation_conflicts").get()).toEqual({ count: 0 });
+    database.close();
+  });
+
   it("keeps source cursors monotonic and provider health chain-specific", () => {
     const database = openAddressRadarDatabase(databasePath());
     migrateAddressRadarDatabase(database);

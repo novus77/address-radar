@@ -8,6 +8,10 @@ import { ADDRESS_RADAR_BUSY_TIMEOUT_MS, withAddressRadarWriteTransaction } from 
 import { initializeTokenFactSchema } from "./token-fact-store.js";
 import { initializeCanonicalRegistrySchema } from "./canonical-registry-store.js";
 import { materializeLegacyWalletIdentities } from "./identity-automation.js";
+import { initializeAutomationOutcomeSchema } from "./automation-outcome-store.js";
+import { initializeRecoveryFactLinkSchema } from "./recovery-fact-link-store.js";
+import { initializeSourceEnrichmentSchema } from "./source-enrichment-store.js";
+import { initializeWalletCoverageSchema } from "./wallet-coverage-store.js";
 
 export function migrateAddressRadarDatabase(database: DatabaseSync): void {
   database.exec(`PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${ADDRESS_RADAR_BUSY_TIMEOUT_MS};`);
@@ -20,6 +24,10 @@ export function migrateAddressRadarDatabase(database: DatabaseSync): void {
     initializeSourceLedgerSchema(database);
     initializeTokenFactSchema(database);
     initializeCanonicalRegistrySchema(database);
+    initializeAutomationOutcomeSchema(database);
+    initializeRecoveryFactLinkSchema(database);
+    initializeSourceEnrichmentSchema(database);
+    initializeWalletCoverageSchema(database);
     ensureColumn(database, "wallet_monitor_observations", "source_block_number", "INTEGER");
     ensureColumn(database, "wallet_monitor_observations", "source_block_hash", "TEXT");
     ensureColumn(database, "wallet_monitor_observations", "orphaned_at", "INTEGER");
