@@ -1,14 +1,17 @@
 import type { DatabaseSync } from "node:sqlite";
 
-import type { AddressRadarRepository } from "@address-radar/database";
+import type { AddressRadarRepository, CandidateHistoryStore } from "@address-radar/database";
 
 import { classifyHistoricalTokenEligibility } from "./historical-token-eligibility.js";
 import { createHistoricalPartitions } from "./historical-partitions.js";
 
 interface HistoricalTokenRow {
+  readonly tokenId: string;
   readonly chain: string;
   readonly tokenAddress: string;
   readonly symbol: string | null;
+  readonly firstReached1mAt: number | null;
+  readonly peakMarketCapUsd: number;
 }
 
 export interface HistoricalStagePlanResult {
@@ -20,6 +23,7 @@ export interface HistoricalStagePlanResult {
 export function createHistoricalStagePlanner(input: {
   readonly database: DatabaseSync;
   readonly repository: AddressRadarRepository;
+  readonly historyStore?: CandidateHistoryStore;
   readonly chains: readonly string[];
   readonly startAt: number;
   readonly now?: () => number;
@@ -30,7 +34,8 @@ export function createHistoricalStagePlanner(input: {
 
   const eligibleRows = (requireMilestone: boolean): readonly HistoricalTokenRow[] => {
     const rows = input.database.prepare(`
-      SELECT h.chain AS chain, h.token_address AS tokenAddress, h.symbol AS symbol
+      SELECT h.token_id AS tokenId, h.chain AS chain, h.token_address AS tokenAddress, h.symbol AS symbol,
+        h.first_reached_1m_at AS firstReached1mAt, h.peak_market_cap_usd AS peakMarketCapUsd
       FROM historical_tokens h
       JOIN historical_token_verifications v ON v.token_id = h.token_id
       WHERE v.status = 'confirmed'
@@ -75,6 +80,19 @@ export function createHistoricalStagePlanner(input: {
   return Object.freeze({
     plan(): HistoricalStagePlanResult {
       const milestoneRows = eligibleRows(false);
+      for (const row of milestoneRows) {
+        if (row.firstReached1mAt === null || row.peakMarketCapUsd < 1_000_000) continue;
+        input.historyStore?.saveMilestoneCrossing({
+          milestoneId: `${row.tokenId}:1000000`,
+          tokenId: row.tokenId,
+          marketCapUsd: 1_000_000,
+          crossedAt: row.firstReached1mAt,
+          precision: "estimated",
+          source: "historical_token_first_reached_1m",
+          sourceEventIds: [`${row.tokenId}:${row.firstReached1mAt}:1000000`],
+          strategyVersion: "candidate-history-v3",
+        });
+      }
       const earlyTradeRows = eligibleRows(true);
       return Object.freeze({
         milestoneTokenCount: milestoneRows.length,

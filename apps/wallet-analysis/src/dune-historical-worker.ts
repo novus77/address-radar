@@ -187,6 +187,16 @@ export function createDuneHistoricalBackfillWorker(input: {
             sourceQueryId: String(queryId),
             provenance: { executionId: page.executionId, partitionId: partition.partitionId },
           });
+          input.historyStore.saveMilestoneCrossing({
+            milestoneId: `${chain}:${tokenAddress}:1000000`,
+            tokenId: `${chain}:${tokenAddress}`,
+            marketCapUsd: 1_000_000,
+            crossedAt: reachedAt,
+            precision: "estimated",
+            source: "historical_token_first_reached_1m",
+            sourceEventIds: [`${page.executionId}:${reachedAt}:1000000`],
+            strategyVersion: input.strategyVersion,
+          });
         }
       } else if (partition.queryKind === "milestone_crossings") {
         for (const row of page.rows) {

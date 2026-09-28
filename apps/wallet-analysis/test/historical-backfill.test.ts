@@ -69,6 +69,9 @@ describe("Solana historical valuation", () => {
     await worker.execute(partition!, new AbortController().signal);
 
     expect(historyStore.historicalToken("solana:MintA")).toMatchObject({ peakMarketCapUsd: 2_000_000, firstReached1mAt: Date.parse("2026-08-10T01:00:00.000Z") });
+    expect(historyStore.milestoneCrossings("solana:MintA")).toEqual([
+      expect.objectContaining({ marketCapUsd: 1_000_000, source: "historical_token_first_reached_1m" }),
+    ]);
     database.close();
     repository.close();
   });
