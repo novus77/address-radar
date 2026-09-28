@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 
-import type { GeckoTerminalClient, TokenMarketProvider } from "@address-radar/collectors";
+import type { GeckoTerminalClient, HistoricalTokenPriceClient, TokenMarketProvider } from "@address-radar/collectors";
 import type {
   AutomationJobStore,
   CandidateHistoryStore,
@@ -20,6 +20,7 @@ import {
 
 const HOUR_MS = 60 * 60_000;
 const GECKO_TERMINAL_CALLS_PER_MINUTE = 8;
+const DEFILLAMA_CALLS_PER_MINUTE = 20;
 const MAX_HISTORY_PAGES = 2;
 
 interface FomoMilestoneLookupProducer {
@@ -53,6 +54,7 @@ export function createSourceRecoveryHandlers(input: {
   readonly facts: TokenFactStore;
   readonly marketProvider: TokenMarketProvider;
   readonly historicalMarketProvider?: GeckoTerminalClient;
+  readonly historicalPriceFallback?: HistoricalTokenPriceClient;
   readonly fomoProducer: FomoMilestoneLookupProducer;
   readonly now?: () => number;
 }): RecoveryHandlers {
@@ -159,54 +161,78 @@ export function createSourceRecoveryHandlers(input: {
     },
 
     async market_history({ job, consumeBudget }) {
-      if (!input.historicalMarketProvider) throw new RetryableRecoveryError("historical_market_provider_unavailable");
+      if (!input.historicalMarketProvider && !input.historicalPriceFallback) throw new RetryableRecoveryError("historical_market_provider_unavailable");
       if (job.chain === "robinhood") throw new TerminalRecoveryError("historical_market_chain_unsupported");
       const token = tokenParts(job.subjectKey, job.chain);
       const observedAt = now();
       const range = historyRange(input.database, job.subjectKey, token.chain, token.tokenAddress, observedAt);
       if (!range) throw new TerminalRecoveryError("historical_market_range_unavailable");
+      const local = localHistoricalPrices(input.database, token.chain, token.tokenAddress, range);
+      if (hasEntryCoverage(local, range)) {
+        saveFact("price_history", job.subjectKey, "available", "derived", "market_observations", observedAt, local[0]![0], local.at(-1)![0]);
+        return { reEvaluate: { kind: "token" as const, key: job.subjectKey } };
+      }
       const usageWindow = String(Math.floor(observedAt / 60_000));
-      const consume = (): void => consumeBudget({
+      const consumeGecko = (): void => consumeBudget({
         provider: "geckoterminal",
         usageWindow,
         units: 1,
         limit: GECKO_TERMINAL_CALLS_PER_MINUTE,
         retryAt: (Math.floor(observedAt / 60_000) + 1) * 60_000,
       });
-      consume();
-      const pool = await input.historicalMarketProvider.topPool(job.chain, token.tokenAddress);
-      if (!pool) {
-        if (job.attemptCount >= 3) throw new TerminalRecoveryError("historical_market_pool_unavailable");
-        throw new RetryableRecoveryError("historical_market_pool_unavailable");
-      }
       const candles = new Map<number, number>();
-      let beforeTimestamp = range.toAt + HOUR_MS;
-      for (let page = 0; page < MAX_HISTORY_PAGES; page += 1) {
-        consume();
-        const batch = await input.historicalMarketProvider.ohlcv(job.chain, pool.poolAddress, {
-          timeframe: "hour",
-          tokenSide: pool.tokenSide,
-          aggregate: 1,
-          beforeTimestamp,
-          limit: 1_000,
-        });
-        if (batch.length === 0) break;
-        for (const candle of batch) {
-          if (candle.timestamp <= range.toAt && candle.timestamp >= range.fromAt - HOUR_MS && candle.close > 0) {
-            candles.set(candle.timestamp, candle.close);
+      let source = "geckoterminal_ohlcv";
+      let primaryError: unknown = null;
+      if (input.historicalMarketProvider) {
+        try {
+          consumeGecko();
+          const pool = await input.historicalMarketProvider.topPool(job.chain, token.tokenAddress);
+          if (pool) {
+            let beforeTimestamp = range.toAt + HOUR_MS;
+            for (let page = 0; page < MAX_HISTORY_PAGES; page += 1) {
+              consumeGecko();
+              const batch = await input.historicalMarketProvider.ohlcv(job.chain, pool.poolAddress, {
+                timeframe: "hour",
+                tokenSide: pool.tokenSide,
+                aggregate: 1,
+                beforeTimestamp,
+                limit: 1_000,
+              });
+              if (batch.length === 0) break;
+              for (const candle of batch) {
+                if (candle.timestamp <= range.toAt && candle.timestamp >= range.fromAt - HOUR_MS && candle.close > 0) {
+                  candles.set(candle.timestamp, candle.close);
+                }
+              }
+              const earliest = Math.min(...batch.map(candle => candle.timestamp));
+              if (earliest <= range.fromAt || earliest >= beforeTimestamp) break;
+              beforeTimestamp = earliest;
+            }
           }
+        } catch (error) {
+          primaryError = error;
         }
-        const earliest = Math.min(...batch.map(candle => candle.timestamp));
-        if (earliest <= range.fromAt || earliest >= beforeTimestamp) break;
-        beforeTimestamp = earliest;
       }
-      const ordered = [...candles].sort((left, right) => left[0] - right[0]);
-      if (ordered.length === 0 || ordered[0]![0] > range.fromAt) {
+      let ordered = [...candles].sort((left, right) => left[0] - right[0]);
+      if (!hasEntryCoverage(ordered, range) && input.historicalPriceFallback) {
+        consumeBudget({
+          provider: "defillama",
+          usageWindow,
+          units: 1,
+          limit: DEFILLAMA_CALLS_PER_MINUTE,
+          retryAt: (Math.floor(observedAt / 60_000) + 1) * 60_000,
+        });
+        const fallback = await input.historicalPriceFallback.chart(job.chain, token.tokenAddress, range);
+        ordered = fallback.prices.map(point => [point.observedAt, point.priceUsd] as const);
+        source = fallback.source;
+      }
+      if (!hasEntryCoverage(ordered, range)) {
+        if (primaryError !== null && !input.historicalPriceFallback) throw primaryError;
         if (job.attemptCount >= 3) throw new TerminalRecoveryError("historical_market_coverage_unavailable");
         throw new RetryableRecoveryError("historical_market_coverage_unavailable");
       }
-      saveHistoricalPrices(input.database, token.chain, token.tokenAddress, ordered);
-      saveFact("price_history", job.subjectKey, "available", "exact", "geckoterminal_ohlcv", observedAt, ordered[0]![0], ordered.at(-1)![0]);
+      saveHistoricalPrices(input.database, token.chain, token.tokenAddress, ordered, source);
+      saveFact("price_history", job.subjectKey, "available", source === "geckoterminal_ohlcv" ? "exact" : "derived", source, observedAt, ordered[0]![0], ordered.at(-1)![0]);
       return { reEvaluate: { kind: "token" as const, key: job.subjectKey } };
     },
 
@@ -254,7 +280,16 @@ export function createSourceRecoveryHandlers(input: {
 
     async fomo_token_history({ job }) {
       const token = tokenParts(job.subjectKey, job.chain);
-      await input.fomoProducer.enqueue({ chainId: token.chain, tokenAddress: token.tokenAddress, requestedAt: now() });
+      const observedAt = now();
+      const range = historyRange(input.database, job.subjectKey, token.chain, token.tokenAddress, observedAt);
+      if (range) {
+        const local = localHistoricalPrices(input.database, token.chain, token.tokenAddress, range);
+        if (hasEntryCoverage(local, range)) {
+          saveFact("price_history", job.subjectKey, "available", "derived", "market_observations", observedAt, local[0]![0], local.at(-1)![0]);
+          return { reEvaluate: { kind: "token" as const, key: job.subjectKey } };
+        }
+      }
+      await input.fomoProducer.enqueue({ chainId: token.chain, tokenAddress: token.tokenAddress, requestedAt: observedAt });
       if (job.attemptCount >= 12) throw new TerminalRecoveryError("fomo_token_history_unavailable");
       throw new RetryableRecoveryError("fomo_token_history_queued");
     },
@@ -292,17 +327,32 @@ function historyRange(database: DatabaseSync, tokenId: string, chain: string, to
   return Object.freeze({ fromAt: event.fromAt, toAt: Math.max(event.fromAt, blocked.toAt ?? milestone.toAt ?? fallbackTo) });
 }
 
-function saveHistoricalPrices(database: DatabaseSync, chain: string, tokenAddress: string, prices: readonly (readonly [number, number])[]): void {
+function localHistoricalPrices(database: DatabaseSync, chain: string, tokenAddress: string, range: { readonly fromAt: number; readonly toAt: number }): Array<readonly [number, number]> {
+  const rows = database.prepare(`
+    SELECT observed_at AS observedAt, price_usd AS priceUsd
+    FROM market_observations
+    WHERE chain = ? AND token_address = ? AND price_usd > 0
+      AND observed_at BETWEEN ? AND ?
+    ORDER BY observed_at
+  `).all(chain, tokenAddress, Math.max(0, range.fromAt - HOUR_MS), range.toAt + HOUR_MS) as Array<{ observedAt: number; priceUsd: number }>;
+  return rows.map(row => [row.observedAt, row.priceUsd] as const);
+}
+
+function hasEntryCoverage(prices: readonly (readonly [number, number])[], range: { readonly fromAt: number }): boolean {
+  return prices.length > 0 && prices[0]![0] <= range.fromAt + HOUR_MS;
+}
+
+function saveHistoricalPrices(database: DatabaseSync, chain: string, tokenAddress: string, prices: readonly (readonly [number, number])[], source = "geckoterminal_ohlcv"): void {
   const insert = database.prepare(`
     INSERT INTO market_observations(chain, token_address, observed_at, price_usd, source)
-    VALUES (?, ?, ?, ?, 'geckoterminal_ohlcv')
+    VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(chain, token_address, observed_at, source)
     DO UPDATE SET price_usd = excluded.price_usd
   `);
   const nested = database.isTransaction;
   if (!nested) database.exec("BEGIN IMMEDIATE");
   try {
-    for (const [observedAt, priceUsd] of prices) insert.run(chain, tokenAddress, observedAt, priceUsd);
+    for (const [observedAt, priceUsd] of prices) insert.run(chain, tokenAddress, observedAt, priceUsd, source);
     if (!nested) database.exec("COMMIT");
   } catch (error) {
     if (!nested && database.isTransaction) database.exec("ROLLBACK");

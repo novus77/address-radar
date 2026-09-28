@@ -7,7 +7,7 @@ import {
   openAddressRadarDatabase,
   openAddressRadarRepository,
 } from "@address-radar/database";
-import { createDexScreenerClient, createGeckoTerminalClient, FomoTokenLookupProducer } from "@address-radar/collectors";
+import { createDefiLlamaPriceClient, createDexScreenerClient, createGeckoTerminalClient, FomoTokenLookupProducer } from "@address-radar/collectors";
 import { createTokenLifecycleResolver } from "@address-radar/aggregation";
 import { openMonitoringRegistry } from "@address-radar/identity";
 import { createGatewayClient, createGatewayDeliveryWorker } from "@address-radar/delivery";
@@ -32,7 +32,8 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
   const automationJobs = createAutomationJobStore(historyDatabase);
   const monitoringRegistry = openMonitoringRegistry(config.databasePath);
   const marketProvider = createDexScreenerClient({ ...(config.marketBaseUrl ? { baseUrl: config.marketBaseUrl } : {}) });
-  const historicalMarketProvider = createGeckoTerminalClient();
+  const historicalMarketProvider = createGeckoTerminalClient({ minimumRequestIntervalMs: 12_500 });
+  const historicalPriceFallback = createDefiLlamaPriceClient();
   if (config.recoveryEnabled) reconcileCandidateSourceRecovery({ database: historyDatabase, ledger: sourceLedger });
   const lifecycleResolver = createTokenLifecycleResolver({});
   const collectors = createConfiguredCollectors({ config, repository, monitoringRegistry });
@@ -126,7 +127,8 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
       facts: tokenFacts,
       marketProvider,
       historicalMarketProvider,
-      fomoProducer: new FomoTokenLookupProducer({ filePath: config.fomoLookupQueuePath }),
+      historicalPriceFallback,
+      fomoProducer: new FomoTokenLookupProducer({ filePath: config.fomoLookupQueuePath, bucketMs: 12 * 60 * 60_000 }),
       now: Date.now,
     }),
     clock: { now: Date.now },
