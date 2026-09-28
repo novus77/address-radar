@@ -35,7 +35,14 @@ describe("historical stage planner", () => {
       now: () => START + 24 * 60 * 60_000,
     });
     const result = planner.plan();
-    planner.plan();
+    database.exec(`
+      CREATE TRIGGER reject_redundant_partition_insert
+      BEFORE INSERT ON historical_backfill_partitions
+      BEGIN
+        SELECT RAISE(ABORT, 'redundant partition insert');
+      END;
+    `);
+    expect(() => planner.plan()).not.toThrow();
 
     expect(result).toMatchObject({ milestoneTokenCount: 1, earlyTradeTokenCount: 1 });
     const partitions = repository.historicalBackfillPartitions().filter(item => item.queryKind !== "token_universe");
