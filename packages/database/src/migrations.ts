@@ -12,6 +12,7 @@ import { initializeAutomationOutcomeSchema } from "./automation-outcome-store.js
 import { initializeRecoveryFactLinkSchema } from "./recovery-fact-link-store.js";
 import { initializeSourceEnrichmentSchema } from "./source-enrichment-store.js";
 import { initializeWalletCoverageSchema } from "./wallet-coverage-store.js";
+import { initializeCandidateEvaluationRequestSchema } from "./candidate-evaluation-request-store.js";
 
 export interface AddressRadarMigrationOptions {
   readonly force?: boolean;
@@ -39,6 +40,7 @@ export function migrateAddressRadarDatabase(
     initializeRecoveryFactLinkSchema(database);
     initializeSourceEnrichmentSchema(database);
     initializeWalletCoverageSchema(database);
+    initializeCandidateEvaluationRequestSchema(database);
     ensureColumn(database, "wallet_monitor_observations", "source_block_number", "INTEGER");
     ensureColumn(database, "wallet_monitor_observations", "source_block_hash", "TEXT");
     ensureColumn(database, "wallet_monitor_observations", "orphaned_at", "INTEGER");

@@ -1,6 +1,7 @@
 import {
   createAutomationJobStore,
   createAutomationOutcomeStore,
+  createRecoveryFactLinkStore,
   createSourceLedgerStore,
   createTraderAutomationStore,
   createTokenFactStore,
@@ -23,7 +24,13 @@ import { createTraderAbilityWorker, enqueueTraderAbilityDispatcher, enqueueTrade
 import { createSqliteHistoricalTokenSource } from "./token-source-adapters.js";
 import { migrateManualIdentityAutomationJobs } from "./migrations/manual-identity-job-cleanup.js";
 import { createEarlyTradeReconciler } from "./early-trade-reconciler.js";
+import { reconcileMilestoneEarlyTradeFacts } from "./milestone-fact-reconciler.js";
 import { automationJobStoreOptions, createQueueAdmissionPolicy } from "./queue-policy.js";
+import {
+  createSignalProjectionReconciler,
+  createSignalProjectionWorker,
+  openSignalProjectionRepository,
+} from "./signal-projection-worker.js";
 
 export interface PlanningGateOptions {
   readonly intervalMs: number;
@@ -70,7 +77,16 @@ export function createAutomationRuntime(input: {
   const now = input.now ?? Date.now;
   const facts = createTokenFactStore(database);
   const earlyTradeReconciler = createEarlyTradeReconciler({ database, jobs: store, facts, now });
+  const reconcileMilestoneFacts = () => reconcileMilestoneEarlyTradeFacts({
+    database,
+    jobs: store,
+    ledger: createSourceLedgerStore(database),
+    factLinks: createRecoveryFactLinkStore(database),
+    facts,
+    now,
+  });
   const walletAnalysis = openWalletAnalysisStore(input.config.databasePath);
+  const signalRepository = openSignalProjectionRepository(input.config.databasePath);
   const planner = createTraderBackfillPlanner({
     database,
     jobs: store,
@@ -108,6 +124,14 @@ export function createAutomationRuntime(input: {
     onCompleted: ({ traderId, analysisId, completedAt }) =>
       enqueueTraderAbilityEvaluation(store, traderId, completedAt, completedAt, `wallet-analysis:${analysisId}`),
   });
+  const signalProjectionReconciler = createSignalProjectionReconciler({ database, jobs: store, now });
+  const signalProjectionWorker = createSignalProjectionWorker({
+    database,
+    repository: signalRepository,
+    threshold: input.config.signalThreshold,
+    minimumTotalBuyUsd: input.config.minimumAggregateBuyUsd,
+    now,
+  });
   const scheduler = createAutomationScheduler({
     enabled: input.config.enabled,
     enabledJobTypes: input.config.enabledJobTypes,
@@ -119,6 +143,7 @@ export function createAutomationRuntime(input: {
       lightweightWorker,
       initialWalletBackfillWorker,
       tokenMiningWorker,
+      signalProjectionWorker,
       ...(input.handlers ?? []),
     ],
     workerId: input.workerId,
@@ -134,6 +159,8 @@ export function createAutomationRuntime(input: {
     pollOnce(signal: AbortSignal) {
       planningGate.runIfDue((plannedAt) => {
         earlyTradeReconciler.runOnce();
+        reconcileMilestoneFacts();
+        signalProjectionReconciler.runOnce();
         const decision = queuePolicy.evaluate(store.metrics(plannedAt, 15 * 60_000));
         if (decision.admitHistorical) {
           planner.seed(plannedAt);
@@ -144,6 +171,7 @@ export function createAutomationRuntime(input: {
     },
     close() {
       walletAnalysis.close();
+      signalRepository.close();
       database.close();
     },
   });

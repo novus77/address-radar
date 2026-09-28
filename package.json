@@ -16,6 +16,7 @@
     "console": "tsx apps/console/src/cli.ts",
     "audit:candidate-history": "tsx scripts/audit-candidate-history.ts",
     "audit:data-closure": "tsx scripts/audit-data-closure.ts",
+    "reconcile:token-evidence": "tsx scripts/reconcile-token-evidence-pipeline.ts",
     "check:boundaries": "tsx scripts/check-boundaries.ts"
   },
   "dependencies": {

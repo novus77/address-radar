@@ -106,6 +106,24 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS automation_runtime_snapshots_time
       ON automation_runtime_snapshots(captured_at DESC);
+    CREATE TABLE IF NOT EXISTS signal_projection_requests (
+      token_id TEXT PRIMARY KEY,
+      chain TEXT NOT NULL,
+      token_address TEXT NOT NULL,
+      source_fingerprint TEXT NOT NULL,
+      desired_revision INTEGER NOT NULL,
+      applied_revision INTEGER NOT NULL DEFAULT 0,
+      requested_at INTEGER NOT NULL,
+      applied_at INTEGER,
+      last_error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS signal_projection_requests_pending
+      ON signal_projection_requests(desired_revision, applied_revision, requested_at);
+    CREATE TABLE IF NOT EXISTS signal_projection_scan_state (
+      scan_id TEXT PRIMARY KEY,
+      cursor TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS historical_token_partitions (
       partition_id TEXT PRIMARY KEY,
       chain TEXT NOT NULL CHECK(chain IN ('solana', 'bsc', 'eth', 'base', 'robinhood')),

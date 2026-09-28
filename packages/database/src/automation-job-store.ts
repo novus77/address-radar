@@ -77,6 +77,7 @@ export interface AutomationQueueSnapshot {
 export interface AutomationJobStore {
   enqueue(input: AutomationJobInput): { readonly inserted: boolean; readonly job: AutomationJob };
   activeCount(jobType: string): number;
+  runnableCount(jobType: string): number;
   job(jobId: string): AutomationJob | null;
   sourceBlock(jobId: string): AutomationJobSourceBlock | null;
   claim(lane: AutomationLane, now: number, leaseMs: number, owner: string, enabledJobTypes?: readonly string[]): AutomationJob | null;
@@ -198,6 +199,13 @@ export function createAutomationJobStore(
       `).get(jobType) as { count: number };
       return Number(row.count);
     },
+    runnableCount(jobType) {
+      const row = database.prepare(`
+        SELECT COUNT(*) AS count FROM automation_jobs
+        WHERE job_type = ? AND status IN ('pending', 'retryable', 'leased', 'running')
+      `).get(jobType) as { count: number };
+      return Number(row.count);
+    },
     job: readJob,
     sourceBlock(jobId) {
       const row = database.prepare("SELECT * FROM automation_job_blocks WHERE job_id = ?")
@@ -220,7 +228,7 @@ export function createAutomationJobStore(
         const candidateTypes = database.prepare(`
           SELECT j.job_type AS jobType
           FROM automation_jobs j
-          LEFT JOIN automation_job_type_state s ON s.job_type = j.job_type
+          LEFT JOIN automation_job_type_state s ON s.job_type = j.lane || ':' || j.job_type
           WHERE j.lane = ? AND j.status IN ('pending', 'retryable')
             ${qualifiedFilterSql}
             AND j.next_attempt_at <= ?
@@ -258,7 +266,7 @@ export function createAutomationJobStore(
           ON CONFLICT(job_type) DO UPDATE SET
             last_claimed_at = excluded.last_claimed_at,
             claim_count = automation_job_type_state.claim_count + 1
-        `).run(selectedType.jobType, now);
+        `).run(`${lane}:${selectedType.jobType}`, now);
         return readJob(row.job_id);
       });
     },
@@ -460,7 +468,16 @@ export function createAutomationJobStore(
       const eligible = new Set(available);
       if (eligible.size === 0) return null;
       return transaction(() => {
+        const totalEligibleWeight = LANE_ORDER
+          .filter((lane) => eligible.has(lane))
+          .reduce((total, lane) => total + LANE_WEIGHTS[lane], 0);
         for (const lane of LANE_ORDER) {
+          if (!eligible.has(lane)) {
+            database.prepare(`
+              UPDATE automation_lane_state SET credit = 0, updated_at = ? WHERE lane = ?
+            `).run(now, lane);
+            continue;
+          }
           database.prepare(`
             UPDATE automation_lane_state SET credit = credit + ?, updated_at = ? WHERE lane = ?
           `).run(LANE_WEIGHTS[lane], now, lane);
@@ -477,8 +494,8 @@ export function createAutomationJobStore(
           })[0] ?? null;
         if (!selected) return null;
         database.prepare(`
-          UPDATE automation_lane_state SET credit = credit - 100, updated_at = ? WHERE lane = ?
-        `).run(now, selected);
+          UPDATE automation_lane_state SET credit = credit - ?, updated_at = ? WHERE lane = ?
+        `).run(totalEligibleWeight, now, selected);
         return selected;
       });
     },

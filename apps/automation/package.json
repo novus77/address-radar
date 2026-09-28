@@ -21,6 +21,7 @@
     "@address-radar/database": "workspace:*",
     "@address-radar/domain": "workspace:*",
     "@address-radar/scoring": "workspace:*",
+    "@address-radar/signal-engine": "workspace:*",
     "@address-radar/wallet-analysis": "workspace:*"
   }
 }

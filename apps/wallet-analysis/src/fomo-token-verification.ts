@@ -61,9 +61,14 @@ export function createFomoHistoricalVerificationService(input: {
       const completedAt = result.completedAt;
       input.facts?.ensure(tokenId, "early_trades", "token-facts-v1", completedAt);
       const current = input.facts?.fact(tokenId, "early_trades") ?? null;
-      if ((result.eventIds?.length ?? 0) > 0 || result.observationCount > 0) {
+      const hasEvents = (result.eventIds?.length ?? 0) > 0 || result.observationCount > 0;
+      const conclusiveEmpty = !hasEvents
+        && inferredStatus(result) === "confirmed"
+        && result.historyAvailable !== false
+        && !result.errorCode;
+      if (hasEvents || conclusiveEmpty) {
         if (current?.status === "terminal_unavailable") input.facts?.transition({ tokenId, factType: "early_trades", status: "scheduled", reopenTerminal: true, terminalReason: null, nextAttemptAt: completedAt, strategyVersion: "token-facts-v1", updatedAt: completedAt });
-        input.facts?.transition({ tokenId, factType: "early_trades", status: "available", precision: "exact", primarySource: "fomo_lookup", coverageStartAt: null, coverageEndAt: result.beforeAt ?? completedAt, observedAt: completedAt, knownAt: completedAt, nextAttemptAt: null, terminalReason: null, strategyVersion: "token-facts-v1", updatedAt: completedAt });
+        input.facts?.transition({ tokenId, factType: "early_trades", status: "available", precision: "exact", primarySource: hasEvents ? "fomo_lookup" : "fomo_lookup_empty", coverageStartAt: null, coverageEndAt: result.beforeAt ?? completedAt, observedAt: completedAt, knownAt: completedAt, nextAttemptAt: null, terminalReason: null, strategyVersion: "token-facts-v1", updatedAt: completedAt });
         input.onFactUpdated?.(tokenId);
       } else if (current && current.status !== "available" && current.status !== "terminal_unavailable") {
         const nextAttemptAt = completedAt + retryDelayMs(current.attemptCount);

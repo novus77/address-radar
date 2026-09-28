@@ -42,6 +42,9 @@ importers:
       '@address-radar/scoring':
         specifier: workspace:*
         version: link:../../packages/scoring
+      '@address-radar/signal-engine':
+        specifier: workspace:*
+        version: link:../../packages/signal-engine
       '@address-radar/wallet-analysis':
         specifier: workspace:*
         version: link:../wallet-analysis

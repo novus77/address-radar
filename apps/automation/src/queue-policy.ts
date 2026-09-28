@@ -10,6 +10,7 @@ export interface QueueTypePolicy {
 export const DEFAULT_QUEUE_TYPE_POLICIES = Object.freeze<Readonly<Record<string, QueueTypePolicy>>>({
   candidate_evidence: Object.freeze({ highWaterMark: 2_000, concurrencyLimit: 2, retryBudget: 8, workload: "live" }),
   ability_evaluation: Object.freeze({ highWaterMark: 1_000, concurrencyLimit: 2, retryBudget: 6, workload: "live" }),
+  signal_projection: Object.freeze({ highWaterMark: 1_000, concurrencyLimit: 1, retryBudget: 6, workload: "live" }),
   trader_lightweight_evaluation: Object.freeze({ highWaterMark: 1_000, concurrencyLimit: 1, retryBudget: 5, workload: "live" }),
   initial_wallet_backfill: Object.freeze({ highWaterMark: 500, concurrencyLimit: 1, retryBudget: 6, workload: "historical" }),
   token_partition: Object.freeze({ highWaterMark: 500, concurrencyLimit: 1, retryBudget: 5, workload: "historical" }),

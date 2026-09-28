@@ -10,6 +10,7 @@
     { "path": "../../packages/domain" },
     { "path": "../../packages/database" },
     { "path": "../../packages/scoring" },
+    { "path": "../../packages/signal-engine" },
     { "path": "../wallet-analysis" }
   ],
   "include": ["src/**/*.ts"]

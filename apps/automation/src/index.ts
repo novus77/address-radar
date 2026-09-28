@@ -39,6 +39,16 @@ export { createTraderLightweightWorker } from "./trader-lightweight-worker.js";
 export { createProviderRouteRegistry } from "./provider-route-registry.js";
 export { initializeClosedLoopReconciliationSchema, reconcileClosedLoopV1 } from "./migrations/reconcile-closed-loop-v1.js";
 export type { ClosedLoopReconciliationSummary } from "./migrations/reconcile-closed-loop-v1.js";
+export {
+  reconcileTokenEvidencePipelineV1,
+  TOKEN_EVIDENCE_RECONCILIATION_REASON,
+} from "./migrations/reconcile-token-evidence-pipeline-v1.js";
+export type { TokenEvidencePipelineReconciliationSummary } from "./migrations/reconcile-token-evidence-pipeline-v1.js";
 export type { FactProviderRoute, ProviderCostClass, ProviderRouteContext, ProviderRouteRegistry } from "./provider-route-registry.js";
 export { createTokenFactOrchestrator } from "./token-fact-orchestrator.js";
+export {
+  createSignalProjectionReconciler,
+  createSignalProjectionWorker,
+  openSignalProjectionRepository,
+} from "./signal-projection-worker.js";
 export type { TokenFactPlanResult, TokenFactProviderResult, TokenFactRecoveryDispatcher, TokenFactRecoveryRequest } from "./token-fact-orchestrator.js";

@@ -50,6 +50,8 @@ describe("closed-loop operations", () => {
           expect.objectContaining({ stage: "token_discovery", completed: 1, completed15m: 1 }),
           expect.objectContaining({ stage: "market_history", completed: 1 }),
           expect.objectContaining({ stage: "milestone_confirmation", completed: 1 }),
+          expect.objectContaining({ stage: "early_trade_recovery", pending: 1, untracked: 1 }),
+          expect.objectContaining({ stage: "candidate_evidence", completed15m: 1 }),
         ]),
         outcomes: { total24h: 1, productive24h: 1, productiveRate24h: 1 },
         recoveryClosure: { total: 1, satisfied: 1, rate: 1 },

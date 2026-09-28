@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { FomoTokenLookupProducer, FomoTokenLookupResultConsumer } from "@address-radar/collectors";
-import { createCandidateHistoryStore, initializeCandidateHistorySchema } from "@address-radar/database";
+import { createCandidateHistoryStore, createTokenFactStore, initializeCandidateHistorySchema, migrateAddressRadarDatabase } from "@address-radar/database";
 import { createFomoHistoricalVerificationService } from "../src/fomo-token-verification.js";
 
 describe("FOMO historical verification", () => {
@@ -199,5 +199,48 @@ describe("FOMO historical verification", () => {
     await expect(service.runOnce()).resolves.toEqual({ processed: true, action: "result" });
     expect(database.prepare("SELECT status, last_error AS lastError FROM historical_token_verifications WHERE token_id = 'base:0xstarved'").get())
       .toEqual({ status: "deferred", lastError: "fomo_result_timeout" });
+  });
+
+  it("records a confirmed empty milestone lookup as an available fact", async () => {
+    database = new DatabaseSync(":memory:");
+    migrateAddressRadarDatabase(database);
+    directory = mkdtempSync(join(tmpdir(), "address-radar-fomo-verification-"));
+    const resultPath = join(directory, "results.jsonl");
+    writeFileSync(resultPath, `${JSON.stringify({
+      version: 2,
+      lookupId: "lookup-empty",
+      purpose: "milestone_backfill",
+      chainId: "bsc",
+      tokenAddress: "0xEmpty",
+      completedAt: 200,
+      beforeAt: 150,
+      holderCount: 0,
+      queriedTraderCount: 0,
+      observationCount: 0,
+      eventIds: [],
+      verificationStatus: "confirmed",
+      exactAddressMatch: true,
+      historyAvailable: true,
+      milestoneId: "milestone-empty",
+    })}\n`);
+    const facts = createTokenFactStore(database);
+    const onFactUpdated = vi.fn();
+    const service = createFomoHistoricalVerificationService({
+      database,
+      producer: new FomoTokenLookupProducer({ filePath: join(directory, "lookups.jsonl") }),
+      consumer: new FomoTokenLookupResultConsumer({ filePath: resultPath, cursorPath: join(directory, "cursor.json") }),
+      facts,
+      onFactUpdated,
+      now: () => 200,
+    });
+
+    await expect(service.runOnce()).resolves.toEqual({ processed: true, action: "result" });
+    expect(facts.fact("bsc:0xempty", "early_trades")).toMatchObject({
+      status: "available",
+      precision: "exact",
+      primarySource: "fomo_lookup_empty",
+      coverageEndAt: 150,
+    });
+    expect(onFactUpdated).toHaveBeenCalledWith("bsc:0xempty");
   });
 });

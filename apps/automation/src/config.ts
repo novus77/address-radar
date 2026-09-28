@@ -22,6 +22,8 @@ export interface AutomationConfig {
   readonly tokenMiningShare: number;
   readonly repairShare: number;
   readonly gatewayDeliveryEnabled: boolean;
+  readonly signalThreshold: number;
+  readonly minimumAggregateBuyUsd: number;
 }
 
 export const AUTOMATION_JOB_TYPES = Object.freeze([
@@ -30,6 +32,7 @@ export const AUTOMATION_JOB_TYPES = Object.freeze([
   "historical_token_partition",
   "candidate_evidence",
   "ability_evaluation",
+  "signal_projection",
 ] as const);
 
 export type AutomationJobType = typeof AUTOMATION_JOB_TYPES[number];
@@ -81,6 +84,8 @@ export function loadAutomationConfig(
     tokenMiningShare,
     repairShare,
     gatewayDeliveryEnabled: strictBoolean(env.ADDRESS_RADAR_GATEWAY_DELIVERY_ENABLED, false, "gateway delivery enabled"),
+    signalThreshold: ratio(env.ADDRESS_RADAR_SIGNAL_THRESHOLD, 0.7, "signal threshold"),
+    minimumAggregateBuyUsd: positiveNumber(env.ADDRESS_RADAR_MINIMUM_AGGREGATE_BUY_USD, 100, "minimum aggregate buy USD"),
   });
 }
 

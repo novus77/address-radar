@@ -16,6 +16,8 @@ export {
   withAddressRadarWriteTransaction,
 } from "./connection.js";
 export type { WriteTransactionOptions } from "./connection.js";
+export { createCandidateEvaluationRequestStore, initializeCandidateEvaluationRequestSchema } from "./candidate-evaluation-request-store.js";
+export type { CandidateEvaluationRequest } from "./candidate-evaluation-request-store.js";
 export { openAddressRadarRepository } from "./repository.js";
 export {
   drainResolvedWalletAutomationOutbox,

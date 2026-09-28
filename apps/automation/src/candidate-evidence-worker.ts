@@ -3,7 +3,9 @@ import type { DatabaseSync } from "node:sqlite";
 
 import {
   createCandidateHistoryStore,
+  createCandidateEvaluationRequestStore,
   createSqliteAddressRadarWritePort,
+  type CandidateEvaluationRequest,
   type AutomationJobStore,
 } from "@address-radar/database";
 import {
@@ -18,6 +20,7 @@ import type { CandidateSourceRecoveryPlanner } from "./candidate-source-recovery
 import { enqueueTraderAbilityEvaluation } from "./trader-ability-worker.js";
 
 const STRATEGY_VERSION = "candidate-evidence-v1";
+const REQUEST_STRATEGY_VERSION = "candidate-evidence-v2";
 const MINIMUM_CUMULATIVE_BUY_USD = 50;
 const DISPATCH_INTERVAL_MS = 5_000;
 const SOURCE_RETRY_MS = 60_000;
@@ -32,6 +35,8 @@ interface CandidateEvidencePayload {
   readonly tokenAddress?: string;
   readonly traderId?: string;
   readonly evaluatedAt?: number;
+  readonly requestKey?: string;
+  readonly targetRevision?: number;
 }
 
 interface HistoricalTokenRow {
@@ -256,6 +261,7 @@ function resolveToken(database: DatabaseSync, payload: CandidateEvidencePayload)
 }
 
 function enqueueTokenJob(input: {
+  readonly database: DatabaseSync;
   readonly jobs: AutomationJobStore;
   readonly tokenId?: string;
   readonly chain?: string;
@@ -266,25 +272,38 @@ function enqueueTokenJob(input: {
   readonly now: number;
 }): void {
   const subject = input.tokenId ?? `${input.chain}:${input.tokenAddress}`;
-  const idempotencyKey = `candidate-evidence:${input.sourceKey}:${STRATEGY_VERSION}`;
-  input.jobs.enqueue({
-    jobId: stableId("candidate-evidence", [idempotencyKey]),
+  const requests = createCandidateEvaluationRequestStore(input.database);
+  const request = requests.request(subject, REQUEST_STRATEGY_VERSION, input.sourceKey, input.evaluatedAt);
+  if (request.activeJobId || request.requestedRevision <= request.processedRevision) return;
+  enqueueRequestedRevision(input.jobs, requests, request, input.now);
+}
+
+function enqueueRequestedRevision(
+  jobs: AutomationJobStore,
+  requests: ReturnType<typeof createCandidateEvaluationRequestStore>,
+  request: CandidateEvaluationRequest,
+  now: number,
+): void {
+  const idempotencyKey = `candidate-evidence:${request.requestKey}:${request.requestedRevision}`;
+  const jobId = stableId("candidate-evidence", [idempotencyKey]);
+  jobs.enqueue({
+    jobId,
     idempotencyKey,
     lane: "trader_backfill",
     jobType: "candidate_evidence",
-    subjectKey: subject,
+    subjectKey: request.tokenId,
     priority: 82,
     cursor: null,
-    nextAttemptAt: input.now,
+    nextAttemptAt: now,
     payload: JSON.stringify({
-      tokenId: input.tokenId,
-      chain: input.chain,
-      tokenAddress: input.tokenAddress,
-      traderId: input.traderId,
-      evaluatedAt: input.evaluatedAt,
+      tokenId: request.tokenId,
+      evaluatedAt: request.requestedAt,
+      requestKey: request.requestKey,
+      targetRevision: request.requestedRevision,
     }),
-    createdAt: input.now,
+    createdAt: now,
   });
+  requests.bindJob(request.requestKey, jobId, request.requestedRevision, now);
 }
 
 async function dispatchChanges(input: {
@@ -316,7 +335,7 @@ async function dispatchChanges(input: {
     admissionDay,
     admissionTraderId: nextAdmissionTraderId,
   });
-  const activeJobs = input.jobs.activeCount("candidate_evidence");
+  const activeJobs = input.jobs.runnableCount("candidate_evidence");
   if (activeJobs >= 2_000) {
     return {
       status: "checkpoint",
@@ -348,6 +367,7 @@ async function dispatchChanges(input: {
   let eventId = cursor.eventId;
   for (const event of events) {
     enqueueTokenJob({
+      database: input.database,
       jobs: input.jobs,
       chain: event.chain,
       tokenAddress: event.tokenAddress,
@@ -383,6 +403,7 @@ async function dispatchChanges(input: {
   let milestoneRowId = cursor.milestoneRowId;
   for (const milestone of milestones) {
     enqueueTokenJob({
+      database: input.database,
       jobs: input.jobs,
       tokenId: milestone.tokenId,
       sourceKey: `milestone:${milestone.rowId}`,
@@ -663,6 +684,7 @@ export function createCandidateEvidenceWorker(input: {
   readonly now?: () => number;
 }): AutomationHandler {
   const now = input.now ?? Date.now;
+  const requests = createCandidateEvaluationRequestStore(input.database);
   return {
     jobType: "candidate_evidence",
     async execute(job) {
@@ -672,7 +694,7 @@ export function createCandidateEvidenceWorker(input: {
         if (!input.jobs) return { status: "terminal", diagnostic: "candidate evidence dispatcher requires a job store" };
         return dispatchChanges({ database: input.database, jobs: input.jobs, cursor: job.cursor, now: now() });
       }
-      return evaluateToken({
+      const result = await evaluateToken({
         database: input.database,
         ...(input.jobs ? { jobs: input.jobs } : {}),
         ...(input.recovery ? { recovery: input.recovery } : {}),
@@ -680,6 +702,11 @@ export function createCandidateEvidenceWorker(input: {
         evaluatedAt,
         decisionAt: now(),
       });
+      if (input.jobs && payload.requestKey && payload.targetRevision && (result.status === "completed" || result.status === "terminal")) {
+        const completed = requests.complete(payload.requestKey, job.jobId, payload.targetRevision, result.outcome?.status ?? result.status, now());
+        if (completed.needsFollowUp) enqueueRequestedRevision(input.jobs, requests, completed, now());
+      }
+      return result;
     },
   };
 }
