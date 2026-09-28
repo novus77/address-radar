@@ -150,7 +150,7 @@ export function createFomoHistoricalVerificationService(input: {
         UPDATE historical_token_verifications
         SET status = 'deferred', last_error = 'fomo_result_timeout',
           last_lookup_id = NULL, queued_at = NULL, updated_at = ?
-        WHERE status = 'queued' AND next_retry_at <= ?
+        WHERE status = 'queued' AND (last_lookup_id IS NULL OR next_retry_at <= ?)
       `).run(timestamp, timestamp));
 
       const lease = await input.consumer.next();
@@ -160,7 +160,7 @@ export function createFomoHistoricalVerificationService(input: {
         return Object.freeze({ processed: true, action: "result" as const });
       }
 
-      const active = input.database.prepare("SELECT COUNT(*) AS count FROM historical_token_verifications WHERE status = 'queued' AND next_retry_at > ?").get(timestamp) as { count: number };
+      const active = input.database.prepare("SELECT COUNT(*) AS count FROM historical_token_verifications WHERE status = 'queued' AND last_lookup_id IS NOT NULL AND next_retry_at > ?").get(timestamp) as { count: number };
       if (Number(active.count) >= maximumActiveLookups) return Object.freeze({ processed: false, action: "idle" as const });
       const row = input.database.prepare(`
         SELECT h.token_id AS tokenId, h.chain, h.token_address AS tokenAddress, v.attempt_count AS attemptCount

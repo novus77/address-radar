@@ -69,7 +69,7 @@ describe("FOMO historical verification", () => {
       sourceQueryId: null,
       provenance: {},
     });
-    database.prepare("UPDATE historical_token_verifications SET status = 'queued', next_retry_at = 10000 WHERE token_id = 'base:0xactive'").run();
+    database.prepare("UPDATE historical_token_verifications SET status = 'queued', last_lookup_id = 'lookup-active', queued_at = 1, next_retry_at = 10000 WHERE token_id = 'base:0xactive'").run();
     directory = mkdtempSync(join(tmpdir(), "address-radar-fomo-verification-"));
     const producer = new FomoTokenLookupProducer({ filePath: join(directory, "lookups.jsonl") });
     const enqueue = vi.spyOn(producer, "enqueue");
@@ -117,7 +117,7 @@ describe("FOMO historical verification", () => {
     expect(database.prepare("SELECT next_retry_at AS nextRetryAt FROM historical_token_verifications WHERE token_id = 'base:0xretry'").get()).toEqual({ nextRetryAt: timestamp + 2 * 60 * 60_000 });
   });
 
-  it("recovers expired queued lookups and persists the active lookup identity", async () => {
+  it("recovers expired and orphaned queued lookups and persists the active lookup identity", async () => {
     database = new DatabaseSync(":memory:");
     initializeCandidateHistorySchema(database);
     const store = createCandidateHistoryStore(database);
@@ -135,6 +135,7 @@ describe("FOMO historical verification", () => {
       provenance: {},
     });
     database.prepare("UPDATE historical_token_verifications SET status = 'queued', next_retry_at = 50, updated_at = 10").run();
+    database.prepare("UPDATE historical_token_verifications SET next_retry_at = 10000 WHERE token_id = 'base:0xold-b'").run();
     directory = mkdtempSync(join(tmpdir(), "address-radar-fomo-verification-"));
     const service = createFomoHistoricalVerificationService({
       database,
