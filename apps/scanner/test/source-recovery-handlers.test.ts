@@ -149,4 +149,27 @@ describe("source recovery handlers", () => {
     expect(jobs.job(automationJob.jobId)).toMatchObject({ status: "pending" });
     database.close();
   });
+
+  it("resolves stale source blocks after a candidate job has already been requeued", () => {
+    const database = new DatabaseSync(":memory:");
+    migrateAddressRadarDatabase(database);
+    initializeCandidateHistorySchema(database);
+    const ledger = createSourceLedgerStore(database);
+    const jobs = createAutomationJobStore(database);
+    jobs.enqueue(automationJob);
+    jobs.claim("trader_backfill", 1, 100, "worker");
+    jobs.waitForSource(automationJob.jobId, "worker", {
+      diagnostic: "missing",
+      reasonCode: "missing_market_history",
+      context: { tokenId: "base:0xabc" },
+      recoveryJobIds: [],
+      retryAt: 100,
+      updatedAt: 2,
+    });
+    database.prepare("UPDATE automation_jobs SET status = 'pending' WHERE job_id = ?").run(automationJob.jobId);
+
+    expect(reconcileCandidateSourceRecovery({ database, ledger, now: () => NOW })).toEqual({ resolvedBlocks: 1, enqueued: 0 });
+    expect(jobs.sourceBlock(automationJob.jobId)).toMatchObject({ resolvedAt: NOW });
+    database.close();
+  });
 });

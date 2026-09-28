@@ -316,7 +316,7 @@ export function reconcileCandidateSourceRecovery(input: { readonly database: Dat
     UPDATE automation_job_blocks
     SET resolved_at = COALESCE((SELECT completed_at FROM automation_jobs WHERE automation_jobs.job_id = automation_job_blocks.job_id), ?), updated_at = ?
     WHERE resolved_at IS NULL AND job_id IN (
-      SELECT job_id FROM automation_jobs WHERE status IN ('completed', 'terminal', 'cancelled')
+      SELECT job_id FROM automation_jobs WHERE status NOT IN ('blocked_source', 'waiting_source')
     )
   `).run(updatedAt, updatedAt);
   const rows = input.database.prepare(`

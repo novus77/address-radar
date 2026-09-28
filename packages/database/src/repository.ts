@@ -992,6 +992,17 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         `).get();
         if (automationJobsAvailable) {
           database.prepare(`
+            UPDATE automation_job_blocks
+            SET resolved_at = COALESCE(resolved_at, ?), updated_at = ?
+            WHERE resolved_at IS NULL
+              AND job_id IN (
+                SELECT job_id
+                FROM automation_jobs
+                WHERE job_type = 'candidate_evidence' AND subject_key = ?
+                  AND status IN ('blocked_source', 'waiting_source')
+              )
+          `).run(observation.observedAt, observation.observedAt, `${chain}:${tokenAddress}`);
+          database.prepare(`
             UPDATE automation_jobs
             SET status = 'pending', next_attempt_at = ?, last_error = NULL, updated_at = ?
             WHERE job_type = 'candidate_evidence' AND subject_key = ?
