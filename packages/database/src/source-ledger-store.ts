@@ -364,6 +364,7 @@ export function createSourceLedgerStore(database: DatabaseSync): SourceLedgerSto
 
   const store: SourceLedgerStore = {
     saveObservation(observation) {
+      return transaction(() => {
       const contentFingerprint = semanticSourceObservationFingerprint(observation);
       const existing = database.prepare("SELECT * FROM source_observations WHERE observation_id = ?")
         .get(observation.observationId) as Record<string, unknown> | undefined;
@@ -420,6 +421,7 @@ export function createSourceLedgerStore(database: DatabaseSync): SourceLedgerSto
         stableJson(observation.provenance), contentFingerprint, SOURCE_OBSERVATION_FINGERPRINT_VERSION,
       );
       return Object.freeze({ status: "inserted" });
+      });
     },
     observation(observationId) {
       const row = database.prepare("SELECT * FROM source_observations WHERE observation_id = ?").get(observationId) as Record<string, unknown> | undefined;
@@ -440,7 +442,7 @@ export function createSourceLedgerStore(database: DatabaseSync): SourceLedgerSto
       return row ? Object.freeze({ source: row.source as SourceId, chain: row.chain as DiscoveryChain, cursor: String(row.cursor), position: Number(row.position), updatedAt: Number(row.updated_at) }) : null;
     },
     saveSourceHealth(health) {
-      database.prepare(`
+      transaction(() => database.prepare(`
         INSERT INTO source_health(
           source, chain, state, last_attempt_at, last_success_at, last_event_at,
           consecutive_failures, latency_ms, rate_limit_reset_at, cursor, last_error_code
@@ -453,7 +455,7 @@ export function createSourceLedgerStore(database: DatabaseSync): SourceLedgerSto
           last_error_code = excluded.last_error_code
       `).run(health.source, health.chain, health.state, health.lastAttemptAt, health.lastSuccessAt,
         health.lastEventAt, health.consecutiveFailures, health.latencyMs, health.rateLimitResetAt,
-        health.cursor, health.lastErrorCode);
+        health.cursor, health.lastErrorCode));
     },
     sourceHealth(source, chain) {
       const row = database.prepare("SELECT * FROM source_health WHERE source = ? AND chain = ?").get(source, chain) as Record<string, unknown> | undefined;

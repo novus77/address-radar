@@ -392,14 +392,14 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
       assertTimestamp(input.firstSeenAt, "firstSeenAt");
       assertTimestamp(input.lastSeenAt, "lastSeenAt");
       if (input.lastSeenAt < input.firstSeenAt) throw new Error("lastSeenAt must not precede firstSeenAt");
-      database.prepare(`
+      transaction(() => database.prepare(`
         INSERT INTO fomo_accounts(account_id, handle, first_seen_at, last_seen_at)
         VALUES (?, ?, ?, ?)
         ON CONFLICT(account_id) DO UPDATE SET
           handle = excluded.handle,
           first_seen_at = MIN(fomo_accounts.first_seen_at, excluded.first_seen_at),
           last_seen_at = MAX(fomo_accounts.last_seen_at, excluded.last_seen_at)
-      `).run(input.accountId, handle, input.firstSeenAt, input.lastSeenAt);
+      `).run(input.accountId, handle, input.firstSeenAt, input.lastSeenAt));
     },
 
     attachWallet(input) {
@@ -1494,7 +1494,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
 
     completeEventProjection(input) {
       assertTimestamp(input.completedAt, "completedAt");
-      const result = database.prepare(`
+      const result = transaction(() => database.prepare(`
         UPDATE event_projections
         SET status = 'completed', result_key = ?, completed_at = ?, updated_at = ?,
           lease_owner = NULL, lease_expires_at = NULL, last_error = NULL
@@ -1508,14 +1508,14 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         input.projectionType,
         input.sourceRevision,
         input.owner,
-      );
+      ));
       return result.changes === 1;
     },
 
     failEventProjection(input) {
       assertTimestamp(input.failedAt, "failedAt");
       assertTimestamp(input.nextAttemptAt, "nextAttemptAt");
-      const result = database.prepare(`
+      const result = transaction(() => database.prepare(`
         UPDATE event_projections
         SET status = 'retryable', next_attempt_at = ?, updated_at = ?, last_error = ?,
           lease_owner = NULL, lease_expires_at = NULL
@@ -1529,7 +1529,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         input.projectionType,
         input.sourceRevision,
         input.owner,
-      );
+      ));
       return result.changes === 1;
     },
 

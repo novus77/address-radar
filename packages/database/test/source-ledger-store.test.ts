@@ -1,6 +1,8 @@
+import { once } from "node:events";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 
 import { createSourceObservation } from "@address-radar/domain";
 import { describe, expect, it } from "vitest";
@@ -27,6 +29,36 @@ const observation = (payload: unknown = { tokenAddress: "0xabc" }) => createSour
 });
 
 describe("source ledger store", () => {
+  it("retries an observation write while another process holds the writer lock", async () => {
+    const path = databasePath();
+    const setup = openAddressRadarDatabase(path);
+    migrateAddressRadarDatabase(setup);
+    setup.close();
+
+    const lockHolder = new Worker(`
+      const { DatabaseSync } = require("node:sqlite");
+      const { parentPort, workerData } = require("node:worker_threads");
+      const database = new DatabaseSync(workerData);
+      database.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 1; BEGIN IMMEDIATE");
+      parentPort.postMessage("locked");
+      setTimeout(() => {
+        database.exec("COMMIT");
+        database.close();
+        parentPort.postMessage("released");
+      }, 120);
+    `, { eval: true, workerData: path });
+    await once(lockHolder, "message");
+
+    const database = openAddressRadarDatabase(path);
+    database.exec("PRAGMA busy_timeout = 1");
+    const store = createSourceLedgerStore(database);
+    expect(store.saveObservation(observation())).toEqual({ status: "inserted" });
+    expect(store.observation(observation().observationId)).not.toBeNull();
+
+    database.close();
+    await once(lockHolder, "exit");
+  });
+
   it("persists observations idempotently and records conflicting content", () => {
     const database = openAddressRadarDatabase(databasePath());
     migrateAddressRadarDatabase(database);
