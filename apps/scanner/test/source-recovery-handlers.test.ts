@@ -241,4 +241,30 @@ describe("source recovery handlers", () => {
     expect(jobs.sourceBlock(automationJob.jobId)).toMatchObject({ resolvedAt: NOW });
     database.close();
   });
+
+  it("reopens historical coverage dead letters when a blocked candidate still needs them", () => {
+    const database = new DatabaseSync(":memory:");
+    migrateAddressRadarDatabase(database);
+    initializeCandidateHistorySchema(database);
+    const ledger = createSourceLedgerStore(database);
+    const jobs = createAutomationJobStore(database);
+    jobs.enqueue(automationJob);
+    jobs.claim("trader_backfill", 1, 100, "worker");
+    jobs.waitForSource(automationJob.jobId, "worker", {
+      diagnostic: "missing",
+      reasonCode: "missing_market_history",
+      context: { tokenId: "base:0xabc" },
+      recoveryJobIds: ["recovery:market_history:base:0xabc"],
+      retryAt: 100,
+      updatedAt: 2,
+    });
+    ledger.enqueueRecoveryJob({ jobId: "recovery:market_history:base:0xabc", jobType: "market_history", chain: "base", subjectKey: "base:0xabc", priority: 25, cursor: null, nextAttemptAt: 0, createdAt: 1 });
+    ledger.claimRecoveryJob(1, 100);
+    ledger.failRecoveryJob("recovery:market_history:base:0xabc", "historical_market_coverage_unavailable", 2, true);
+
+    reconcileCandidateSourceRecovery({ database, ledger, now: () => NOW });
+
+    expect(ledger.recoveryJob("recovery:market_history:base:0xabc")).toMatchObject({ status: "pending", attemptCount: 0, lastError: null, nextAttemptAt: NOW });
+    database.close();
+  });
 });

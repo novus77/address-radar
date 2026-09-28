@@ -369,6 +369,21 @@ export function reconcileCandidateSourceRecovery(input: { readonly database: Dat
       SELECT job_id FROM automation_jobs WHERE status NOT IN ('blocked_source', 'waiting_source')
     )
   `).run(updatedAt, updatedAt);
+  input.database.prepare(`
+    UPDATE recovery_jobs
+    SET status = 'pending', attempt_count = 0, next_attempt_at = ?, lease_expires_at = NULL,
+      last_error = NULL, updated_at = ?, completed_at = NULL
+    WHERE job_type = 'market_history' AND status = 'dead_letter'
+      AND last_error IN ('historical_market_coverage_unavailable', 'historical_market_pool_unavailable')
+      AND EXISTS (
+        SELECT 1
+        FROM automation_jobs jobs
+        JOIN automation_job_blocks blocks ON blocks.job_id = jobs.job_id
+        WHERE jobs.job_type = 'candidate_evidence' AND jobs.status = 'blocked_source'
+          AND jobs.subject_key = recovery_jobs.subject_key
+          AND blocks.resolved_at IS NULL AND blocks.reason_code = 'missing_market_history'
+      )
+  `).run(updatedAt, updatedAt);
   const rows = input.database.prepare(`
     SELECT DISTINCT jobs.subject_key AS tokenId,
       substr(jobs.subject_key, 1, instr(jobs.subject_key, ':') - 1) AS chain
