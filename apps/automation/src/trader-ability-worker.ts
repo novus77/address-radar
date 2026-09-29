@@ -12,6 +12,8 @@ const STRATEGY_VERSION = "trader-ability-v3-repeatable";
 const DAY_MS = 24 * 60 * 60_000;
 const WINDOWS = Object.freeze(["24h", "7d", "30d"] as const);
 const DISPATCH_BATCH_SIZE = 100;
+const ACTIVE_JOB_HIGH_WATER_MARK = 1_000;
+const BACKPRESSURE_DELAY_MS = 5 * 60_000;
 
 interface AbilityPayload {
   readonly mode?: "dispatch";
@@ -227,6 +229,15 @@ async function dispatch(input: {
   readonly cursor: string | null;
   readonly now: number;
 }): Promise<AutomationExecutionResult> {
+  const activeWorkerJobs = Math.max(0, input.jobs.activeCount("ability_evaluation") - 1);
+  if (activeWorkerJobs >= ACTIVE_JOB_HIGH_WATER_MARK) {
+    return {
+      status: "checkpoint",
+      cursor: input.cursor,
+      retryAt: input.now + BACKPRESSURE_DELAY_MS,
+      diagnostic: `ability dispatch paused at ${activeWorkerJobs} active jobs`,
+    };
+  }
   const day = Math.floor(input.now / DAY_MS);
   let cursorDay = -1;
   let lastTraderId = "";
@@ -236,6 +247,10 @@ async function dispatch(input: {
     lastTraderId = typeof parsed.lastTraderId === "string" ? parsed.lastTraderId : "";
   } catch { /* restart the current daily scan */ }
   if (cursorDay !== day) lastTraderId = "";
+  const availableCapacity = Math.min(
+    DISPATCH_BATCH_SIZE,
+    ACTIVE_JOB_HIGH_WATER_MARK - activeWorkerJobs,
+  );
   const rows = input.database.prepare(`
     SELECT entity_id AS traderId
     FROM trader_entities
@@ -245,7 +260,7 @@ async function dispatch(input: {
     )
     ORDER BY entity_id
     LIMIT ?
-  `).all(lastTraderId, DISPATCH_BATCH_SIZE) as unknown as Array<{ traderId: string }>;
+  `).all(lastTraderId, availableCapacity) as unknown as Array<{ traderId: string }>;
   for (const row of rows) enqueueTraderAbilityEvaluation(input.jobs, row.traderId, input.now, input.now, `daily:${day}`);
   const exhausted = rows.length < DISPATCH_BATCH_SIZE;
   return {
@@ -263,6 +278,7 @@ export function enqueueTraderAbilityEvaluation(
   now: number,
   sourceKey: string,
 ): void {
+  if (jobs.activeJobForSubject("ability_evaluation", traderId)) return;
   const idempotencyKey = `ability-evaluation:${traderId}:${sourceKey}:${STRATEGY_VERSION}`;
   jobs.enqueue({
     jobId: stableId("ability-evaluation", [idempotencyKey]),
@@ -279,6 +295,7 @@ export function enqueueTraderAbilityEvaluation(
 }
 
 export function enqueueTraderAbilityDispatcher(jobs: AutomationJobStore, now: number): void {
+  jobs.cancelRedundantActiveJobs("ability_evaluation", "trader-ability-dispatcher", now);
   jobs.enqueue({
     jobId: "trader-ability-dispatcher-v1",
     idempotencyKey: "trader-ability-dispatcher-v1",
@@ -308,7 +325,11 @@ export function createTraderAbilityWorker(input: {
         return dispatch({ database: input.database, jobs: input.jobs, cursor: job.cursor, now: now() });
       }
       if (!payload.traderId) return { status: "terminal", diagnostic: "ability job requires traderId" };
-      return evaluateTrader({ database: input.database, traderId: payload.traderId, evaluatedAt: payload.evaluatedAt ?? now() });
+      return evaluateTrader({
+        database: input.database,
+        traderId: payload.traderId,
+        evaluatedAt: Math.max(payload.evaluatedAt ?? 0, now()),
+      });
     },
   };
 }

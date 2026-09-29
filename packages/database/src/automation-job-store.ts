@@ -77,6 +77,8 @@ export interface AutomationQueueSnapshot {
 export interface AutomationJobStore {
   enqueue(input: AutomationJobInput): { readonly inserted: boolean; readonly job: AutomationJob };
   activeCount(jobType: string): number;
+  activeJobForSubject(jobType: string, subjectKey: string): AutomationJob | null;
+  cancelRedundantActiveJobs(jobType: string, excludedSubjectKey: string, updatedAt: number): number;
   runnableCount(jobType: string): number;
   job(jobId: string): AutomationJob | null;
   sourceBlock(jobId: string): AutomationJobSourceBlock | null;
@@ -198,6 +200,51 @@ export function createAutomationJobStore(
         )
       `).get(jobType) as { count: number };
       return Number(row.count);
+    },
+    activeJobForSubject(jobType, subjectKey) {
+      const row = database.prepare(`
+        SELECT * FROM automation_jobs
+        WHERE job_type = ? AND subject_key = ? AND status IN (
+          'pending', 'leased', 'running', 'waiting_source', 'blocked_source', 'retryable'
+        )
+        ORDER BY CASE status
+          WHEN 'running' THEN 0
+          WHEN 'leased' THEN 1
+          WHEN 'pending' THEN 2
+          WHEN 'retryable' THEN 3
+          WHEN 'waiting_source' THEN 4
+          ELSE 5
+        END, updated_at DESC, created_at DESC
+        LIMIT 1
+      `).get(jobType, subjectKey) as Record<string, unknown> | undefined;
+      return row ? toJob(row) : null;
+    },
+    cancelRedundantActiveJobs(jobType, excludedSubjectKey, updatedAt) {
+      return transaction(() => {
+        const result = database.prepare(`
+          WITH ranked AS (
+            SELECT job_id,
+              ROW_NUMBER() OVER (
+                PARTITION BY subject_key
+                ORDER BY CASE status
+                  WHEN 'running' THEN 0
+                  WHEN 'leased' THEN 1
+                  ELSE 2
+                END, created_at DESC, job_id DESC
+              ) AS position
+            FROM automation_jobs
+            WHERE job_type = ? AND subject_key != ? AND status IN (
+              'pending', 'leased', 'running', 'waiting_source', 'blocked_source', 'retryable'
+            )
+          )
+          UPDATE automation_jobs
+          SET status = 'cancelled', last_error = 'superseded_active_job',
+            lease_expires_at = NULL, lease_owner = NULL, updated_at = ?, completed_at = ?
+          WHERE job_id IN (SELECT job_id FROM ranked WHERE position > 1)
+            AND status IN ('pending', 'waiting_source', 'blocked_source', 'retryable')
+        `).run(jobType, excludedSubjectKey, updatedAt, updatedAt);
+        return Number(result.changes);
+      });
     },
     runnableCount(jobType) {
       const row = database.prepare(`

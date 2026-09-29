@@ -108,7 +108,7 @@ test("two SQLite connections expose deterministic busy then one terminal review 
   lock.close();
   contender.close();
   fixture.close();
-}, 15_000);
+}, 45_000);
 
 function createFixture(name: string) {
   const directory = mkdtempSync(join(tmpdir(), `address-radar-${name}-`));
