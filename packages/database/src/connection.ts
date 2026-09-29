@@ -4,6 +4,7 @@ const configuredBusyTimeout = Number(process.env.ADDRESS_RADAR_BUSY_TIMEOUT_MS ?
 export const ADDRESS_RADAR_BUSY_TIMEOUT_MS = Number.isSafeInteger(configuredBusyTimeout) && configuredBusyTimeout > 0
   ? configuredBusyTimeout
   : 5_000;
+export const ADDRESS_RADAR_WRITE_RETRY_DURATION_MS = Math.max(30_000, ADDRESS_RADAR_BUSY_TIMEOUT_MS * 3);
 
 export interface WriteTransactionOptions {
   readonly maximumAttempts?: number;
@@ -41,7 +42,7 @@ export function withAddressRadarWriteTransaction<T>(
   const maximumAttempts = options.maximumAttempts ?? 8;
   const baseDelayMs = options.baseDelayMs ?? 10;
   const maximumDelayMs = options.maximumDelayMs ?? 500;
-  const maximumRetryDurationMs = options.maximumRetryDurationMs ?? 2_000;
+  const maximumRetryDurationMs = options.maximumRetryDurationMs ?? ADDRESS_RADAR_WRITE_RETRY_DURATION_MS;
   if (!Number.isSafeInteger(maximumAttempts) || maximumAttempts < 1) {
     throw new Error("maximumAttempts must be a positive safe integer");
   }

@@ -11,6 +11,7 @@ export type {
 } from "./automation-job-store.js";
 export {
   ADDRESS_RADAR_BUSY_TIMEOUT_MS,
+  ADDRESS_RADAR_WRITE_RETRY_DURATION_MS,
   configureAddressRadarDatabase,
   openAddressRadarDatabase,
   withAddressRadarWriteTransaction,
