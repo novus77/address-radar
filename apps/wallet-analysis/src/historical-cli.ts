@@ -15,6 +15,7 @@ import type { EarlyTradeProvider } from "./gecko-early-trade-provider.js";
 import { createBlockscoutEarlyTradeProvider, createFallbackEarlyTradeProvider, createSolanaPoolEarlyTradeProvider } from "./indexed-early-trade-providers.js";
 import { createConfiguredAnalysisRpcClient } from "./rpc.js";
 import { createHistoricalProviderRouter } from "./historical-provider-router.js";
+import { createLocalMilestoneProvider } from "./local-milestone-provider.js";
 
 const config = loadHistoricalBackfillConfig(process.env);
 const repository = openAddressRadarRepository(config.databasePath);
@@ -35,6 +36,10 @@ const client = config.duneFallbackEnabled && config.apiKey ? createDuneDataApiCl
 const geckoClient = createGeckoTerminalClient({ baseUrl: config.geckoTerminal.baseUrl, timeoutMs: config.geckoTerminal.timeoutMs, minimumRequestIntervalMs: config.geckoTerminal.minimumRequestIntervalMs });
 const milestoneRouter = createHistoricalProviderRouter({
   primary: {
+    id: "local_market_snapshot",
+    provider: createLocalMilestoneProvider({ database }),
+  },
+  fallback: {
     id: "gecko_terminal",
     provider: createGeckoMilestoneProvider({ client: geckoClient, maxPages: config.geckoTerminal.maxPages }),
   },

@@ -6,8 +6,8 @@ export interface ReconstructedMilestone {
   thresholdUsd: number;
   crossedAt: number;
   estimatedMarketCapUsd: number;
-  source: "gecko_terminal_ohlcv";
-  precision: "estimated_market_cap";
+  source: "gecko_terminal_ohlcv" | "local_market_snapshot";
+  precision: "estimated_market_cap" | "observed_market_cap";
 }
 
 export interface MilestoneReconstructionResult {

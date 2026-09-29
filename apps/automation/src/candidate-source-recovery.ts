@@ -16,9 +16,12 @@ const recoveryTypes = (reason: CandidateSourceBlockReason, chain: string) => {
   if (reason === "missing_early_trades") return [{ jobType: "milestone_early_buyers" as const, priority: 35 }];
   if (reason === "missing_wallet_mapping") return [];
   if (reason === "missing_market_history") {
-    return chain.toLowerCase() === "robinhood"
-      ? [{ jobType: "fomo_token_history" as const, priority: 25 }]
-      : [{ jobType: "market_history" as const, priority: 25 }];
+    return [
+      { jobType: "market_enrichment" as const, priority: 20 },
+      chain.toLowerCase() === "robinhood"
+        ? { jobType: "fomo_token_history" as const, priority: 25 }
+        : { jobType: "market_history" as const, priority: 25 },
+    ];
   }
   if (reason === "missing_milestone" || reason === "insufficient_coverage") {
     return [

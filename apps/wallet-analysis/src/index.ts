@@ -8,6 +8,7 @@ export type {
 export { createHistoricalBackfillScheduler, runHistoricalBackfillCycle } from "./historical-backfill.js";
 export { createDuneHistoricalBackfillWorker } from "./dune-historical-worker.js";
 export { createGeckoMilestoneProvider, DEFAULT_MARKET_CAP_THRESHOLDS_USD } from "./gecko-milestone-provider.js";
+export { createLocalMilestoneProvider } from "./local-milestone-provider.js";
 export { createGeckoEarlyTradeProvider } from "./gecko-early-trade-provider.js";
 export type { EarlyTradeProvider, EarlyTradeRecoveryResult } from "./gecko-early-trade-provider.js";
 export { createBlockscoutEarlyTradeProvider, createFallbackEarlyTradeProvider, createSolanaPoolEarlyTradeProvider } from "./indexed-early-trade-providers.js";

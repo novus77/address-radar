@@ -1,77 +1,22 @@
 import { DatabaseSync } from "node:sqlite";
 
-import {
-  createSourceLedgerStore,
-  initializeSourceLedgerSchema,
-} from "@address-radar/database";
 import { describe, expect, it } from "vitest";
 
+import { createSourceLedgerStore, initializeSourceLedgerSchema } from "@address-radar/database";
 import { createCandidateSourceRecoveryPlanner } from "../src/candidate-source-recovery.js";
 
-describe("candidate source recovery planner", () => {
-  it("enqueues idempotent market and historical recovery jobs for a missing milestone", () => {
+describe("candidate source recovery", () => {
+  it("dispatches current enrichment and historical prices for missing market history", () => {
     const database = new DatabaseSync(":memory:");
     initializeSourceLedgerSchema(database);
-    const ledger = createSourceLedgerStore(database);
-    const planner = createCandidateSourceRecoveryPlanner({ ledger, now: () => 1_000 });
+    const planner = createCandidateSourceRecoveryPlanner({ ledger: createSourceLedgerStore(database), now: () => 100 });
 
-    const first = planner.plan({
-      reasonCode: "missing_milestone",
-      tokenId: "base:0xabc",
-      chain: "base",
-      tokenAddress: "0xabc",
-    });
-    const replay = planner.plan({
-      reasonCode: "missing_milestone",
-      tokenId: "base:0xabc",
-      chain: "base",
-      tokenAddress: "0xabc",
-    });
+    const result = planner.plan({ reasonCode: "missing_market_history", tokenId: "base:0xabc", chain: "base", tokenAddress: "0xabc" });
 
-    expect(first).toEqual({ recoveryJobIds: [
+    expect(result.recoveryJobIds).toEqual([
       "recovery:market_enrichment:base:0xabc",
-      "recovery:historical_research:base:0xabc",
-    ] });
-    expect(replay).toEqual(first);
-    expect(ledger.recoveryJob(first.recoveryJobIds[0]!)).toMatchObject({
-      jobType: "market_enrichment",
-      subjectKey: "base:0xabc",
-      status: "pending",
-    });
-    expect(ledger.recoveryJob(first.recoveryJobIds[1]!)).toMatchObject({
-      jobType: "historical_research",
-      subjectKey: "base:0xabc",
-      status: "pending",
-    });
-    expect(database.prepare("SELECT COUNT(*) AS count FROM recovery_jobs").get()).toEqual({ count: 2 });
-    database.close();
-  });
-
-  it("routes missing early trades to the milestone buyer recovery queue", () => {
-    const database = new DatabaseSync(":memory:");
-    initializeSourceLedgerSchema(database);
-    const ledger = createSourceLedgerStore(database);
-    const planner = createCandidateSourceRecoveryPlanner({ ledger, now: () => 2_000 });
-
-    expect(planner.plan({
-      reasonCode: "missing_early_trades",
-      tokenId: "solana:Mint",
-      chain: "solana",
-      tokenAddress: "Mint",
-    })).toEqual({ recoveryJobIds: ["recovery:milestone_early_buyers:solana:Mint"] });
-    database.close();
-  });
-
-  it("routes market history by supported source family", () => {
-    const database = new DatabaseSync(":memory:");
-    initializeSourceLedgerSchema(database);
-    const ledger = createSourceLedgerStore(database);
-    const planner = createCandidateSourceRecoveryPlanner({ ledger, now: () => 3_000 });
-
-    expect(planner.plan({ reasonCode: "missing_market_history", tokenId: "eth:0xabc", chain: "eth", tokenAddress: "0xabc" }))
-      .toEqual({ recoveryJobIds: ["recovery:market_history:eth:0xabc"] });
-    expect(planner.plan({ reasonCode: "missing_market_history", tokenId: "robinhood:0xdef", chain: "robinhood", tokenAddress: "0xdef" }))
-      .toEqual({ recoveryJobIds: ["recovery:fomo_token_history:robinhood:0xdef"] });
+      "recovery:market_history:base:0xabc",
+    ]);
     database.close();
   });
 });

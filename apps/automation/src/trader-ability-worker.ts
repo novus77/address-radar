@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
-import type { AutomationJobStore } from "@address-radar/database";
+import { withAddressRadarWriteTransaction, type AutomationJobStore } from "@address-radar/database";
 import type { RepeatableTraderAbilityStage, RepeatableTraderAbilityWindow } from "@address-radar/domain";
 import { evaluateRepeatableTraderAbility } from "@address-radar/wallet-analysis";
 
@@ -44,6 +44,12 @@ interface WalletPositionPayload {
   readonly remainingValueUsd: number;
 }
 
+interface BundleRiskCache {
+  day: number;
+  fingerprint: string;
+  result: ReturnType<typeof detectRepeatedBundleRisk> | null;
+}
+
 function stableId(prefix: string, parts: readonly unknown[]): string {
   return `${prefix}-${createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 32)}`;
 }
@@ -63,14 +69,24 @@ function previousStage(database: DatabaseSync, traderId: string): RepeatableTrad
   return row?.abilityStage ?? null;
 }
 
-function bundleRisk(database: DatabaseSync, evaluatedAt: number) {
+function bundleRisk(database: DatabaseSync, evaluatedAt: number, cache: BundleRiskCache) {
+  const day = Math.floor(evaluatedAt / DAY_MS);
+  const windowStart = (day - 30) * DAY_MS;
+  const windowEnd = (day + 1) * DAY_MS - 1;
+  const state = database.prepare(`
+    SELECT COUNT(*) AS count, COALESCE(MAX(updated_at), 0) AS latest
+    FROM canonical_trader_events
+    WHERE side = 'buy' AND occurred_at >= ? AND occurred_at <= ?
+  `).get(windowStart, windowEnd) as { count: number; latest: number };
+  const fingerprint = `${day}:${state.count}:${state.latest}`;
+  if (cache.fingerprint === fingerprint && cache.result) return cache.result;
   const trades = database.prepare(`
     SELECT canonical_event_id AS eventId, entity_id AS traderId, chain,
       token_address AS tokenAddress, occurred_at AS occurredAt
     FROM canonical_trader_events
     WHERE side = 'buy' AND occurred_at >= ? AND occurred_at <= ?
     ORDER BY chain, token_address, occurred_at
-  `).all(evaluatedAt - 30 * DAY_MS, evaluatedAt) as unknown as BundleTrade[];
+  `).all(windowStart, windowEnd) as unknown as BundleTrade[];
   const result = detectRepeatedBundleRisk(trades);
   const statement = database.prepare(`
     INSERT INTO wallet_bundle_pair_tokens(
@@ -86,6 +102,9 @@ function bundleRisk(database: DatabaseSync, evaluatedAt: number) {
     statement.run(pair.pairKey, pair.tokenId, pair.chain, pair.leftTraderId, pair.rightTraderId,
       pair.deltaMs, pair.observedAt, pair.observedAt);
   }
+  cache.day = day;
+  cache.fingerprint = fingerprint;
+  cache.result = result;
   return result;
 }
 
@@ -93,6 +112,7 @@ async function evaluateTrader(input: {
   readonly database: DatabaseSync;
   readonly traderId: string;
   readonly evaluatedAt: number;
+  readonly bundleRiskCache: BundleRiskCache;
 }): Promise<AutomationExecutionResult> {
   const exists = input.database.prepare("SELECT 1 AS present FROM trader_entities WHERE entity_id = ?").get(input.traderId);
   if (!exists) return { status: "terminal", diagnostic: "trader entity does not exist" };
@@ -143,7 +163,7 @@ async function evaluateTrader(input: {
       computedAt: row.computedAt,
     }));
   }
-  const riskResult = bundleRisk(input.database, input.evaluatedAt);
+  const riskResult = bundleRisk(input.database, input.evaluatedAt, input.bundleRiskCache);
   const risk = riskResult.traders.get(input.traderId) ?? Object.freeze({
     traderId: input.traderId,
     state: "none" as const,
@@ -252,7 +272,18 @@ async function dispatch(input: {
     ACTIVE_JOB_HIGH_WATER_MARK - activeWorkerJobs,
   );
   const rows = input.database.prepare(`
-    SELECT entity_id AS traderId
+    SELECT entity_id AS traderId,
+      CASE
+        WHEN EXISTS(SELECT 1 FROM candidate_evidence_v3 c WHERE c.trader_id = trader_entities.entity_id) THEN 96
+        WHEN EXISTS(SELECT 1 FROM candidate_admission_snapshots c WHERE c.trader_id = trader_entities.entity_id AND c.current_admission = 1) THEN 92
+        WHEN EXISTS(SELECT 1 FROM entity_wallet_identities w WHERE w.entity_id = trader_entities.entity_id)
+          OR EXISTS(
+            SELECT 1 FROM entity_accounts ea
+            JOIN wallet_identities w ON w.account_id = ea.account_id
+            WHERE ea.entity_id = trader_entities.entity_id
+          ) THEN 86
+        ELSE 76
+      END AS priority
     FROM trader_entities
     WHERE entity_id > ? AND (
       EXISTS(SELECT 1 FROM trader_token_samples s WHERE s.entity_id = trader_entities.entity_id)
@@ -260,8 +291,8 @@ async function dispatch(input: {
     )
     ORDER BY entity_id
     LIMIT ?
-  `).all(lastTraderId, availableCapacity) as unknown as Array<{ traderId: string }>;
-  for (const row of rows) enqueueTraderAbilityEvaluation(input.jobs, row.traderId, input.now, input.now, `daily:${day}`);
+  `).all(lastTraderId, availableCapacity) as unknown as Array<{ traderId: string; priority: number }>;
+  for (const row of rows) enqueueTraderAbilityEvaluation(input.jobs, row.traderId, input.now, input.now, `daily:${day}`, row.priority);
   const exhausted = rows.length < DISPATCH_BATCH_SIZE;
   return {
     status: "checkpoint",
@@ -277,6 +308,7 @@ export function enqueueTraderAbilityEvaluation(
   evaluatedAt: number,
   now: number,
   sourceKey: string,
+  priority = 76,
 ): void {
   if (jobs.activeJobForSubject("ability_evaluation", traderId)) return;
   const idempotencyKey = `ability-evaluation:${traderId}:${sourceKey}:${STRATEGY_VERSION}`;
@@ -286,7 +318,7 @@ export function enqueueTraderAbilityEvaluation(
     lane: "trader_backfill",
     jobType: "ability_evaluation",
     subjectKey: traderId,
-    priority: 76,
+    priority,
     cursor: null,
     nextAttemptAt: now,
     payload: JSON.stringify({ traderId, evaluatedAt }),
@@ -316,6 +348,26 @@ export function createTraderAbilityWorker(input: {
   readonly now?: () => number;
 }): AutomationHandler {
   const now = input.now ?? Date.now;
+  const bundleRiskCache: BundleRiskCache = { day: -1, fingerprint: "", result: null };
+  withAddressRadarWriteTransaction(input.database, () => {
+    input.database.prepare(`
+      UPDATE automation_jobs
+      SET priority = CASE
+        WHEN EXISTS(SELECT 1 FROM candidate_evidence_v3 c WHERE c.trader_id = automation_jobs.subject_key) THEN 96
+        WHEN EXISTS(SELECT 1 FROM candidate_admission_snapshots c WHERE c.trader_id = automation_jobs.subject_key AND c.current_admission = 1) THEN 92
+        WHEN EXISTS(SELECT 1 FROM entity_wallet_identities w WHERE w.entity_id = automation_jobs.subject_key)
+          OR EXISTS(
+            SELECT 1 FROM entity_accounts ea
+            JOIN wallet_identities w ON w.account_id = ea.account_id
+            WHERE ea.entity_id = automation_jobs.subject_key
+          ) THEN 86
+        ELSE 76
+      END
+      WHERE job_type = 'ability_evaluation'
+        AND subject_key != 'trader-ability-dispatcher'
+        AND status IN ('pending', 'retryable', 'waiting_source', 'blocked_source')
+    `).run();
+  }, { label: "prioritize_ability_jobs" });
   return {
     jobType: "ability_evaluation",
     async execute(job) {
@@ -329,6 +381,7 @@ export function createTraderAbilityWorker(input: {
         database: input.database,
         traderId: payload.traderId,
         evaluatedAt: Math.max(payload.evaluatedAt ?? 0, now()),
+        bundleRiskCache,
       });
     },
   };

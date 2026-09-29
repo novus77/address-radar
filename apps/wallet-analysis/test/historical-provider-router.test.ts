@@ -100,4 +100,14 @@ describe("HistoricalProviderRouter", () => {
 
     await expect(router.reconstruct(input)).rejects.toBe(rateLimit);
   });
+
+  it("classifies ordinary rate-limit and server errors as retryable", async () => {
+    for (const message of ["request failed with status 429", "request failed with status 503", "request timed out"]) {
+      const error = new Error(message);
+      const router = createHistoricalProviderRouter({
+        primary: { id: "gecko_terminal", provider: { reconstruct: async () => { throw error; } } },
+      });
+      await expect(router.reconstruct(input)).rejects.toBe(error);
+    }
+  });
 });

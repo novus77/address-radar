@@ -46,10 +46,18 @@ function errorMessage(error: unknown): string {
 }
 
 function retryable(error: unknown): boolean {
-  return typeof error === "object"
+  if (typeof error === "object"
     && error !== null
     && "retryable" in error
-    && (error as { retryable?: unknown }).retryable === true;
+    && (error as { retryable?: unknown }).retryable === true) return true;
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("timeout")
+    || message.includes("timed out")
+    || message.includes("fetch failed")
+    || message.includes("status 408")
+    || message.includes("status 425")
+    || message.includes("status 429")
+    || /status 5\d\d/.test(message);
 }
 
 function defaultQuotaError(error: unknown): boolean {
