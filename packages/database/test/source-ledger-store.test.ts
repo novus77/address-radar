@@ -29,6 +29,36 @@ const observation = (payload: unknown = { tokenAddress: "0xabc" }) => createSour
 });
 
 describe("source ledger store", () => {
+  it("ages recovery jobs ahead of newer high-priority work", () => {
+    const database = openAddressRadarDatabase(databasePath());
+    migrateAddressRadarDatabase(database);
+    const store = createSourceLedgerStore(database);
+
+    store.enqueueRecoveryJob({
+      jobId: "historical-old",
+      jobType: "historical_research",
+      chain: "base",
+      subjectKey: "base:old-token",
+      priority: 60,
+      cursor: null,
+      nextAttemptAt: 1,
+      createdAt: 1,
+    });
+    store.enqueueRecoveryJob({
+      jobId: "market-new",
+      jobType: "market_enrichment",
+      chain: "base",
+      subjectKey: "base:new-token",
+      priority: 1,
+      cursor: null,
+      nextAttemptAt: 100,
+      createdAt: 100,
+    });
+
+    expect(store.claimRecoveryJob(200, 1_000)?.jobId).toBe("historical-old");
+    database.close();
+  });
+
   it("retries an observation write while another process holds the writer lock", async () => {
     const path = databasePath();
     const setup = openAddressRadarDatabase(path);

@@ -343,7 +343,7 @@ export function createSourceRecoveryHandlers(input: {
           });
           inserted += 1;
         }
-        if (inserted === 0) throw new RetryableRecoveryError("historical_milestone_crossing_unavailable");
+        if (inserted === 0) throw new TerminalRecoveryError("historical_milestone_crossing_unavailable");
         milestoneRange = input.database.prepare(`
           SELECT MIN(crossed_at) AS coverageStartAt, MAX(crossed_at) AS coverageEndAt
           FROM token_milestone_crossings

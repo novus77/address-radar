@@ -350,10 +350,30 @@ async function dispatchChanges(input: {
       token_address AS tokenAddress, side, amount_usd AS amountUsd,
       occurred_at AS occurredAt, updated_at AS updatedAt
     FROM canonical_trader_events
-    WHERE updated_at > ? OR (updated_at = ? AND canonical_event_id > ?)
+    WHERE (updated_at > ? OR (updated_at = ? AND canonical_event_id > ?))
+      AND side = 'buy'
+      AND amount_usd >= ?
+      AND EXISTS (
+        SELECT 1
+        FROM token_milestone_crossings
+        WHERE token_id =
+          LOWER(canonical_trader_events.chain) || ':' ||
+          CASE
+            WHEN LOWER(canonical_trader_events.chain) = 'solana'
+              THEN canonical_trader_events.token_address
+            ELSE LOWER(canonical_trader_events.token_address)
+          END
+          AND crossed_at IS NOT NULL
+      )
     ORDER BY updated_at, canonical_event_id
     LIMIT ?
-  `).all(cursor.eventUpdatedAt, cursor.eventUpdatedAt, cursor.eventId, Math.min(DISPATCH_BATCH_SIZE, availableCapacity)) as Array<{
+  `).all(
+    cursor.eventUpdatedAt,
+    cursor.eventUpdatedAt,
+    cursor.eventId,
+    MINIMUM_CUMULATIVE_BUY_USD,
+    Math.min(DISPATCH_BATCH_SIZE, availableCapacity),
+  ) as Array<{
     eventId: string;
     traderId: string;
     chain: string;

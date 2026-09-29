@@ -551,7 +551,7 @@ export function createSourceLedgerStore(database: DatabaseSync): SourceLedgerSto
         const row = database.prepare(`
           SELECT * FROM recovery_jobs
           WHERE status IN ('pending', 'failed') AND next_attempt_at <= ?
-          ORDER BY priority, next_attempt_at, created_at, job_id LIMIT 1
+          ORDER BY next_attempt_at, priority, created_at, job_id LIMIT 1
         `).get(now) as Record<string, unknown> | undefined;
         if (!row) return null;
         database.prepare(`

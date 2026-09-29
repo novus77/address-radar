@@ -105,6 +105,51 @@ async function evaluate(worker: ReturnType<typeof createCandidateEvidenceWorker>
 }
 
 describe("candidate evidence worker", () => {
+  it("does not dispatch event-driven candidate work before a milestone exists", async () => {
+    const database = new DatabaseSync(":memory:");
+    migrateAddressRadarDatabase(database);
+    initializeCandidateHistorySchema(database);
+    addTrader(database, "trader-1");
+    addBuy({
+      database,
+      eventId: "event-without-milestone",
+      traderId: "trader-1",
+      tokenId: "base:token-without-milestone",
+      amountUsd: 60,
+    });
+    addToken({
+      database,
+      tokenId: "base:token-with-milestone",
+      milestoneMarketCapUsd: 100_000,
+      crossingPrice: 2,
+    });
+    addBuy({
+      database,
+      eventId: "event-with-milestone",
+      traderId: "trader-1",
+      tokenId: "base:token-with-milestone",
+      amountUsd: 60,
+    });
+    const jobs = createAutomationJobStore(database);
+    const worker = createCandidateEvidenceWorker({ database, jobs, now: () => 200 });
+
+    await worker.execute({
+      payload: JSON.stringify({ mode: "dispatch" }),
+      cursor: null,
+    } as never, new AbortController().signal);
+
+    const subjects = database
+      .prepare(
+        `SELECT subject_key AS subjectKey
+         FROM automation_jobs
+         WHERE job_type = 'candidate_evidence'
+         ORDER BY subject_key`,
+      )
+      .all() as Array<{ subjectKey: string }>;
+    expect(subjects).toEqual([{ subjectKey: "base:token-with-milestone" }]);
+    database.close();
+  });
+
   it("derives an estimated milestone from observed trader market cap", async () => {
     const { database, history, worker } = setup();
     addTrader(database, "trader-derived");

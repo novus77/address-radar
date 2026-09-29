@@ -21,6 +21,47 @@ afterEach(() => {
 });
 
 describe("automation funnel", () => {
+  it("counts completed candidate evaluations even when they produce no evidence", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "address-radar-candidate-progress-"));
+    directories.push(directory);
+    const databasePath = join(directory, "radar.sqlite");
+    const database = openAddressRadarDatabase(databasePath);
+    migrateAddressRadarDatabase(database);
+    const now = Date.now();
+    database
+      .prepare(
+        `INSERT INTO automation_job_outcomes (
+           job_id, job_type, attempt, outcome, reason_code,
+           input_count, produced_count, deferred_count, diagnostic_json, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        "candidate-no-output",
+        "candidate_evidence",
+        1,
+        "no_output",
+        "evidence_below_threshold",
+        1,
+        0,
+        0,
+        "{}",
+        now,
+      );
+    database.close();
+    const application = createAddressConsoleApplication(databasePath);
+
+    const response = application.handle("GET", "/api/v2/operations/closed-loop");
+    const body = response.body as {
+      stages: Array<{ stage: string; completed15m: number; lastProgressAt: string | null }>;
+    };
+    const stage = body.stages.find((item) => item.stage === "candidate_evidence");
+
+    expect(response.status).toBe(200);
+    expect(stage).toMatchObject({ completed15m: 1 });
+    expect(stage?.lastProgressAt).not.toBeNull();
+    application.close();
+  });
+
   it("reports automated repair and manual identity backlogs separately", () => {
     const directory = mkdtempSync(join(tmpdir(), "address-radar-queue-separation-"));
     directories.push(directory);

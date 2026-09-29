@@ -29,6 +29,53 @@ const automationJob = {
 };
 
 describe("source recovery handlers", () => {
+  it("terminalizes historical research when complete history never crosses a milestone", async () => {
+    const database = new DatabaseSync(":memory:");
+    migrateAddressRadarDatabase(database);
+    initializeCandidateHistorySchema(database);
+    const ledger = createSourceLedgerStore(database);
+    const jobs = createAutomationJobStore(database);
+    ledger.enqueueRecoveryJob({
+      jobId: "historical-no-crossing",
+      jobType: "historical_research",
+      chain: "base",
+      subjectKey: "base:0xnever",
+      priority: 60,
+      cursor: null,
+      nextAttemptAt: 1,
+      createdAt: 1,
+    });
+    const handlers = createSourceRecoveryHandlers({
+      database,
+      ledger,
+      jobs,
+      history: createCandidateHistoryStore(database),
+      facts: createTokenFactStore(database),
+      marketProvider: { async lookup() { return null; } },
+      historicalMarketProvider: {
+        async topPool() { return { network: "base", poolAddress: "pool-1", tokenAddress: "0xnever", tokenSide: "base", tokenPriceUsd: 1, reserveUsd: 1_000, marketCapUsd: 50_000, fdvUsd: null, createdAt: 0 }; },
+        async ohlcv() { return [{ timestamp: 100, open: 1, high: 1.5, low: 1, close: 1.2, volumeUsd: 100 }]; },
+        async trades() { return []; },
+      },
+      fomoProducer: { async enqueue() { throw new Error("not used"); } },
+      now: () => 200,
+    });
+    const runtime = createRecoveryRuntime({
+      ledger,
+      handlers,
+      clock: { now: () => 200 },
+    });
+
+    expect(await runtime.runOnce()).toMatchObject({
+      outcome: "dead_letter",
+    });
+    expect(ledger.recoveryJob("historical-no-crossing")).toMatchObject({
+      status: "dead_letter",
+      lastError: "historical_milestone_crossing_unavailable",
+    });
+    database.close();
+  });
+
   it("persists market facts and wakes only the matching candidate", async () => {
     const database = new DatabaseSync(":memory:");
     migrateAddressRadarDatabase(database);
