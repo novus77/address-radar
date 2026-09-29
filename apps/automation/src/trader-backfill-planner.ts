@@ -44,8 +44,13 @@ export function createTraderBackfillPlanner(input: {
   readonly strategyVersion: string;
 }) {
   void input.database;
+  let reconciledLightweightJobs = false;
   return Object.freeze({
     seed(now: number): TraderBackfillPlan {
+      if (!reconciledLightweightJobs) {
+        input.jobs.cancelRedundantActiveJobs("trader_lightweight_evaluation", null, now);
+        reconciledLightweightJobs = true;
+      }
       const lightweightEvaluations: TraderBackfillPlan["lightweightEvaluations"][number][] = [];
       const deepBackfills: TraderBackfillPlan["deepBackfills"][number][] = [];
       const identityRequests: TraderBackfillPlan["identityRequests"][number][] = [];
@@ -54,7 +59,13 @@ export function createTraderBackfillPlanner(input: {
         const interval = TRADER_EVALUATION_INTERVALS[subject.tier].fomoMs;
         const slot = Math.floor(now / interval);
         const lightweightKey = `trader-lightweight:${subject.traderId}:${slot}:${input.strategyVersion}`;
-        const lightweightResult = lightweightCapacity > 0 ? input.jobs.enqueue({
+        const lightweightDue = subject.nextEvaluationAt <= now;
+        const activeLightweightJob = input.jobs.activeJobForSubject(
+          "trader_lightweight_evaluation",
+          subject.traderId,
+        );
+        const lightweightResult = lightweightCapacity > 0 && lightweightDue && activeLightweightJob === null
+          ? input.jobs.enqueue({
           jobId: lightweightKey,
           idempotencyKey: lightweightKey,
           lane: "trader_backfill",
@@ -66,8 +77,8 @@ export function createTraderBackfillPlanner(input: {
           payload: JSON.stringify({ traderId: subject.traderId, tier: subject.tier }),
           createdAt: now,
         }) : null;
-        if (lightweightResult) {
-          if (lightweightResult.inserted) lightweightCapacity -= 1;
+        if (lightweightResult?.inserted) {
+          lightweightCapacity -= 1;
           lightweightEvaluations.push(Object.freeze({
             traderId: subject.traderId,
             tier: subject.tier,
@@ -132,7 +143,7 @@ export function createTraderBackfillPlanner(input: {
           }));
         }
 
-        if (lightweightResult && (subject.coverageState === "unseen" || subject.coverageState === "stale")) {
+        if (lightweightResult?.inserted && (subject.coverageState === "unseen" || subject.coverageState === "stale")) {
           input.states.updateCoverage(subject.traderId, {
             coverageState: "queued",
             lastCoveredAt: subject.lastCoveredAt,

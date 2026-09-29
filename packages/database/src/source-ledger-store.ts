@@ -530,14 +530,16 @@ export function createSourceLedgerStore(database: DatabaseSync): SourceLedgerSto
       return Number(row?.unitsUsed ?? 0);
     },
     enqueueRecoveryJob(job) {
-      const result = database.prepare(`
-        INSERT OR IGNORE INTO recovery_jobs(
-          job_id, job_type, chain, subject_key, status, priority, cursor, attempt_count,
-          next_attempt_at, lease_expires_at, last_error, created_at, updated_at, completed_at
-        ) VALUES (?, ?, ?, ?, 'pending', ?, ?, 0, ?, NULL, NULL, ?, ?, NULL)
-      `).run(job.jobId, job.jobType, job.chain, job.subjectKey, job.priority, job.cursor,
-        job.nextAttemptAt, job.createdAt, job.createdAt);
-      return Object.freeze({ inserted: result.changes === 1 });
+      return transaction(() => {
+        const result = database.prepare(`
+          INSERT OR IGNORE INTO recovery_jobs(
+            job_id, job_type, chain, subject_key, status, priority, cursor, attempt_count,
+            next_attempt_at, lease_expires_at, last_error, created_at, updated_at, completed_at
+          ) VALUES (?, ?, ?, ?, 'pending', ?, ?, 0, ?, NULL, NULL, ?, ?, NULL)
+        `).run(job.jobId, job.jobType, job.chain, job.subjectKey, job.priority, job.cursor,
+          job.nextAttemptAt, job.createdAt, job.createdAt);
+        return Object.freeze({ inserted: result.changes === 1 });
+      });
     },
     claimRecoveryJob(now, leaseMs) {
       return transaction(() => {
@@ -560,16 +562,22 @@ export function createSourceLedgerStore(database: DatabaseSync): SourceLedgerSto
       });
     },
     checkpointRecoveryJob(jobId, cursor, updatedAt) {
-      database.prepare("UPDATE recovery_jobs SET cursor = ?, lease_expires_at = NULL, status = 'pending', next_attempt_at = ?, updated_at = ? WHERE job_id = ? AND status = 'running'")
-        .run(cursor, updatedAt, updatedAt, jobId);
+      transaction(() => {
+        database.prepare("UPDATE recovery_jobs SET cursor = ?, lease_expires_at = NULL, status = 'pending', next_attempt_at = ?, updated_at = ? WHERE job_id = ? AND status = 'running'")
+          .run(cursor, updatedAt, updatedAt, jobId);
+      });
     },
     failRecoveryJob(jobId, error, nextAttemptAt, terminal = false) {
-      database.prepare("UPDATE recovery_jobs SET status = ?, lease_expires_at = NULL, last_error = ?, next_attempt_at = ?, updated_at = ? WHERE job_id = ?")
-        .run(terminal ? "dead_letter" : "failed", error, nextAttemptAt, nextAttemptAt, jobId);
+      transaction(() => {
+        database.prepare("UPDATE recovery_jobs SET status = ?, lease_expires_at = NULL, last_error = ?, next_attempt_at = ?, updated_at = ? WHERE job_id = ?")
+          .run(terminal ? "dead_letter" : "failed", error, nextAttemptAt, nextAttemptAt, jobId);
+      });
     },
     completeRecoveryJob(jobId, completedAt) {
-      database.prepare("UPDATE recovery_jobs SET status = 'completed', lease_expires_at = NULL, last_error = NULL, completed_at = ?, updated_at = ? WHERE job_id = ?")
-        .run(completedAt, completedAt, jobId);
+      transaction(() => {
+        database.prepare("UPDATE recovery_jobs SET status = 'completed', lease_expires_at = NULL, last_error = NULL, completed_at = ?, updated_at = ? WHERE job_id = ?")
+          .run(completedAt, completedAt, jobId);
+      });
     },
     recoveryJob(jobId) {
       const row = database.prepare("SELECT * FROM recovery_jobs WHERE job_id = ?").get(jobId) as Record<string, unknown> | undefined;

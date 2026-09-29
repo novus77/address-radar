@@ -100,7 +100,41 @@ describe("trader backfill planner", () => {
 
     planner.seed(1_000);
     expect(jobs.snapshot()).toMatchObject({ pending: 8 });
+    planner.seed(15 * 60_000 + 1_000);
+    expect(jobs.snapshot()).toMatchObject({ pending: 8 });
     expect(states.state("t3")).toMatchObject({ tier: "T3", coverageState: "queued" });
+    database.close();
+  });
+
+  it("reconciles existing lightweight duplicates before planning new work", () => {
+    const { database, jobs, states } = setup();
+    for (const suffix of ["old", "new"]) {
+      jobs.enqueue({
+        jobId: `lightweight:t0:${suffix}`,
+        idempotencyKey: `lightweight:t0:${suffix}`,
+        lane: "trader_backfill",
+        jobType: "trader_lightweight_evaluation",
+        subjectKey: "t0",
+        priority: 10,
+        cursor: null,
+        nextAttemptAt: 0,
+        payload: JSON.stringify({ traderId: "t0", tier: "T0" }),
+        createdAt: suffix === "old" ? 1 : 2,
+      });
+    }
+    const planner = createTraderBackfillPlanner({
+      database,
+      jobs,
+      states,
+      windowDays: 60,
+      maximumTokens: 300,
+      strategyVersion: "backfill-v1",
+    });
+
+    planner.seed(1_000);
+
+    expect(jobs.snapshot()).toMatchObject({ cancelled: 1 });
+    expect(jobs.activeCount("trader_lightweight_evaluation")).toBe(4);
     database.close();
   });
 

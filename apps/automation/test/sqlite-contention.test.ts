@@ -7,6 +7,7 @@ import { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  createAutomationJobStore,
   migrateAddressRadarDatabase,
   openAddressRadarDatabase,
   withAddressRadarWriteTransaction,
@@ -16,6 +17,42 @@ const directories: string[] = [];
 afterEach(() => { while (directories.length) rmSync(directories.pop()!, { recursive: true, force: true }); });
 
 describe("automation SQLite contention", () => {
+  it("retries enqueue while another process owns the write lock", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "address-radar-enqueue-contention-"));
+    directories.push(directory);
+    const path = join(directory, "radar.sqlite");
+    const setup = openAddressRadarDatabase(path);
+    migrateAddressRadarDatabase(setup);
+    setup.close();
+    const lockHolder = new Worker(`
+      const { DatabaseSync } = require("node:sqlite");
+      const { parentPort, workerData } = require("node:worker_threads");
+      const database = new DatabaseSync(workerData);
+      database.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 1; BEGIN IMMEDIATE");
+      parentPort.postMessage("locked");
+      setTimeout(() => { database.exec("COMMIT"); database.close(); parentPort.postMessage("released"); }, 120);
+    `, { eval: true, workerData: path });
+    await once(lockHolder, "message");
+    const database = openAddressRadarDatabase(path);
+    database.exec("PRAGMA busy_timeout = 1");
+
+    expect(createAutomationJobStore(database).enqueue({
+      jobId: "enqueue-lock",
+      idempotencyKey: "enqueue-lock",
+      lane: "trader_backfill",
+      jobType: "test",
+      subjectKey: "trader-lock",
+      priority: 1,
+      cursor: null,
+      nextAttemptAt: 0,
+      payload: "{}",
+      createdAt: 1,
+    })).toMatchObject({ inserted: true });
+
+    database.close();
+    await once(lockHolder, "exit");
+  });
+
   it("retries a real write lock and commits event plus checkpoint atomically", async () => {
     const directory = mkdtempSync(join(tmpdir(), "address-radar-contention-"));
     directories.push(directory);
@@ -62,4 +99,3 @@ describe("automation SQLite contention", () => {
     await once(lockHolder, "exit");
   });
 });
-

@@ -115,6 +115,67 @@ describe("source recovery handlers", () => {
     database.close();
   });
 
+  it("reconstructs a missing historical milestone before waking candidate evidence", async () => {
+    const database = new DatabaseSync(":memory:");
+    migrateAddressRadarDatabase(database);
+    initializeCandidateHistorySchema(database);
+    const ledger = createSourceLedgerStore(database);
+    const jobs = createAutomationJobStore(database);
+    jobs.enqueue(automationJob);
+    jobs.claim("trader_backfill", 1, 100, "worker");
+    jobs.waitForSource(automationJob.jobId, "worker", {
+      diagnostic: "token milestone data is not available",
+      reasonCode: "missing_milestone",
+      context: { tokenId: automationJob.subjectKey },
+      recoveryJobIds: ["recovery:historical_research:base:0xabc"],
+      retryAt: 100,
+      updatedAt: 2,
+    });
+    ledger.enqueueRecoveryJob({
+      jobId: "recovery:historical_research:base:0xabc",
+      jobType: "historical_research",
+      chain: "base",
+      subjectKey: "base:0xabc",
+      priority: 60,
+      cursor: null,
+      nextAttemptAt: 0,
+      createdAt: 1,
+    });
+    const handlers = createSourceRecoveryHandlers({
+      database,
+      ledger,
+      jobs,
+      history: createCandidateHistoryStore(database),
+      facts: createTokenFactStore(database),
+      marketProvider: { async lookup() { return null; } },
+      historicalMarketProvider: {
+        async topPool() { return { network: "base", poolAddress: "pool", tokenAddress: "0xabc", tokenSide: "base", tokenPriceUsd: 2, reserveUsd: 1_000, marketCapUsd: 200_000, fdvUsd: null, createdAt: 0 }; },
+        async ohlcv() { return [{ timestamp: 5_000, open: 1, high: 12, low: 1, close: 10, volumeUsd: 100 }]; },
+        async trades() { return []; },
+      },
+      fomoProducer: { async enqueue() { throw new Error("not used"); } },
+      now: () => NOW,
+    });
+    const runtime = createRecoveryRuntime({
+      ledger,
+      handlers,
+      clock: { now: () => NOW },
+      onReEvaluate: request => { jobs.wakeBlockedSource(request.key, NOW, "candidate_evidence"); },
+    });
+
+    await expect(runtime.runOnce()).resolves.toMatchObject({ outcome: "completed" });
+    expect(database.prepare("SELECT market_cap_usd AS marketCapUsd FROM token_milestone_crossings ORDER BY market_cap_usd").all())
+      .toEqual([
+        { marketCapUsd: 100_000 },
+        { marketCapUsd: 200_000 },
+        { marketCapUsd: 300_000 },
+        { marketCapUsd: 500_000 },
+        { marketCapUsd: 1_000_000 },
+      ]);
+    expect(jobs.job(automationJob.jobId)).toMatchObject({ status: "pending" });
+    database.close();
+  });
+
   it("backfills historical OHLCV and wakes blocked candidate evidence", async () => {
     const database = new DatabaseSync(":memory:");
     migrateAddressRadarDatabase(database);

@@ -78,7 +78,7 @@ export interface AutomationJobStore {
   enqueue(input: AutomationJobInput): { readonly inserted: boolean; readonly job: AutomationJob };
   activeCount(jobType: string): number;
   activeJobForSubject(jobType: string, subjectKey: string): AutomationJob | null;
-  cancelRedundantActiveJobs(jobType: string, excludedSubjectKey: string, updatedAt: number): number;
+  cancelRedundantActiveJobs(jobType: string, excludedSubjectKey: string | null, updatedAt: number): number;
   runnableCount(jobType: string): number;
   job(jobId: string): AutomationJob | null;
   sourceBlock(jobId: string): AutomationJobSourceBlock | null;
@@ -166,31 +166,33 @@ export function createAutomationJobStore(
 
   return Object.freeze<AutomationJobStore>({
     enqueue(input) {
-      const result = database.prepare(`
-        INSERT OR IGNORE INTO automation_jobs(
-          job_id, idempotency_key, lane, job_type, subject_key, priority,
-          status, cursor, attempt_count, next_attempt_at, lease_expires_at,
-          lease_owner, payload, last_error, created_at, updated_at, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, 0, ?, NULL, NULL, ?, NULL, ?, ?, NULL)
-      `).run(
-        input.jobId,
-        input.idempotencyKey,
-        input.lane,
-        input.jobType,
-        input.subjectKey,
-        input.priority,
-        input.cursor,
-        input.nextAttemptAt,
-        input.payload,
-        input.createdAt,
-        input.createdAt,
-      );
-      const row = database.prepare(`
-        SELECT * FROM automation_jobs WHERE idempotency_key = ? OR job_id = ?
-        ORDER BY idempotency_key = ? DESC LIMIT 1
-      `).get(input.idempotencyKey, input.jobId, input.idempotencyKey) as Record<string, unknown> | undefined;
-      if (!row) throw new Error(`Unable to read enqueued automation job: ${input.jobId}`);
-      return Object.freeze({ inserted: result.changes === 1, job: toJob(row) });
+      return transaction(() => {
+        const result = database.prepare(`
+          INSERT OR IGNORE INTO automation_jobs(
+            job_id, idempotency_key, lane, job_type, subject_key, priority,
+            status, cursor, attempt_count, next_attempt_at, lease_expires_at,
+            lease_owner, payload, last_error, created_at, updated_at, completed_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, 0, ?, NULL, NULL, ?, NULL, ?, ?, NULL)
+        `).run(
+          input.jobId,
+          input.idempotencyKey,
+          input.lane,
+          input.jobType,
+          input.subjectKey,
+          input.priority,
+          input.cursor,
+          input.nextAttemptAt,
+          input.payload,
+          input.createdAt,
+          input.createdAt,
+        );
+        const row = database.prepare(`
+          SELECT * FROM automation_jobs WHERE idempotency_key = ? OR job_id = ?
+          ORDER BY idempotency_key = ? DESC LIMIT 1
+        `).get(input.idempotencyKey, input.jobId, input.idempotencyKey) as Record<string, unknown> | undefined;
+        if (!row) throw new Error(`Unable to read enqueued automation job: ${input.jobId}`);
+        return Object.freeze({ inserted: result.changes === 1, job: toJob(row) });
+      });
     },
     activeCount(jobType) {
       const row = database.prepare(`
@@ -233,7 +235,7 @@ export function createAutomationJobStore(
                 END, created_at DESC, job_id DESC
               ) AS position
             FROM automation_jobs
-            WHERE job_type = ? AND subject_key != ? AND status IN (
+            WHERE job_type = ? AND (? IS NULL OR subject_key != ?) AND status IN (
               'pending', 'leased', 'running', 'waiting_source', 'blocked_source', 'retryable'
             )
           )
@@ -242,7 +244,7 @@ export function createAutomationJobStore(
             lease_expires_at = NULL, lease_owner = NULL, updated_at = ?, completed_at = ?
           WHERE job_id IN (SELECT job_id FROM ranked WHERE position > 1)
             AND status IN ('pending', 'waiting_source', 'blocked_source', 'retryable')
-        `).run(jobType, excludedSubjectKey, updatedAt, updatedAt);
+        `).run(jobType, excludedSubjectKey, excludedSubjectKey, updatedAt, updatedAt);
         return Number(result.changes);
       });
     },

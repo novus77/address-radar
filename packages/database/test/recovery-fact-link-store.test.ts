@@ -1,4 +1,9 @@
 import { DatabaseSync } from "node:sqlite";
+import { once } from "node:events";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 
 import { describe, expect, it } from "vitest";
 
@@ -24,6 +29,30 @@ describe("closed-loop fact and coverage stores", () => {
       status: "terminal", terminalReason: "unsupported_provider",
     });
     database.close();
+  });
+
+  it("retries ensure when another connection temporarily owns the write lock", async () => {
+    const databasePath = join(mkdtempSync(join(tmpdir(), "recovery-fact-link-")), "radar.sqlite");
+    const setup = new DatabaseSync(databasePath);
+    migrateAddressRadarDatabase(setup);
+    setup.close();
+    const lockHolder = new Worker(`
+      const { DatabaseSync } = require("node:sqlite");
+      const { parentPort, workerData } = require("node:worker_threads");
+      const database = new DatabaseSync(workerData);
+      database.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 1; BEGIN IMMEDIATE");
+      parentPort.postMessage("locked");
+      setTimeout(() => { database.exec("COMMIT"); database.close(); parentPort.postMessage("released"); }, 120);
+    `, { eval: true, workerData: databasePath });
+    await once(lockHolder, "message");
+    const database = new DatabaseSync(databasePath);
+    database.exec("PRAGMA busy_timeout = 1");
+
+    expect(createRecoveryFactLinkStore(database).ensure("job-lock", "early_trades", "base:0xabc", 10))
+      .toMatchObject({ status: "pending" });
+
+    database.close();
+    await once(lockHolder, "exit");
   });
 
   it("keeps wallet coverage and enrichment revisions queryable", () => {

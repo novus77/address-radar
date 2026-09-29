@@ -21,9 +21,11 @@ import {
 import type { RecoveryPostcondition } from "./recovery-postcondition.js";
 
 const HOUR_MS = 60 * 60_000;
+const DAY_MS = 24 * HOUR_MS;
 const GECKO_TERMINAL_CALLS_PER_MINUTE = 8;
 const DEFILLAMA_CALLS_PER_MINUTE = 20;
 const MAX_HISTORY_PAGES = 2;
+const MAX_MILESTONE_HISTORY_PAGES = 4;
 
 interface FomoMilestoneLookupProducer {
   enqueue(input: {
@@ -70,21 +72,6 @@ export function createSourceRecoveryHandlers(input: {
       current = input.facts.transition({ tokenId, factType, status: "scheduled", reopenTerminal: true, terminalReason: null, nextAttemptAt: observedAt, strategyVersion: "token-facts-v1", updatedAt: observedAt });
     }
     input.facts.transition({ tokenId, factType, status, precision, primarySource: source, coverageStartAt, coverageEndAt, observedAt, knownAt: observedAt, nextAttemptAt: null, terminalReason: null, strategyVersion: "token-facts-v1", updatedAt: observedAt });
-  };
-
-  const prerequisiteReady = (tokenId: string): boolean => {
-    const token = tokenParts(tokenId, "");
-    const milestone = input.database.prepare(`
-      SELECT 1 AS present FROM token_milestone_crossings
-      WHERE token_id = ? AND precision != 'unavailable' AND crossed_at IS NOT NULL
-      LIMIT 1
-    `).get(tokenId);
-    const price = input.database.prepare(`
-      SELECT 1 AS present FROM market_observations
-      WHERE chain = ? AND token_address = ? AND price_usd > 0
-      LIMIT 1
-    `).get(token.chain, token.tokenAddress);
-    return Boolean(milestone && price);
   };
 
   const factPostcondition = (factType: TokenFactType, tokenId: string): RecoveryPostcondition => ({
@@ -282,15 +269,89 @@ export function createSourceRecoveryHandlers(input: {
       throw new RetryableRecoveryError("early_trade_lookup_queued");
     },
 
-    async historical_research({ job }) {
-      if (!prerequisiteReady(job.subjectKey)) {
-        throw new RetryableRecoveryError("historical_research_pending");
-      }
+    async historical_research({ job, consumeBudget }) {
       const token = tokenParts(job.subjectKey, job.chain);
       const observedAt = now();
+      let milestoneRange = input.database.prepare(`
+        SELECT MIN(crossed_at) AS coverageStartAt, MAX(crossed_at) AS coverageEndAt
+        FROM token_milestone_crossings
+        WHERE token_id=? AND precision!='unavailable' AND crossed_at IS NOT NULL
+      `).get(job.subjectKey) as { coverageStartAt: number | null; coverageEndAt: number | null };
+      if (milestoneRange.coverageStartAt === null) {
+        if (!input.historicalMarketProvider) {
+          throw new RetryableRecoveryError("historical_milestone_provider_unavailable");
+        }
+        const usageWindow = String(Math.floor(observedAt / 60_000));
+        const consumeGecko = (): void => consumeBudget({
+          provider: "geckoterminal",
+          usageWindow,
+          units: 1,
+          limit: GECKO_TERMINAL_CALLS_PER_MINUTE,
+          retryAt: (Math.floor(observedAt / 60_000) + 1) * 60_000,
+        });
+        consumeGecko();
+        const pool = await input.historicalMarketProvider.topPool(job.chain, token.tokenAddress);
+        const currentValue = pool?.marketCapUsd ?? pool?.fdvUsd ?? null;
+        const supply = pool && currentValue !== null && pool.tokenPriceUsd > 0
+          ? currentValue / pool.tokenPriceUsd
+          : null;
+        if (!pool || supply === null || !Number.isFinite(supply) || supply <= 0) {
+          throw new RetryableRecoveryError("historical_milestone_supply_unavailable");
+        }
+        const bounds = input.database.prepare(`
+          SELECT COALESCE(
+            (SELECT first_trade_at FROM historical_tokens WHERE token_id=?),
+            (SELECT launched_at FROM token_observation_state WHERE token_id=?),
+            ?
+          ) AS fromAt
+        `).get(job.subjectKey, job.subjectKey, Math.max(0, observedAt - 60 * DAY_MS)) as { fromAt: number };
+        const candles = new Map<number, number>();
+        let beforeTimestamp = observedAt + HOUR_MS;
+        for (let page = 0; page < MAX_MILESTONE_HISTORY_PAGES; page += 1) {
+          consumeGecko();
+          const batch = await input.historicalMarketProvider.ohlcv(job.chain, pool.poolAddress, {
+            timeframe: "hour",
+            tokenSide: pool.tokenSide,
+            aggregate: 1,
+            beforeTimestamp,
+            limit: 1_000,
+          });
+          if (batch.length === 0) break;
+          for (const candle of batch) {
+            if (candle.timestamp >= bounds.fromAt && candle.timestamp <= observedAt && candle.high > 0) {
+              candles.set(candle.timestamp, candle.high);
+            }
+          }
+          const earliest = Math.min(...batch.map((candle) => candle.timestamp));
+          if (earliest <= bounds.fromAt || earliest >= beforeTimestamp || batch.length < 1_000) break;
+          beforeTimestamp = earliest - 1;
+        }
+        const chronological = [...candles].sort((left, right) => left[0] - right[0]);
+        let inserted = 0;
+        for (const milestone of CANDIDATE_MILESTONES) {
+          const crossing = chronological.find(([, high]) => high * supply >= milestone.marketCapUsd);
+          if (!crossing) continue;
+          input.history.saveMilestoneCrossing({
+            milestoneId: `${job.subjectKey}:${milestone.marketCapUsd}`,
+            tokenId: job.subjectKey,
+            marketCapUsd: milestone.marketCapUsd,
+            crossedAt: crossing[0],
+            precision: "estimated",
+            source: "gecko_terminal_ohlcv",
+            sourceEventIds: [`${pool.poolAddress}:${crossing[0]}`],
+            strategyVersion: "candidate-market-recovery-v2",
+          });
+          inserted += 1;
+        }
+        if (inserted === 0) throw new RetryableRecoveryError("historical_milestone_crossing_unavailable");
+        milestoneRange = input.database.prepare(`
+          SELECT MIN(crossed_at) AS coverageStartAt, MAX(crossed_at) AS coverageEndAt
+          FROM token_milestone_crossings
+          WHERE token_id=? AND precision!='unavailable' AND crossed_at IS NOT NULL
+        `).get(job.subjectKey) as { coverageStartAt: number | null; coverageEndAt: number | null };
+      }
       const priceRange = input.database.prepare(`SELECT MIN(observed_at) AS coverageStartAt, MAX(observed_at) AS coverageEndAt FROM market_observations WHERE chain=? AND token_address=? AND price_usd>0`).get(token.chain, token.tokenAddress) as { coverageStartAt: number | null; coverageEndAt: number | null };
       saveFact("price_history", job.subjectKey, "partial", "derived", "market_observations", observedAt, priceRange.coverageStartAt, priceRange.coverageEndAt);
-      const milestoneRange = input.database.prepare(`SELECT MIN(crossed_at) AS coverageStartAt, MAX(crossed_at) AS coverageEndAt FROM token_milestone_crossings WHERE token_id=? AND precision!='unavailable' AND crossed_at IS NOT NULL`).get(job.subjectKey) as { coverageStartAt: number | null; coverageEndAt: number | null };
       saveFact("milestone_crossings", job.subjectKey, "partial", "estimated", "token_milestone_crossings", observedAt, milestoneRange.coverageStartAt, milestoneRange.coverageEndAt);
       return { reEvaluate: { kind: "token" as const, key: job.subjectKey }, postcondition: factPostcondition("milestone_crossings", job.subjectKey) };
     },

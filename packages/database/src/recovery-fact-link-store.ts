@@ -56,12 +56,14 @@ export function createRecoveryFactLinkStore(database: DatabaseSync) {
 
   return Object.freeze({
     ensure(recoveryJobId: string, factType: string, factKey: string, now: number): RecoveryFactLink {
-      database.prepare(`
-        INSERT OR IGNORE INTO recovery_fact_links(
-          recovery_job_id, fact_type, fact_key, status, updated_at
-        ) VALUES (?, ?, ?, 'pending', ?)
-      `).run(recoveryJobId, factType, factKey, now);
-      return load(recoveryJobId, factType, factKey)!;
+      return withAddressRadarWriteTransaction(database, () => {
+        database.prepare(`
+          INSERT OR IGNORE INTO recovery_fact_links(
+            recovery_job_id, fact_type, fact_key, status, updated_at
+          ) VALUES (?, ?, ?, 'pending', ?)
+        `).run(recoveryJobId, factType, factKey, now);
+        return load(recoveryJobId, factType, factKey)!;
+      });
     },
     get: load,
     satisfy(recoveryJobId: string, factType: string, factKey: string, now: number): RecoveryFactLink {
