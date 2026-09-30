@@ -29,7 +29,7 @@ export function createWalletAnalysisRuntime(input: {
   const now = input.now ?? Date.now;
   return Object.freeze({
     async runOnce(signal: AbortSignal = new AbortController().signal) {
-      const job = input.store.next();
+      const job = input.store.next(now());
       if (!job) return Object.freeze({ processed: false, analysisId: null, status: null });
       input.store.heartbeat(job.analysisId, "collecting", now());
       const provider = input.providers[job.chainFamily];

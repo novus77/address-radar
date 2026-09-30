@@ -28,7 +28,7 @@ export interface WalletAnalysisJob {
 
 export interface WalletAnalysisStore {
   enqueue(input: { readonly analysisId: string; readonly chainFamily: ChainFamily; readonly address: string; readonly requestedSamples: number; readonly createdAt: number }): void;
-  next(): WalletAnalysisJob | null;
+  next(now?: number): WalletAnalysisJob | null;
   job(analysisId: string): WalletAnalysisJob | null;
   positions(analysisId: string): readonly WalletAnalysisPosition[];
   savePage(analysisId: string, positions: readonly WalletAnalysisPosition[], nextCursor: string | null, provenance: string, updatedAt: number): number;
@@ -90,14 +90,16 @@ export function openWalletAnalysisStore(databasePath: string): WalletAnalysisSto
     return saved;
   });
 
-  const readJob = (analysisId?: string): WalletAnalysisJob | null => {
+  const readJob = (analysisId?: string, now = Date.now()): WalletAnalysisJob | null => {
     const sql = analysisId
       ? "SELECT * FROM wallet_analysis_jobs WHERE analysis_id = ?"
       : `SELECT j.* FROM wallet_analysis_jobs j
          LEFT JOIN wallet_analysis_progress p ON p.analysis_id = j.analysis_id
-         WHERE j.status = 'collecting' AND COALESCE(p.phase, 'queued') NOT IN ('blocked', 'cancelled')
+         WHERE j.status = 'collecting'
+           AND COALESCE(p.phase, 'queued') NOT IN ('blocked', 'cancelled')
+           AND (p.next_retry_at IS NULL OR p.next_retry_at <= ?)
          ORDER BY j.updated_at, j.created_at, j.analysis_id LIMIT 1`;
-    const row = (analysisId ? database.prepare(sql).get(analysisId) : database.prepare(sql).get()) as Record<string, unknown> | undefined;
+    const row = (analysisId ? database.prepare(sql).get(analysisId) : database.prepare(sql).get(now)) as Record<string, unknown> | undefined;
     if (!row) return null;
     const checkpoint = database.prepare("SELECT cursor FROM wallet_analysis_checkpoints WHERE analysis_id = ? AND scope = 'history'").get(row.analysis_id as string) as { cursor: string } | undefined;
     const sources = database.prepare("SELECT source FROM wallet_analysis_provenance WHERE analysis_id = ? ORDER BY source").all(row.analysis_id as string) as { source: string }[];
@@ -147,7 +149,7 @@ export function openWalletAnalysisStore(databasePath: string): WalletAnalysisSto
         `).run(input.analysisId, input.createdAt, input.createdAt);
       });
     },
-    next() { return readJob(); },
+    next(now) { return readJob(undefined, now); },
     job(analysisId) { return readJob(analysisId); },
     positions(analysisId) {
       const rows = database.prepare("SELECT payload FROM wallet_analysis_positions WHERE analysis_id = ? ORDER BY entered_at, token_id").all(analysisId) as { payload: string }[];

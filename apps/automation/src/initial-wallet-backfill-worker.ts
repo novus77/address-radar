@@ -49,12 +49,19 @@ export function createInitialWalletBackfillWorker(input: {
         retryAt: now() + 60_000,
         diagnostic: "wallet analysis was not persisted",
       });
-      if (analysis.status === "collecting") return Object.freeze({
-        status: "checkpoint" as const,
-        cursor: analysisId,
-        retryAt: Math.max(now() + 60_000, analysis.nextRetryAt ?? 0),
-        diagnostic: `wallet analysis ${analysis.phase}: ${analysis.discoveredTokens}/${analysis.requestedSamples}`,
-      });
+      if (analysis.status === "collecting") {
+        const minimumDelay = analysis.phase === "retrying"
+          ? 30 * 60_000
+          : analysis.phase === "blocked"
+            ? 2 * 60 * 60_000
+            : 2 * 60_000;
+        return Object.freeze({
+          status: "checkpoint" as const,
+          cursor: analysisId,
+          retryAt: Math.max(now() + minimumDelay, analysis.nextRetryAt ?? 0),
+          diagnostic: `wallet analysis ${analysis.phase}: ${analysis.discoveredTokens}/${analysis.requestedSamples}`,
+        });
+      }
       if (analysis.status === "failed") return Object.freeze({
         status: "retryable" as const,
         retryAt: now() + 5 * 60_000,

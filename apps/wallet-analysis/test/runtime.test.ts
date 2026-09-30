@@ -61,6 +61,28 @@ describe("wallet analysis runtime", () => {
     expect(store.job("analysis-1")).toMatchObject({ status: "collecting", metrics: null, lastError: "rate_limited" });
     store.close();
   });
+
+  it("does not reclaim a failed analysis before its retry time", async () => {
+    const path = await databasePath();
+    const store = openWalletAnalysisStore(path);
+    store.enqueue({ analysisId: "analysis-1", chainFamily: "evm", address: "0x1111111111111111111111111111111111111111", requestedSamples: 10, createdAt: 1 });
+    let now = 100 * DAY;
+    let attempts = 0;
+    const runtime = createWalletAnalysisRuntime({
+      store,
+      providers: { evm: { collect: async () => { attempts += 1; throw new Error("rate_limited"); } } },
+      now: () => now,
+    });
+
+    await expect(runtime.runOnce()).resolves.toMatchObject({ processed: false, error: "rate_limited" });
+    await expect(runtime.runOnce()).resolves.toEqual({ processed: false, analysisId: null, status: null });
+    expect(attempts).toBe(1);
+
+    now += 60_000;
+    await expect(runtime.runOnce()).resolves.toMatchObject({ processed: false, error: "rate_limited" });
+    expect(attempts).toBe(2);
+    store.close();
+  });
 });
 
 describe("candidate milestone discovery", () => {
