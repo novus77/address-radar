@@ -61,6 +61,28 @@ describe("wallet analysis runtime", () => {
     expect(store.job("analysis-1")).toMatchObject({ status: "collecting", metrics: null, lastError: "rate_limited" });
     store.close();
   });
+
+  it("does not reclaim a failed analysis before its retry time", async () => {
+    const path = await databasePath();
+    const store = openWalletAnalysisStore(path);
+    store.enqueue({ analysisId: "analysis-1", chainFamily: "evm", address: "0x1111111111111111111111111111111111111111", requestedSamples: 10, createdAt: 1 });
+    let now = 100 * DAY;
+    let attempts = 0;
+    const runtime = createWalletAnalysisRuntime({
+      store,
+      providers: { evm: { collect: async () => { attempts += 1; throw new Error("rate_limited"); } } },
+      now: () => now,
+    });
+
+    await expect(runtime.runOnce()).resolves.toMatchObject({ processed: false, error: "rate_limited" });
+    await expect(runtime.runOnce()).resolves.toEqual({ processed: false, analysisId: null, status: null });
+    expect(attempts).toBe(1);
+
+    now += 60_000;
+    await expect(runtime.runOnce()).resolves.toMatchObject({ processed: false, error: "rate_limited" });
+    expect(attempts).toBe(2);
+    store.close();
+  });
 });
 
 describe("candidate milestone discovery", () => {
@@ -94,15 +116,23 @@ describe("trader performance runtime", () => {
     repository.linkAccountToEntity({ accountId: "u1", entityId: "fomo:u1", confidence: "confirmed", source: "test", observedAt: 1 });
     repository.insertTraderEvent({ eventId: "buy", accountId: "u1", entityId: "fomo:u1", chain: "solana", tokenAddress: "TokenA", side: "buy", amountUsd: 200, priceUsd: 1, marketCapUsd: 50_000, tokenAgeMs: 500, occurredAt: 1_000, collectedAt: 1_000, source: "fomo_stream" });
     repository.insertTraderEvent({ eventId: "sell", accountId: "u1", entityId: "fomo:u1", chain: "solana", tokenAddress: "TokenA", side: "sell", amountUsd: 400, priceUsd: 2, marketCapUsd: 100_000, tokenAgeMs: 60_000, occurredAt: 61_000, collectedAt: 61_000, source: "fomo_stream" });
-    const runtime = createTraderPerformanceRuntime({ repository, now: () => 70_000, strategyVersion: "trader-ability-v2", dustThresholdUsd: 25, maximumObservationDelayMs: 5_000 });
+    let now = 70_000;
+    const runtime = createTraderPerformanceRuntime({ repository, now: () => now, strategyVersion: "trader-ability-v2", dustThresholdUsd: 25, maximumObservationDelayMs: 5_000 });
 
-    await runtime.runOnce();
+    await expect(runtime.runOnce()).resolves.toMatchObject({ entities: 1 });
     const first = repository.latestTraderAbility("fomo:u1", "30d");
-    await runtime.runOnce();
+    repository.insertTraderEvent({ eventId: "sell-later", accountId: "u1", entityId: "fomo:u1", chain: "solana", tokenAddress: "TokenA", side: "sell", amountUsd: 100, priceUsd: 2.5, marketCapUsd: 125_000, tokenAgeMs: 120_000, occurredAt: 121_000, collectedAt: 121_000, source: "fomo_stream" });
+    now = 130_000;
+    await expect(runtime.runOnce()).resolves.toMatchObject({ entities: 1 });
     const second = repository.latestTraderAbility("fomo:u1", "30d");
+    await expect(runtime.runOnce()).resolves.toMatchObject({ entities: 0 });
+    const third = repository.latestTraderAbility("fomo:u1", "30d");
 
-    expect(second).toEqual(first);
+    expect(first).not.toBeNull();
+    expect(repository.traderTokenSamples("fomo:u1")).toHaveLength(1);
+    expect(repository.traderTokenOutcomes(repository.traderTokenSamples("fomo:u1")[0]!.sampleId).length).toBeGreaterThan(0);
     expect(second).toEqual(expect.objectContaining({ strategyVersion: "trader-ability-v2", styles: expect.objectContaining({ EARLY_LAUNCH: expect.any(Number), HIGH_MULTIPLE: expect.any(Number) }) }));
+    expect(third).toEqual(second);
     repository.close();
   });
 });

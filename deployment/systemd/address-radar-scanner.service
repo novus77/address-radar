@@ -1,7 +1,8 @@
 [Unit]
 Description=Address Radar Scanner
-After=network-online.target
+After=network-online.target address-radar-migrate.service
 Wants=network-online.target
+Requires=address-radar-migrate.service
 
 [Service]
 Type=simple
@@ -9,9 +10,12 @@ User=address-radar
 Group=address-radar
 WorkingDirectory=/opt/address-radar/current
 EnvironmentFile=/etc/address-radar/address-radar.env
+Environment=ADDRESS_RADAR_RUNTIME_MIGRATIONS=false
 ExecStart=/opt/address-radar/current/node_modules/.bin/tsx apps/scanner/src/cli.ts
 Restart=on-failure
 RestartSec=5
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

@@ -12,6 +12,9 @@ importers:
         specifier: 4.5.4
         version: 4.5.4
     devDependencies:
+      '@address-radar/database':
+        specifier: workspace:*
+        version: link:packages/database
       '@playwright/test':
         specifier: 1.62.1
         version: 1.62.1
@@ -28,8 +31,29 @@ importers:
         specifier: 4.1.11
         version: 4.1.11(@types/node@24.13.6)(vite@8.3.0(@types/node@24.13.6)(esbuild@0.28.2)(tsx@4.23.15))
 
+  apps/automation:
+    dependencies:
+      '@address-radar/database':
+        specifier: workspace:*
+        version: link:../../packages/database
+      '@address-radar/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@address-radar/scoring':
+        specifier: workspace:*
+        version: link:../../packages/scoring
+      '@address-radar/signal-engine':
+        specifier: workspace:*
+        version: link:../../packages/signal-engine
+      '@address-radar/wallet-analysis':
+        specifier: workspace:*
+        version: link:../wallet-analysis
+
   apps/console:
     dependencies:
+      '@address-radar/aggregation':
+        specifier: workspace:*
+        version: link:../../packages/aggregation
       '@address-radar/database':
         specifier: workspace:*
         version: link:../../packages/database
@@ -63,6 +87,9 @@ importers:
       '@address-radar/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@address-radar/scoring':
+        specifier: workspace:*
+        version: link:../../packages/scoring
       '@address-radar/signal-engine':
         specifier: workspace:*
         version: link:../../packages/signal-engine

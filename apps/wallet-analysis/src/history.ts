@@ -1,5 +1,5 @@
-import { DatabaseSync } from "node:sqlite";
 import { extractEvmSwapEvidence, extractSolanaSwapEvidence, type DiscoveryChain, type EvmSwapLog, type EvmSwapTransaction, type SolanaSwapTransaction } from "@address-radar/collectors";
+import { openAddressRadarDatabase, withAddressRadarWriteTransaction } from "@address-radar/database";
 import type { WalletAnalysisPosition } from "@address-radar/domain";
 import type { WalletHistoryProvider } from "./runtime.js";
 
@@ -10,7 +10,7 @@ export interface HistoricalEventStore { append(analysisId: string, events: reado
 export interface HistoricalCanonicalBlock { readonly chain: string; readonly blockNumber: number; readonly blockHash: string }
 
 export function openHistoricalEventStore(databasePath: string): HistoricalEventStore {
-  const database = new DatabaseSync(databasePath);
+  const database = openAddressRadarDatabase(databasePath);
   database.exec(`
     CREATE TABLE IF NOT EXISTS wallet_analysis_provider_events(
       analysis_id TEXT NOT NULL, event_id TEXT NOT NULL, chain TEXT NOT NULL,
@@ -29,8 +29,7 @@ export function openHistoricalEventStore(databasePath: string): HistoricalEventS
   ensureHistoryColumn(database, "orphaned_at", "INTEGER");
 
   const reconcileBlocks = (analysisId: string, blocks: readonly HistoricalCanonicalBlock[], observedAt: number): void => {
-    database.exec("BEGIN IMMEDIATE");
-    try {
+    withAddressRadarWriteTransaction(database, () => {
       const orphan = database.prepare(`
         UPDATE wallet_analysis_provider_events SET orphaned_at = ?
         WHERE analysis_id = ? AND chain = ? AND source_block_number = ?
@@ -46,14 +45,12 @@ export function openHistoricalEventStore(databasePath: string): HistoricalEventS
         orphan.run(observedAt, analysisId, block.chain, block.blockNumber, block.blockHash);
         upsert.run(analysisId, block.chain, block.blockNumber, block.blockHash, observedAt);
       }
-      database.exec("COMMIT");
-    } catch (error) { database.exec("ROLLBACK"); throw error; }
+    }, { label: "wallet_analysis_reconcile_blocks" });
   };
 
   const store: HistoricalEventStore = {
     append(analysisId, events) {
-      database.exec("BEGIN IMMEDIATE");
-      try {
+      withAddressRadarWriteTransaction(database, () => {
         const upsert = database.prepare(`
           INSERT INTO wallet_analysis_provider_events(
             analysis_id, event_id, chain, token_address, side, token_amount, occurred_at,
@@ -70,8 +67,7 @@ export function openHistoricalEventStore(databasePath: string): HistoricalEventS
           event.tokenAmount, event.occurredAt, event.source,
           event.sourceBlockNumber ?? null, event.sourceBlockHash ?? null,
         );
-        database.exec("COMMIT");
-      } catch (error) { database.exec("ROLLBACK"); throw error; }
+      }, { label: "wallet_analysis_append_events" });
     },
     reconcileBlocks,
     blockHash(analysisId, chain, blockNumber) {
@@ -96,7 +92,7 @@ export function openHistoricalEventStore(databasePath: string): HistoricalEventS
 }
 
 export function openSqliteHistoricalMarketSource(databasePath: string): HistoricalMarketSource & { close(): void } {
-  const database = new DatabaseSync(databasePath);
+  const database = openAddressRadarDatabase(databasePath);
   const row = (sql: string, args: readonly (string | number)[]) => database.prepare(sql).get(...args) as { value: number | null } | undefined;
   const market: HistoricalMarketSource & { close(): void } = {
     async priceAt(chain, token, at) { return row("SELECT price_usd AS value FROM market_observations WHERE chain = ? AND token_address = ? AND observed_at BETWEEN ? AND ? ORDER BY ABS(observed_at - ?) LIMIT 1", [chain.toLowerCase(), normalizeToken(chain, token), at - 1_800_000, at + 1_800_000, at])?.value ?? null; },
@@ -138,7 +134,7 @@ export function createSolanaRpcWalletHistoryProvider(input: { readonly rpc: Anal
     let reachedStart = false;
 
     const processRecord = async (record: SolanaHistoryRecord): Promise<"processed" | "unavailable" | "reached_start"> => {
-      const tx = await input.rpc.request("solana", "getTransaction", [record.signature, { commitment: "confirmed", encoding: "jsonParsed", maxSupportedTransactionVersion: 0 }], request.signal) as (SolanaSwapTransaction & { readonly blockTime?: number | null }) | null;
+      const tx = await input.rpc.request("solana", "getTransaction", [record.signature, { commitment: "confirmed", encoding: "jsonParsed", maxSupportedTransactionVersion: 1 }], request.signal) as (SolanaSwapTransaction & { readonly blockTime?: number | null }) | null;
       if (!tx) return "unavailable";
       const blockTime = record.blockTime ?? tx.blockTime ?? null;
       if (blockTime === null) { missingBlockTime += 1; return "processed"; }
@@ -195,7 +191,8 @@ export function createEvmRpcWalletHistoryProvider(input: { readonly rpc: Analysi
     const safeBlock = await input.rpc.request(chain, "eth_getBlockByNumber", ["0x" + safeHead.toString(16), false], request.signal) as EvmHistoryBlock | null;
     if (!safeBlock?.hash) throw new Error("Block " + safeHead + " is unavailable");
     const safeReachedTo = parseHex(safeBlock.timestamp) * 1_000 >= request.to;
-    const windowStart = await blockAtOrAfter(input.rpc, chain, safeHead, request.from, request.signal);
+    const historyWindow = await blockAtOrAfter(input.rpc, chain, safeHead, request.from, request.signal);
+    const windowStart = historyWindow.blockNumber;
     const logicalNext = state.nextBlock ?? windowStart;
     let scanStart = state.checkpointBlock === undefined ? logicalNext : Math.max(windowStart, logicalNext - reorgLookback);
     if (state.checkpointBlock !== undefined && state.checkpointHash) {
@@ -204,7 +201,7 @@ export function createEvmRpcWalletHistoryProvider(input: { readonly rpc: Analysi
       if (canonical.hash !== state.checkpointHash) scanStart = Math.max(windowStart, state.checkpointBlock - reorgLookback);
     }
     const targetBlock = safeReachedTo
-      ? await blockAtOrAfter(input.rpc, chain, safeHead, request.to, request.signal)
+      ? (await blockAtOrAfter(input.rpc, chain, safeHead, request.to, request.signal)).blockNumber
       : safeHead;
 
     if (scanStart > targetBlock) {
@@ -242,7 +239,7 @@ export function createEvmRpcWalletHistoryProvider(input: { readonly rpc: Analysi
       : { chainIndex, nextBlock: end + 1, checkpointBlock: lastBlock?.blockNumber, checkpointHash: lastBlock?.blockHash });
     const pageTokens = new Set(events.map(event => event.chain + ":" + event.tokenAddress));
     const positions = (await reconstructWalletPositions({ events: input.events.events(request.analysisId), market: input.market, limit: request.limit, observedAt: request.to })).filter(position => pageTokens.has(position.tokenId));
-    return Object.freeze({ positions, nextCursor, done, provenance: "evm-rpc;skipped_insufficient_swap_evidence=" + skipped + (safeReachedTo ? "" : ";waiting_for_safe_head=1") });
+    return Object.freeze({ positions, nextCursor, done, provenance: "evm-rpc;skipped_insufficient_swap_evidence=" + skipped + (historyWindow.truncated ? ";history_truncated=1" : "") + (safeReachedTo ? "" : ";waiting_for_safe_head=1") });
   } };
   return Object.freeze(provider);
 }
@@ -278,7 +275,42 @@ function solanaEvents(wallet: string, signature: string, occurredAt: number, tx:
   });
   return { events, skipped: evidence.candidateDeltas.length > 0 && events.length === 0 ? 1 : 0 };
 }
-async function blockAtOrAfter(rpc: AnalysisRpcClient, chain: Exclude<DiscoveryChain, "solana">, head: number, timestamp: number, signal: AbortSignal) { let low = 0, high = head; while (low < high) { const middle = Math.floor((low + high) / 2); const block = await rpc.request(chain, "eth_getBlockByNumber", [`0x${middle.toString(16)}`, false], signal) as { timestamp: string } | null; if (!block) throw new Error(`Block ${middle} is unavailable`); if (parseHex(block.timestamp) * 1_000 < timestamp) low = middle + 1; else high = middle; } return low; }
+async function blockAtOrAfter(
+  rpc: AnalysisRpcClient,
+  chain: Exclude<DiscoveryChain, "solana">,
+  head: number,
+  timestamp: number,
+  signal: AbortSignal,
+): Promise<{ readonly blockNumber: number; readonly truncated: boolean }> {
+  let low = 0;
+  let high = head;
+  let truncated = false;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    let block: { timestamp: string } | null;
+    try {
+      block = await rpc.request(chain, "eth_getBlockByNumber", [`0x${middle.toString(16)}`, false], signal) as { timestamp: string } | null;
+    } catch (cause) {
+      const earliest = earliestAvailableBlock(cause);
+      if (earliest === null || earliest <= middle || earliest > head) throw cause;
+      low = Math.max(low, earliest);
+      truncated = true;
+      continue;
+    }
+    if (!block) throw new Error(`Block ${middle} is unavailable`);
+    if (parseHex(block.timestamp) * 1_000 < timestamp) low = middle + 1;
+    else high = middle;
+  }
+  return Object.freeze({ blockNumber: low, truncated });
+}
+
+function earliestAvailableBlock(cause: unknown): number | null {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  const match = /earliest available\s+(\d+)/i.exec(message);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
 interface SolanaHistoryRecord { readonly signature: string; readonly blockTime: number | null }
 interface SolanaHistoryCursor { readonly before?: string; readonly pending?: SolanaHistoryRecord }
 interface EvmHistoryBlock { readonly hash?: string; readonly timestamp: string; readonly transactions?: readonly EvmSwapTransaction[] }
@@ -311,3 +343,4 @@ function ensureHistoryColumn(database: DatabaseSync, column: string, definition:
   const columns = database.prepare("PRAGMA table_info(wallet_analysis_provider_events)").all() as Array<{ name: string }>;
   if (!columns.some((item) => item.name === column)) database.exec(`ALTER TABLE wallet_analysis_provider_events ADD COLUMN ${column} ${definition}`);
 }
+import type { DatabaseSync } from "node:sqlite";

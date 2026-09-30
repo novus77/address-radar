@@ -57,7 +57,7 @@ export const startAddressRadarConsole = async (options: AddressRadarConsoleOptio
         return;
       }
 
-      if (url.pathname.startsWith("/api/v1/")) {
+      if (url.pathname.startsWith("/api/v1/") || url.pathname.startsWith("/api/v2/")) {
         if (developerToken && !authenticateDeveloperRequest(request.headers.authorization, developerToken)) {
           respondJson(response, 401, { error: "unauthorized" });
           return;

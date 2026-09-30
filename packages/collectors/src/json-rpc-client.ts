@@ -1,7 +1,7 @@
 import type { FetchLike, JsonRpcClient } from "./types.js";
 
 export class JsonRpcRateLimitError extends Error {
-  constructor(readonly endpoint: string) {
+  constructor(readonly endpoint: string, readonly retryAfterMs?: number) {
     super(`JSON-RPC endpoint rate limited: ${endpoint}`);
     this.name = "JsonRpcRateLimitError";
   }
@@ -83,7 +83,12 @@ async function requestEndpoint<T>(
       body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
       signal: controller.signal,
     });
-    if (response.status === 429) throw new JsonRpcRateLimitError(endpoint);
+    if (response.status === 429) {
+      throw new JsonRpcRateLimitError(
+        endpoint,
+        parseRetryAfterMs(response.headers.get("retry-after")),
+      );
+    }
     if (!response.ok) {
       const error = new Error(`JSON-RPC HTTP ${response.status}: ${endpoint}`);
       if (response.status >= 400 && response.status < 500) throw new JsonRpcResponseError(error.message);
@@ -119,4 +124,13 @@ async function requestEndpoint<T>(
     clearTimeout(timer);
     externalSignal?.removeEventListener("abort", onExternalAbort);
   }
+}
+
+function parseRetryAfterMs(value: string | null): number | undefined {
+  if (!value?.trim()) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1_000);
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return undefined;
+  return Math.max(0, timestamp - Date.now());
 }

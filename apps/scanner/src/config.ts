@@ -17,15 +17,29 @@ export interface ScannerConfig extends ScannerPolicyConfig {
   readonly fomoFilePaths: readonly string[];
   readonly onchainFilePath: string | null;
   readonly onchainRpcEndpoint: string | null;
+  readonly onchainRpcFallbackEndpoint: string | null;
   readonly onchainRpcMethod: string;
   readonly fileStartAtEnd: boolean;
   readonly marketBaseUrl: string | null;
+  readonly fomoLookupQueuePath: string;
   readonly gatewayEndpoint?: string | null;
   readonly gatewayDeliveryEnabled?: boolean;
   readonly gatewayKeyId?: string | null;
   readonly gatewaySharedSecret?: string | null;
   readonly gatewayDeliveryIntervalMs?: number;
   readonly gatewayTimeoutMs?: number;
+  readonly recoveryEnabled: boolean;
+  readonly recoveryPollIntervalMs: number;
+  readonly recoveryLeaseMs: number;
+  readonly recoveryRetryBaseMs: number;
+  readonly minimumFreeDiskBytes: number;
+  readonly diskCheckIntervalMs: number;
+  readonly errorLogWindowMs: number;
+  readonly projectionReplayEnabled?: boolean;
+  readonly projectionReplayLookbackMs?: number;
+  readonly projectionReplayBatchSize?: number;
+  readonly projectionReplayRealtimeWindowMs?: number;
+  readonly projectionReplayRealtimeBatchSize?: number;
 }
 
 const required = (env: Readonly<Record<string, string | undefined>>, key: string): string => {
@@ -54,8 +68,9 @@ export function parseScannerConfig(env: Readonly<Record<string, string | undefin
   if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 1) {
     throw new Error("ADDRESS_RADAR_POLL_INTERVAL_MS must be a positive integer");
   }
+  const databasePath = required(env, "ADDRESS_RADAR_DATABASE_PATH");
   return Object.freeze({
-    databasePath: required(env, "ADDRESS_RADAR_DATABASE_PATH"),
+    databasePath,
     strategyVersion: required(env, "ADDRESS_RADAR_STRATEGY_VERSION"),
     signalThreshold,
     minimumPurchaseUsd: finiteNumber(env.ADDRESS_RADAR_MINIMUM_PURCHASE_USD, 0, "ADDRESS_RADAR_MINIMUM_PURCHASE_USD"),
@@ -66,15 +81,29 @@ export function parseScannerConfig(env: Readonly<Record<string, string | undefin
     fomoFilePaths: Object.freeze([env.ADDRESS_RADAR_FOMO_EVENT_LOG_PATH, env.ADDRESS_RADAR_FOMO_JOURNAL_PATH, env.ADDRESS_RADAR_FOMO_HISTORY_PATH].filter((value): value is string => Boolean(value?.trim())).map(value => value.trim())),
     onchainFilePath: env.ADDRESS_RADAR_ONCHAIN_EVENT_LOG_PATH?.trim() || null,
     onchainRpcEndpoint: env.ADDRESS_RADAR_ONCHAIN_RPC_ENDPOINT?.trim() || null,
+    onchainRpcFallbackEndpoint: env.ADDRESS_RADAR_ONCHAIN_RPC_FALLBACK_ENDPOINT?.trim() || null,
     onchainRpcMethod: env.ADDRESS_RADAR_ONCHAIN_RPC_METHOD?.trim() || "address_radar_walletEvents",
     fileStartAtEnd: env.ADDRESS_RADAR_FILE_START_AT_END !== "false",
     marketBaseUrl: env.ADDRESS_RADAR_MARKET_BASE_URL?.trim() || null,
+    fomoLookupQueuePath: env.ADDRESS_RADAR_FOMO_LOOKUP_QUEUE_PATH?.trim() || `${databasePath}.fomo-lookups.ndjson`,
     gatewayEndpoint: env.ADDRESS_RADAR_GATEWAY_ENDPOINT?.trim() || null,
     gatewayDeliveryEnabled: env.ADDRESS_RADAR_GATEWAY_DELIVERY_ENABLED === "true",
     gatewayKeyId: env.ADDRESS_RADAR_GATEWAY_KEY_ID?.trim() || null,
     gatewaySharedSecret: env.ADDRESS_RADAR_GATEWAY_SHARED_SECRET?.trim() || null,
     gatewayDeliveryIntervalMs: finiteNumber(env.ADDRESS_RADAR_GATEWAY_DELIVERY_INTERVAL_MS, 1_000, "ADDRESS_RADAR_GATEWAY_DELIVERY_INTERVAL_MS"),
     gatewayTimeoutMs: finiteNumber(env.ADDRESS_RADAR_GATEWAY_TIMEOUT_MS, 5_000, "ADDRESS_RADAR_GATEWAY_TIMEOUT_MS"),
+    recoveryEnabled: env.ADDRESS_RADAR_RECOVERY_ENABLED === "true",
+    recoveryPollIntervalMs: finiteNumber(env.ADDRESS_RADAR_RECOVERY_POLL_INTERVAL_MS, 5_000, "ADDRESS_RADAR_RECOVERY_POLL_INTERVAL_MS"),
+    recoveryLeaseMs: finiteNumber(env.ADDRESS_RADAR_RECOVERY_LEASE_MS, 60_000, "ADDRESS_RADAR_RECOVERY_LEASE_MS"),
+    recoveryRetryBaseMs: finiteNumber(env.ADDRESS_RADAR_RECOVERY_RETRY_BASE_MS, 30_000, "ADDRESS_RADAR_RECOVERY_RETRY_BASE_MS"),
+    minimumFreeDiskBytes: finiteNumber(env.ADDRESS_RADAR_MINIMUM_FREE_DISK_BYTES, 2 * 1024 * 1024 * 1024, "ADDRESS_RADAR_MINIMUM_FREE_DISK_BYTES"),
+    diskCheckIntervalMs: finiteNumber(env.ADDRESS_RADAR_DISK_CHECK_INTERVAL_MS, 60_000, "ADDRESS_RADAR_DISK_CHECK_INTERVAL_MS"),
+    errorLogWindowMs: finiteNumber(env.ADDRESS_RADAR_ERROR_LOG_WINDOW_MS, 60_000, "ADDRESS_RADAR_ERROR_LOG_WINDOW_MS"),
+    projectionReplayEnabled: env.ADDRESS_RADAR_PROJECTION_REPLAY_ENABLED === "true",
+    projectionReplayLookbackMs: finiteNumber(env.ADDRESS_RADAR_PROJECTION_REPLAY_LOOKBACK_MS, 24 * 60 * 60_000, "ADDRESS_RADAR_PROJECTION_REPLAY_LOOKBACK_MS"),
+    projectionReplayBatchSize: finiteNumber(env.ADDRESS_RADAR_PROJECTION_REPLAY_BATCH_SIZE, 100, "ADDRESS_RADAR_PROJECTION_REPLAY_BATCH_SIZE"),
+    projectionReplayRealtimeWindowMs: finiteNumber(env.ADDRESS_RADAR_PROJECTION_REPLAY_REALTIME_WINDOW_MS, 60 * 60_000, "ADDRESS_RADAR_PROJECTION_REPLAY_REALTIME_WINDOW_MS"),
+    projectionReplayRealtimeBatchSize: finiteNumber(env.ADDRESS_RADAR_PROJECTION_REPLAY_REALTIME_BATCH_SIZE, 25, "ADDRESS_RADAR_PROJECTION_REPLAY_REALTIME_BATCH_SIZE"),
   });
 }
 

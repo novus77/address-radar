@@ -106,13 +106,14 @@ describe("token signal policy", () => {
     expect(decision).toMatchObject({ action: "rebroadcast", broadcastNumber: 2, consumeEvidenceIds: ["c", "d"] });
   });
 
-  it("qualifies created tokens with three traders inside ten minutes", () => {
+  it("keeps created tokens in observation even with three traders inside ten minutes", () => {
     const decision = evaluateTokenSignal({ previous: null, threshold: 0.7, evidence: [
       evidence("a", 0.8, "entity-a", { lifecycleStage: "created", occurredAt: 1_000_000 }),
       evidence("b", 0.8, "entity-b", { lifecycleStage: "created", occurredAt: 700_001 }),
       evidence("c", 0.8, "entity-c", { lifecycleStage: "created", occurredAt: 999_999 }),
     ] });
-    expect(decision).toMatchObject({ action: "broadcast", signalFamily: "NEW_TOKEN_DISCOVERY", windowMs: 600_000, participantCount: 3 });
+    expect(decision).toMatchObject({ action: "observe", signalFamily: "NEW_TOKEN_DISCOVERY", windowMs: 600_000, participantCount: 3 });
+    expect(decision.missingConditions).toContain("token_not_launched");
   });
 
   it("requires one actual ten-thousand-dollar buy", () => {
@@ -135,5 +136,13 @@ describe("token signal policy", () => {
       evidence("qa", 0.8, "a"), evidence("qb", 0.8, "b"), evidence("low", 0.4, "c"),
     ] });
     expect(decision.consumeEvidenceIds).toEqual(["qa", "qb"]);
+  });
+
+  it("counts wallets buying within ten seconds as one independent participant", () => {
+    const decision = evaluateTokenSignal({ previous: null, threshold: 0.7, evidence: [
+      evidence("a", 0.8, "a", { occurredAt: 1_000, independenceKey: "bundle:a+b", bundleRisk: "strong" }),
+      evidence("b", 0.8, "b", { occurredAt: 6_000, independenceKey: "bundle:a+b", bundleRisk: "strong" }),
+    ] });
+    expect(decision).toMatchObject({ action: "observe", participantCount: 1, totalBuyUsd: 2_000, bundleDiagnostics: { rawParticipantCount: 2, independentParticipantCount: 1, bundledParticipantCount: 2 } });
   });
 });

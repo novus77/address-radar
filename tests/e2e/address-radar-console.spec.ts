@@ -51,6 +51,15 @@ for (const viewport of [
     for (const heading of ["Fomo 用户", "Solana 地址", "EVM 地址", "最强证据", "独立代币", "进度记录", "最高倍数", "发现时间"]) {
       await expect(page.locator('section[data-panel="candidates"]')).toContainText(heading);
     }
+    await page.getByRole("button", { name: "历史覆盖与重评估" }).click();
+    for (const label of ["历史链", "里程碑状态", "回补状态", "早期买家", "候选证据"]) {
+      await expect(page.getByLabel(label)).toBeVisible();
+    }
+    for (const heading of ["代币", "首次达到 1M", "历史最高市值", "里程碑", "历史回补", "早期买家", "证据交易员", "诊断", "操作"]) {
+      await expect(page.locator('section[data-panel="milestones"]')).toContainText(heading);
+    }
+    await expect(page.locator("#historical-operations")).toContainText("Dune 今日额度");
+    await expect(page.locator("#historical-partitions-grid")).toContainText("暂无历史分区");
     await expect(page.locator('section[data-panel="detail"] h2')).toHaveText("交易员详情");
   });
 }

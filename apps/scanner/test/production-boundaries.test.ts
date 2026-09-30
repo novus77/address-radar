@@ -7,7 +7,16 @@ import { openAddressRadarRepository } from "@address-radar/database";
 import { createConfiguredCollectors } from "../src/collectors.js";
 import { createScannerRuntime } from "../src/runtime.js";
 
-const config = (path: string) => ({ databasePath: ":memory:", strategyVersion: "address-v1", signalThreshold: 0.7, minimumPurchaseUsd: 0, minimumAggregateBuyUsd: 0, allowedChains: ["solana"], excludedTokenIds: [], pollIntervalMs: 1_000, fomoFilePaths: [path], onchainFilePath: null, onchainRpcEndpoint: null, onchainRpcMethod: "events", fileStartAtEnd: false, marketBaseUrl: null });
+const config = (path: string) => ({
+  databasePath: ":memory:", strategyVersion: "address-v1", signalThreshold: 0.7,
+  minimumPurchaseUsd: 0, minimumAggregateBuyUsd: 0, allowedChains: ["solana"],
+  excludedTokenIds: [], pollIntervalMs: 1_000, fomoFilePaths: [path],
+  onchainFilePath: null, onchainRpcEndpoint: null, onchainRpcFallbackEndpoint: null,
+  onchainRpcMethod: "events", fileStartAtEnd: false, marketBaseUrl: null,
+  fomoLookupQueuePath: `${path}.lookups`, recoveryEnabled: false,
+  recoveryPollIntervalMs: 1_000, recoveryLeaseMs: 60_000, recoveryRetryBaseMs: 1_000,
+  minimumFreeDiskBytes: 1, diskCheckIntervalMs: 1_000, errorLogWindowMs: 60_000,
+});
 const line = (eventId: string) => JSON.stringify({ kind: "event", value: { eventId, eventType: "fomo.activity.buy", payload: { action: "buy", occurredAt: 1_000, usdAmount: 1_000, tokenCreatedAt: 500, asset: { chain: "solana", tokenAddress: "TokenA" }, trader: { id: "account-a", handle: "alpha" } } } });
 
 describe("scanner production boundaries", () => {

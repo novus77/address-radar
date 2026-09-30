@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
 
 import {
   addressRadarBroadcastId,
@@ -16,6 +15,7 @@ import {
   type OutcomeObservation,
   type TokenLifecycleStage,
   type TraderAbilitySnapshot,
+  type TraderAbility,
   type TraderAbilityWindow,
   type TraderBackfillJob,
   type TraderEntityInput,
@@ -26,9 +26,11 @@ import {
   type TraderTokenSample,
   type WalletIdentityInput,
 } from "@address-radar/domain";
-import { matchCanonicalTraderEvent, type TokenAggregationRepository } from "@address-radar/aggregation";
+import { matchCanonicalTraderEvent, type BundleDiagnostics, type TokenAggregationRepository, type WalletBundleRelation } from "@address-radar/aggregation";
 import type { RuntimeQualityRepository, RuntimeQualitySnapshot } from "@address-radar/observability";
 import { migrateAddressRadarDatabase } from "./migrations.js";
+import { openAddressRadarDatabase, withAddressRadarWriteTransaction } from "./connection.js";
+import { recordResolvedWalletAutomation } from "./identity-automation.js";
 
 export type AddressEvidenceSource = "fomo" | "onchain";
 export type AddressEvidenceSourceState = "FOMO_ONLY" | "ONCHAIN_ONLY" | "FOMO_AND_ONCHAIN" | "UNKNOWN";
@@ -43,6 +45,12 @@ export interface AddressSignalEvidence {
   readonly lifecycleStage?: TokenLifecycleStage;
   readonly traderTags?: readonly string[];
   readonly dedupeKey?: string;
+}
+export type EventProjectionClaimStatus = "claimed" | "completed" | "busy";
+export interface EventProjectionKey {
+  readonly eventId: string;
+  readonly projectionType: string;
+  readonly sourceRevision: string;
 }
 
 export type LeaderboardWindow = "24h" | "30d";
@@ -66,7 +74,7 @@ export interface TraderPopulationAuditRecord { readonly current30dAccountIds: re
 
 export interface TraderLifecycleEventRecord { readonly lifecycleEventId: string; readonly entityId: string; readonly previousState: TraderEntityInput["lifecycle"]; readonly nextState: TraderEntityInput["lifecycle"]; readonly reasons: readonly string[]; readonly strategyVersion: string; readonly occurredAt: number }
 export interface TokenAggregationStateRecord { readonly tokenId: string; readonly chain: string; readonly tokenAddress: string; readonly currentScore: number; readonly peakScore: number; readonly broadcastCount: number; readonly updatedAt: number; readonly consumedEvidenceIds: readonly string[]; readonly consumedEconomicKeys: readonly string[] }
-export interface TokenEvaluationRecord { readonly tokenId: string; readonly chain: string; readonly tokenAddress: string; readonly action: "observe" | "broadcast" | "rebroadcast"; readonly signalFamily: AddressSignalFamily | null; readonly lifecycleStage: TokenLifecycleStage; readonly score: number; readonly participantCount: number; readonly totalBuyUsd: number; readonly sourceState: AddressEvidenceSourceState; readonly windowMs: number; readonly missingConditions: readonly string[]; readonly updatedAt: number }
+export interface TokenEvaluationRecord { readonly tokenId: string; readonly chain: string; readonly tokenAddress: string; readonly action: "observe" | "broadcast" | "rebroadcast"; readonly signalFamily: AddressSignalFamily | null; readonly lifecycleStage: TokenLifecycleStage; readonly score: number; readonly participantCount: number; readonly totalBuyUsd: number; readonly sourceState: AddressEvidenceSourceState; readonly windowMs: number; readonly missingConditions: readonly string[]; readonly bundleDiagnostics?: BundleDiagnostics; readonly updatedAt: number }
 export interface BroadcastRecord { readonly broadcastId: string; readonly tokenId: string; readonly broadcastNumber: number; readonly strategyVersion: string; readonly score: number; readonly triggeredAt: number; readonly payload: unknown }
 export interface CommitTokenBroadcastInput { readonly chain: string; readonly tokenAddress: string; readonly expectedPreviousBroadcastCount: number; readonly strategyVersion: string; readonly score: number; readonly triggeredAt: number; readonly evidenceIds: readonly string[]; readonly economicKeys: readonly string[]; readonly evaluation: Omit<TokenEvaluationRecord, "tokenId">; readonly payload: unknown; readonly publicSignal: unknown }
 export interface CommitTokenBroadcastResult { readonly inserted: boolean; readonly broadcastNumber: number }
@@ -99,6 +107,14 @@ export interface AddressRadarRepository extends TokenAggregationRepository, Runt
   entityForAccount(accountId: string): string | null;
   upsertTraderEntity(input: TraderEntityInput): void;
   ensureTraderEntity(input: TraderEntityInput): void;
+  admitHistoricalWalletCandidate(input: { readonly traderId: string; readonly chain: string; readonly address: string; readonly observedAt: number; readonly strategyVersion: string }): void;
+  admitManualTrader(input: {
+    readonly entityId: string;
+    readonly displayName: string;
+    readonly wallets: readonly { readonly family: "solana" | "evm"; readonly address: string }[];
+    readonly abilities: readonly TraderAbility[];
+    readonly observedAt: number;
+  }): void;
   admitLeaderboardTrader(input: { readonly entityId: string; readonly accountId: string; readonly observedAt: number }): void;
   traderPopulationAudit(): TraderPopulationAuditRecord;
   reconcileLeaderboardPopulation(input: { readonly current30dAccountIds: readonly string[]; readonly observedAt: number }): { readonly admitted: number; readonly suspended: number };
@@ -106,8 +122,10 @@ export interface AddressRadarRepository extends TokenAggregationRepository, Runt
   insertTraderEvent(event: TraderEvent): { readonly inserted: boolean };
   eventsForEntity(entityId: string): readonly TraderEvent[];
   eventsForToken(chain: string, tokenAddress: string): readonly TraderEvent[];
+  eventsMissingProjection(input: { readonly projectionType: string; readonly sourceRevision: string; readonly since: number; readonly limit: number; readonly order?: "oldest" | "newest" }): readonly TraderEvent[];
   traderEntity(entityId: string): TraderEntityRecord | null;
   traderEntityIdsWithEvents(): readonly string[];
+  traderEntityIdsRequiringPerformance(asOf: number, limit: number): readonly string[];
   identityResolution(handle: string): IdentityResolutionCache | null;
   saveIdentityResolution(input: IdentityResolutionCache): void;
   recordLeaderboardObservation(input: LeaderboardObservationInput): void;
@@ -141,12 +159,25 @@ export interface AddressRadarRepository extends TokenAggregationRepository, Runt
   milestoneBackfillJobs(): readonly MilestoneBackfillJob[];
   saveMilestoneEvaluation(evaluation: MilestoneEvaluation): void;
   latestMilestoneEvaluation(milestoneId: string): MilestoneEvaluation | null;
+  enqueueHistoricalBackfillPartition(partition: HistoricalBackfillPartition): { readonly inserted: boolean };
+  claimHistoricalBackfillPartition(now: number, leaseMs: number): HistoricalBackfillPartition | null;
+  checkpointHistoricalBackfillPartition(partitionId: string, input: { readonly executionId: string; readonly nextOffset: number; readonly rowCount: number; readonly watermark: number; readonly updatedAt: number }): void;
+  completeHistoricalBackfillPartition(partitionId: string, input: { readonly executionId: string; readonly rowCount: number; readonly watermark: number; readonly completedAt: number }): void;
+  failHistoricalBackfillPartition(partitionId: string, error: string, nextRetryAt: number): void;
+  historicalBackfillPartitions(): readonly HistoricalBackfillPartition[];
+  recordHistoricalCreditUsage(usageDay: string, creditsUsed: number, updatedAt: number): void;
+  historicalCreditsUsed(usageDay: string): number;
+  advanceHistoricalWatermark(chain: string, queryKind: HistoricalBackfillQueryKind, watermark: number, updatedAt: number): void;
+  historicalWatermark(chain: string, queryKind: HistoricalBackfillQueryKind): number | null;
   saveCandidateDiscovery(input: CandidateDiscoveryInput): void;
   activateDiscoveredCandidate(accountId: string, updatedAt: number): string | null;
   candidateDiscoveries(accountId: string): readonly CandidateDiscoveryInput[];
   candidateDiscoveriesForEntity(entityId: string): readonly CandidateDiscoveryInput[];
   saveAddressSignalEvidence(chain: string, tokenAddress: string, evidence: AddressSignalEvidence): void;
   addressSignalEvidenceForToken(chain: string, tokenAddress: string, since: number): readonly AddressSignalEvidence[];
+  claimEventProjection(input: EventProjectionKey & { readonly owner: string; readonly now: number; readonly leaseMs: number }): EventProjectionClaimStatus;
+  completeEventProjection(input: EventProjectionKey & { readonly owner: string; readonly resultKey: string; readonly completedAt: number }): boolean;
+  failEventProjection(input: EventProjectionKey & { readonly owner: string; readonly error: string; readonly nextAttemptAt: number; readonly failedAt: number }): boolean;
   saveTokenEvaluation(input: Omit<TokenEvaluationRecord, "tokenId">): void;
   tokenEvaluationState(chain: string, tokenAddress: string): TokenEvaluationRecord | null;
   tokenAggregationState(chain: string, tokenAddress: string): TokenAggregationStateRecord | null;
@@ -216,21 +247,12 @@ const toSignalOutboxRecord = (row: Record<string, unknown>): SignalOutboxRecord 
 });
 
 export function openAddressRadarRepository(databasePath: string): AddressRadarRepository {
-  const database = new DatabaseSync(databasePath);
+  const database = openAddressRadarDatabase(databasePath);
   migrateAddressRadarDatabase(database);
-  database.exec("PRAGMA busy_timeout = 100");
 
   const transaction = <T>(operation: () => T): T => {
     if (database.isTransaction) return operation();
-    database.exec("BEGIN IMMEDIATE");
-    try {
-      const result = operation();
-      database.exec("COMMIT");
-      return result;
-    } catch (error) {
-      database.exec("ROLLBACK");
-      throw error;
-    }
+    return withAddressRadarWriteTransaction(database, operation);
   };
 
   const markIdentityResolutionInTransaction = (
@@ -294,12 +316,21 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
       `).run(`identity-admission:${entity.entityId}:${occurredAt}`, entity.entityId, entity.lifecycle, nextLifecycle, JSON.stringify(["identity_resolved"]), "identity-admission-v1", occurredAt);
         }
-        synchronizeTraderSignalProfile(entity.entityId, occurredAt);
-        database.prepare(`
-      INSERT OR IGNORE INTO monitoring_registry_outbox(event_id, entity_id, event_type, payload, status, created_at, published_at)
-      VALUES (?, ?, 'identity.updated', ?, 'published', ?, ?)
-    `).run(`identity-registry:${entity.entityId}:${occurredAt}`, entity.entityId, JSON.stringify({ entityId: entity.entityId, accountId, lifecycle: nextLifecycle }), occurredAt, occurredAt);
-    database.prepare("UPDATE monitoring_registry_state SET version = version + 1, updated_at = ? WHERE singleton = 1").run(occurredAt);
+    const wallets = database.prepare(`
+      SELECT chain_family AS chainFamily, address
+      FROM wallet_identities
+      WHERE account_id = ?
+      ORDER BY chain_family, address
+    `).all(accountId) as Array<{ chainFamily: "solana" | "evm"; address: string }>;
+    for (const wallet of wallets) {
+      recordResolvedWalletAutomation(database, {
+        traderId: entity.entityId,
+        accountId,
+        chainFamily: wallet.chainFamily,
+        address: wallet.address,
+        occurredAt,
+      });
+    }
     synchronizeTraderSignalProfile(entity.entityId, occurredAt);
     return entity.entityId;
   };
@@ -325,11 +356,13 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
       `).run(`wallet-admission:${entityId}:${occurredAt}`, entityId, entity.lifecycle, nextLifecycle, JSON.stringify(["wallet_identity_confirmed"]), "wallet-analysis-review-v1", occurredAt);
     }
     synchronizeTraderSignalProfile(entityId, occurredAt);
-    database.prepare(`
-      INSERT OR IGNORE INTO monitoring_registry_outbox(event_id, entity_id, event_type, payload, status, created_at, published_at)
-      VALUES (?, ?, 'identity.updated', ?, 'published', ?, ?)
-    `).run(`wallet-registry:${entityId}:${occurredAt}`, entityId, JSON.stringify({ entityId, chainFamily, address, lifecycle: nextLifecycle }), occurredAt, occurredAt);
-    database.prepare("UPDATE monitoring_registry_state SET version = version + 1, updated_at = ? WHERE singleton = 1").run(occurredAt);
+    recordResolvedWalletAutomation(database, {
+      traderId: entityId,
+      accountId: entityId,
+      chainFamily,
+      address,
+      occurredAt,
+    });
   };
 
   const completeIdentityResolutionInTransaction = (handle: string, accountId: string, occurredAt: number): string | null => {
@@ -349,24 +382,6 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     `).run(occurredAt, occurredAt, normalizedHandle, accountId);
     if (updated.changes !== 1) throw new Error(`Identity resolution queue update failed for ${normalizedHandle}`);
 
-    if (queued.status === "resolved") {
-      const admitted = database.prepare(`
-        SELECT e.entity_id AS entityId, e.lifecycle,
-          EXISTS(
-            SELECT 1 FROM monitoring_registry_outbox m
-            WHERE m.entity_id = e.entity_id AND m.event_type = 'identity.updated'
-          ) AS registered
-        FROM trader_entities e
-        JOIN entity_accounts ea ON ea.entity_id = e.entity_id
-        WHERE ea.account_id = ?
-        ORDER BY ea.last_observed_at DESC
-        LIMIT 1
-      `).get(accountId) as { entityId: string; lifecycle: TraderEntityInput["lifecycle"]; registered: number } | undefined;
-      if (admitted && admitted.lifecycle !== "candidate" && admitted.lifecycle !== "suspended" && admitted.registered === 1) {
-        return admitted.entityId;
-      }
-    }
-
     return completeIdentityAdmissionInTransaction(accountId, occurredAt);
   };
 
@@ -377,14 +392,14 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
       assertTimestamp(input.firstSeenAt, "firstSeenAt");
       assertTimestamp(input.lastSeenAt, "lastSeenAt");
       if (input.lastSeenAt < input.firstSeenAt) throw new Error("lastSeenAt must not precede firstSeenAt");
-      database.prepare(`
+      transaction(() => database.prepare(`
         INSERT INTO fomo_accounts(account_id, handle, first_seen_at, last_seen_at)
         VALUES (?, ?, ?, ?)
         ON CONFLICT(account_id) DO UPDATE SET
           handle = excluded.handle,
           first_seen_at = MIN(fomo_accounts.first_seen_at, excluded.first_seen_at),
           last_seen_at = MAX(fomo_accounts.last_seen_at, excluded.last_seen_at)
-      `).run(input.accountId, handle, input.firstSeenAt, input.lastSeenAt);
+      `).run(input.accountId, handle, input.firstSeenAt, input.lastSeenAt));
     },
 
     attachWallet(input) {
@@ -406,7 +421,27 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
           last_observed_at = MAX(wallet_identities.last_observed_at, excluded.last_observed_at)
       `).run(input.accountId, input.chainFamily, address, confidence, input.source, existing?.first_observed_at ?? input.observedAt, input.observedAt);
       const entities = database.prepare("SELECT entity_id AS entityId FROM entity_accounts WHERE account_id = ?").all(input.accountId) as Array<{ entityId: string }>;
-      for (const entity of entities) synchronizeTraderSignalProfile(entity.entityId, input.observedAt);
+      for (const entity of entities) {
+        database.prepare(`
+          INSERT INTO trader_monitoring_policy(trader_id, policy, updated_at)
+          VALUES (?, 'realtime', ?)
+          ON CONFLICT(trader_id) DO UPDATE SET
+            policy = 'realtime', updated_at = excluded.updated_at
+          WHERE trader_monitoring_policy.policy != 'off'
+        `).run(entity.entityId, input.observedAt);
+        database.prepare(`
+          INSERT INTO trader_coverage_state(
+            trader_id, tier, coverage_state, last_covered_at,
+            next_evaluation_at, strategy_version, updated_at
+          ) VALUES (?, 'T2', 'queued', NULL, ?, 'trader-automation-v1', ?)
+          ON CONFLICT(trader_id) DO UPDATE SET
+            tier = CASE WHEN trader_coverage_state.tier = 'T3' THEN 'T2' ELSE trader_coverage_state.tier END,
+            coverage_state = CASE WHEN trader_coverage_state.coverage_state = 'unseen' THEN 'queued' ELSE trader_coverage_state.coverage_state END,
+            next_evaluation_at = MIN(trader_coverage_state.next_evaluation_at, excluded.next_evaluation_at),
+            updated_at = MAX(trader_coverage_state.updated_at, excluded.updated_at)
+        `).run(entity.entityId, input.observedAt, input.observedAt);
+        synchronizeTraderSignalProfile(entity.entityId, input.observedAt);
+      }
     },
 
     account(accountId) {
@@ -460,6 +495,110 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         INSERT OR IGNORE INTO trader_entities(entity_id, lifecycle, manual, locked, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(input.entityId, input.lifecycle, Number(input.manual), Number(input.locked), input.createdAt, input.updatedAt);
+    },
+
+    admitHistoricalWalletCandidate(input) {
+      assertId(input.traderId, "traderId");
+      assertTimestamp(input.observedAt, "observedAt");
+      const chain = input.chain.trim().toLowerCase();
+      const chainFamily = chain === "solana" ? "solana" : "evm";
+      const address = normalizeWalletAddress(chainFamily, input.address);
+      transaction(() => {
+        database.prepare(`
+          INSERT INTO trader_entities(entity_id, lifecycle, manual, locked, created_at, updated_at)
+          VALUES (?, 'candidate', 0, 0, ?, ?)
+          ON CONFLICT(entity_id) DO UPDATE SET updated_at = MAX(trader_entities.updated_at, excluded.updated_at)
+        `).run(input.traderId, input.observedAt, input.observedAt);
+        database.prepare(`
+          INSERT INTO entity_wallet_identities(entity_id, chain_family, address, confidence, source, first_observed_at, last_observed_at)
+          VALUES (?, ?, ?, 'high', 'historical_milestone', ?, ?)
+          ON CONFLICT(entity_id, chain_family, address) DO UPDATE SET
+            confidence = 'high', source = 'historical_milestone',
+            last_observed_at = MAX(entity_wallet_identities.last_observed_at, excluded.last_observed_at)
+        `).run(input.traderId, chainFamily, address, input.observedAt, input.observedAt);
+        database.prepare(`
+          INSERT INTO trader_sources(entity_id, source_key, first_observed_at, last_observed_at, payload)
+          VALUES (?, 'milestone', ?, ?, ?)
+          ON CONFLICT(entity_id, source_key) DO UPDATE SET
+            last_observed_at = MAX(trader_sources.last_observed_at, excluded.last_observed_at),
+            payload = excluded.payload
+        `).run(input.traderId, input.observedAt, input.observedAt, JSON.stringify({ chain, strategyVersion: input.strategyVersion }));
+        database.prepare("INSERT OR IGNORE INTO trader_tags(entity_id, category, tag, created_at) VALUES (?, 'source', 'source.milestone_discovery', ?)").run(input.traderId, input.observedAt);
+        recordResolvedWalletAutomation(database, { traderId: input.traderId, accountId: input.traderId, chainFamily, address, occurredAt: input.observedAt });
+        database.prepare(`
+          INSERT INTO trader_monitoring_policy(trader_id, policy, updated_at)
+          VALUES (?, 'periodic', ?)
+          ON CONFLICT(trader_id) DO UPDATE SET
+            policy = CASE WHEN trader_monitoring_policy.policy = 'off' THEN 'off' ELSE 'periodic' END,
+            updated_at = MAX(trader_monitoring_policy.updated_at, excluded.updated_at)
+        `).run(input.traderId, input.observedAt);
+        database.prepare(`
+          INSERT INTO trader_coverage_state(trader_id, tier, coverage_state, last_covered_at, next_evaluation_at, strategy_version, updated_at)
+          VALUES (?, 'T2', 'queued', NULL, ?, ?, ?)
+          ON CONFLICT(trader_id) DO UPDATE SET
+            next_evaluation_at = MIN(trader_coverage_state.next_evaluation_at, excluded.next_evaluation_at),
+            strategy_version = excluded.strategy_version,
+            updated_at = MAX(trader_coverage_state.updated_at, excluded.updated_at)
+        `).run(input.traderId, input.observedAt, input.strategyVersion, input.observedAt);
+      });
+    },
+
+    admitManualTrader(input) {
+      assertId(input.entityId, "entityId");
+      assertTimestamp(input.observedAt, "observedAt");
+      const displayName = input.displayName.trim();
+      if (!displayName || displayName.length > 128) throw new Error("displayName must be non-empty and at most 128 characters");
+      if (input.wallets.length === 0) throw new Error("At least one wallet is required");
+      transaction(() => {
+        database.prepare(`
+          INSERT INTO trader_entities(entity_id, lifecycle, manual, locked, created_at, updated_at)
+          VALUES (?, 'probation', 1, 1, ?, ?)
+          ON CONFLICT(entity_id) DO UPDATE SET
+            lifecycle = CASE WHEN trader_entities.lifecycle IN ('candidate', 'suspended') THEN 'probation' ELSE trader_entities.lifecycle END,
+            manual = 1,
+            locked = 1,
+            updated_at = MAX(trader_entities.updated_at, excluded.updated_at)
+        `).run(input.entityId, input.observedAt, input.observedAt);
+        database.prepare(`
+          INSERT INTO trader_profiles(entity_id, display_name, priority, notes, monitoring_enabled, fomo_monitoring_enabled, onchain_monitoring_enabled, created_at, updated_at)
+          VALUES (?, ?, 'important', NULL, 1, 0, 1, ?, ?)
+          ON CONFLICT(entity_id) DO UPDATE SET
+            display_name = excluded.display_name,
+            priority = 'important',
+            monitoring_enabled = 1,
+            onchain_monitoring_enabled = 1,
+            updated_at = MAX(trader_profiles.updated_at, excluded.updated_at)
+        `).run(input.entityId, displayName, input.observedAt, input.observedAt);
+        database.prepare(`
+          INSERT INTO trader_sources(entity_id, source_key, first_observed_at, last_observed_at, payload)
+          VALUES (?, 'manual', ?, ?, '{}')
+          ON CONFLICT(entity_id, source_key) DO UPDATE SET
+            last_observed_at = MAX(trader_sources.last_observed_at, excluded.last_observed_at)
+        `).run(input.entityId, input.observedAt, input.observedAt);
+        database.prepare("INSERT OR IGNORE INTO trader_tags(entity_id, category, tag, created_at) VALUES (?, 'source', 'source.manual', ?)")
+          .run(input.entityId, input.observedAt);
+        for (const ability of new Set(input.abilities)) {
+          database.prepare(`
+            INSERT INTO trader_abilities(entity_id, ability_key, confidence, sample_count, evidence_window, assigned_at, last_evaluated_at)
+            VALUES (?, ?, 1, 0, 'manual', ?, ?)
+            ON CONFLICT(entity_id, ability_key, evidence_window) DO UPDATE SET
+              confidence = 1,
+              last_evaluated_at = MAX(trader_abilities.last_evaluated_at, excluded.last_evaluated_at)
+          `).run(input.entityId, ability, input.observedAt, input.observedAt);
+        }
+        for (const wallet of input.wallets) admitDirectEntityWalletInTransaction(input.entityId, wallet.family, wallet.address, input.observedAt);
+        database.prepare(`
+          INSERT OR IGNORE INTO trader_lifecycle_audit(audit_id, entity_id, from_state, to_state, reason_code, reason_text, actor, occurred_at)
+          VALUES (?, ?, 'unresolved', 'observing', 'manual_wallet_added', '手动添加的钱包已进入观察', 'developer', ?)
+        `).run(`manual-admission:${input.entityId}:${input.observedAt}`, input.entityId, input.observedAt);
+        repository.recordOperatorAudit({
+          auditId: `manual-trader:${input.entityId}:${input.observedAt}`,
+          action: "identity.manual_trader_created",
+          actor: "developer",
+          payload: { entityId: input.entityId, walletCount: input.wallets.length, abilities: input.abilities },
+          occurredAt: input.observedAt,
+        });
+      });
     },
 
     admitLeaderboardTrader(input) {
@@ -592,6 +731,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
 
     insertTraderEvent(event) {
       validateTraderEvent(event);
+      return transaction(() => {
       const result = database.prepare(`
         INSERT OR IGNORE INTO trader_events(
           event_id, account_id, entity_id, chain, token_address, side,
@@ -599,16 +739,32 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
           occurred_at, collected_at, source
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(event.eventId, event.accountId, event.entityId, event.chain, event.tokenAddress, event.side, event.amountUsd, event.priceUsd, event.marketCapUsd, event.tokenAgeMs, event.occurredAt, event.collectedAt, event.source);
-      if (result.changes === 1) {
-        const sourceFamily = event.source === "onchain_wallet" ? "onchain" : "fomo";
-        const sourceStatus = sourceFamily === "onchain" ? "ONCHAIN_ONLY" : "FOMO_ONLY";
-        const observationId = `observation:${event.eventId}`;
+      if (event.priceUsd !== null && event.priceUsd > 0) {
         database.prepare(`
+          INSERT INTO market_observations(chain, token_address, observed_at, price_usd, source)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(chain, token_address, observed_at, source)
+          DO UPDATE SET price_usd = excluded.price_usd
+        `).run(
+          event.chain.toLowerCase(),
+          normalizeAddressRadarTokenAddress(event.chain, event.tokenAddress),
+          event.occurredAt,
+          event.priceUsd,
+          `trader_event:${event.source}`,
+        );
+      }
+      const sourceFamily = event.source === "onchain_wallet" ? "onchain" : "fomo";
+      const sourceStatus = sourceFamily === "onchain" ? "ONCHAIN_ONLY" : "FOMO_ONLY";
+      const observationId = sourceFamily === "fomo"
+        ? `observation:${event.eventId}`
+        : `observation:onchain:${event.eventId}`;
+      const observation = database.prepare(`
           INSERT OR IGNORE INTO raw_trader_observations(
             observation_id, event_id, entity_id, source_family, chain, token_address,
             side, amount_usd, occurred_at, payload, recorded_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(observationId, event.eventId, event.entityId, sourceFamily, event.chain.toLowerCase(), normalizeAddressRadarTokenAddress(event.chain, event.tokenAddress), event.side, event.amountUsd, event.occurredAt, JSON.stringify(event), event.collectedAt);
+      if (observation.changes === 1) {
         const candidates = database.prepare(`
           SELECT canonical_event_id AS canonicalEventId, amount_usd AS amountUsd, source_status AS sourceStatus
           FROM canonical_trader_events
@@ -632,6 +788,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         database.prepare("INSERT OR IGNORE INTO canonical_trader_event_observations(canonical_event_id, observation_id) VALUES (?, ?)").run(canonicalEventId, observationId);
       }
       return Object.freeze({ inserted: result.changes === 1 });
+      });
     },
 
     eventsForEntity(entityId) {
@@ -641,6 +798,27 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
 
     eventsForToken(chain, tokenAddress) {
       const rows = database.prepare("SELECT * FROM trader_events WHERE chain = ? AND token_address = ? ORDER BY occurred_at, event_id").all(chain, tokenAddress) as TraderEventRow[];
+      return Object.freeze(rows.map(toTraderEvent));
+    },
+
+    eventsMissingProjection(input) {
+      assertTimestamp(input.since, "since");
+      if (!Number.isSafeInteger(input.limit) || input.limit < 1) throw new Error("limit must be a positive safe integer");
+      const direction = input.order === "newest" ? "DESC" : "ASC";
+      const rows = database.prepare(`
+        SELECT events.*
+        FROM trader_events events
+        WHERE events.occurred_at >= ?
+          AND NOT EXISTS (
+            SELECT 1 FROM event_projections projections
+            WHERE projections.event_id = events.event_id
+              AND projections.projection_type = ?
+              AND projections.source_revision = ?
+              AND projections.status = 'completed'
+          )
+        ORDER BY events.occurred_at ${direction}, events.event_id ${direction}
+        LIMIT ?
+      `).all(input.since, input.projectionType, input.sourceRevision, input.limit) as TraderEventRow[];
       return Object.freeze(rows.map(toTraderEvent));
     },
 
@@ -664,17 +842,92 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     traderSignalProfile(entityId) {
       const row = database.prepare(`
         SELECT e.entity_id AS entityId, e.lifecycle,
-          EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id AND ea.confidence = 'confirmed') AS mapped,
+          (EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id AND ea.confidence = 'confirmed')
+            OR EXISTS(SELECT 1 FROM entity_wallet_identities ew WHERE ew.entity_id = e.entity_id AND ew.confidence IN ('high', 'confirmed'))) AS mapped,
           COALESCE(p.monitoring_enabled, 0) AS monitoringEnabled,
           COALESCE(p.fomo_monitoring_enabled, 0) AS fomoMonitoringEnabled,
-          COALESCE(p.onchain_monitoring_enabled, 0) AS onchainMonitoringEnabled
-        FROM trader_entities e LEFT JOIN trader_profiles p ON p.entity_id = e.entity_id WHERE e.entity_id = ?
-      `).get(entityId) as { entityId: string; lifecycle: TraderLifecycle; mapped: number; monitoringEnabled: number; fomoMonitoringEnabled: number; onchainMonitoringEnabled: number } | undefined;
-      return row ? Object.freeze({ entityId: row.entityId, lifecycle: row.lifecycle, mapped: row.mapped === 1, monitoringEnabled: row.monitoringEnabled === 1, fomoMonitoringEnabled: row.fomoMonitoringEnabled === 1, onchainMonitoringEnabled: row.onchainMonitoringEnabled === 1 }) : null;
+          COALESCE(p.onchain_monitoring_enabled, 0) AS onchainMonitoringEnabled,
+          ability.ability_stage AS abilityStage,
+          ability.bundle_risk_state AS bundleRiskState,
+          ability.valid_samples AS validSamples,
+          ability.total_samples AS totalSamples,
+          ability.win_rate AS winRate
+        FROM trader_entities e
+        LEFT JOIN trader_profiles p ON p.entity_id = e.entity_id
+        LEFT JOIN trader_repeatable_ability_snapshots ability ON ability.snapshot_id = (
+          SELECT snapshot_id FROM trader_repeatable_ability_snapshots latest
+          WHERE latest.entity_id = e.entity_id AND latest.window = '30d'
+          ORDER BY latest.evaluated_at DESC, latest.snapshot_id DESC LIMIT 1
+        )
+        WHERE e.entity_id = ?
+      `).get(entityId) as { entityId: string; lifecycle: TraderLifecycle; mapped: number; monitoringEnabled: number; fomoMonitoringEnabled: number; onchainMonitoringEnabled: number; abilityStage: "discovered" | "candidate" | "stable" | "degraded" | null; bundleRiskState: "none" | "single_cluster" | "bundle_risk" | null; validSamples: number | null; totalSamples: number | null; winRate: number | null } | undefined;
+      if (!row) return null;
+      const coverage = row.totalSamples && row.totalSamples > 0 ? (row.validSamples ?? 0) / row.totalSamples : 0;
+      const stageBase = row.abilityStage === "stable" ? 0.72
+        : row.abilityStage === "candidate" ? 0.52
+          : row.abilityStage === "degraded" ? 0.42
+            : row.abilityStage === "discovered" ? 0.3 : null;
+      const signalContribution = stageBase === null ? undefined : Math.max(0, Math.min(1,
+        stageBase + 0.18 * Math.max(0, Math.min(1, row.winRate ?? 0)) + 0.1 * Math.max(0, Math.min(1, coverage)),
+      )) * (row.bundleRiskState === "bundle_risk" ? 0.45 : row.bundleRiskState === "single_cluster" ? 0.8 : 1);
+      const abilityTags = [
+        ...(row.abilityStage === "stable" ? ["REPEATABLE_ALPHA"] : []),
+        ...(row.bundleRiskState === "bundle_risk" ? ["BUNDLE_RISK"] : []),
+      ];
+      return Object.freeze({
+        entityId: row.entityId,
+        lifecycle: row.lifecycle,
+        mapped: row.mapped === 1,
+        monitoringEnabled: row.monitoringEnabled === 1,
+        fomoMonitoringEnabled: row.fomoMonitoringEnabled === 1,
+        onchainMonitoringEnabled: row.onchainMonitoringEnabled === 1,
+        ...(row.abilityStage ? { abilityStage: row.abilityStage } : {}),
+        ...(signalContribution === undefined ? {} : { signalContribution }),
+        abilityTags: Object.freeze(abilityTags),
+      });
     },
 
     traderEntityIdsWithEvents() {
       const rows = database.prepare("SELECT DISTINCT entity_id AS entityId FROM trader_events ORDER BY entity_id").all() as { entityId: string }[];
+      return Object.freeze(rows.map(row => row.entityId));
+    },
+
+    traderEntityIdsRequiringPerformance(asOf, limit) {
+      if (!Number.isSafeInteger(asOf) || asOf < 0) throw new Error("asOf must be a non-negative safe integer");
+      if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("limit must be a positive safe integer");
+      const rows = database.prepare(`
+        WITH latest_event AS (
+          SELECT entity_id, MAX(collected_at) AS event_watermark
+          FROM trader_events
+          WHERE collected_at <= ?
+          GROUP BY entity_id
+        ), latest_sample AS (
+          SELECT entity_id, MAX(updated_at) AS sample_watermark
+          FROM trader_token_samples
+          GROUP BY entity_id
+        ), latest_ability AS (
+          SELECT entity_id, MAX(created_at) AS ability_watermark
+          FROM trader_ability_snapshots
+          WHERE window = '30d'
+          GROUP BY entity_id
+        ), due_outcome AS (
+          SELECT samples.entity_id, MIN(outcomes.target_at) AS due_at
+          FROM trader_token_outcomes outcomes
+          JOIN trader_token_samples samples ON samples.sample_id = outcomes.sample_id
+          WHERE outcomes.coverage_status = 'pending' AND outcomes.target_at <= ?
+          GROUP BY samples.entity_id
+        )
+        SELECT events.entity_id AS entityId
+        FROM latest_event events
+        LEFT JOIN latest_sample samples ON samples.entity_id = events.entity_id
+        LEFT JOIN latest_ability abilities ON abilities.entity_id = events.entity_id
+        LEFT JOIN due_outcome due ON due.entity_id = events.entity_id
+        WHERE events.event_watermark > COALESCE(samples.sample_watermark, 0)
+          OR COALESCE(samples.sample_watermark, 0) > COALESCE(abilities.ability_watermark, 0)
+          OR due.due_at IS NOT NULL
+        ORDER BY COALESCE(due.due_at, events.event_watermark), events.entity_id
+        LIMIT ?
+      `).all(asOf, asOf, limit) as { entityId: string }[];
       return Object.freeze(rows.map(row => row.entityId));
     },
 
@@ -713,7 +966,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     },
 
     upsertTraderTokenSample(sample) {
-      database.prepare(`
+      withAddressRadarWriteTransaction(database, () => database.prepare(`
         INSERT INTO trader_token_samples(
           sample_id, entity_id, chain, token_address, first_buy_at, last_activity_at,
           weighted_entry_price_usd, weighted_entry_market_cap_usd, total_buy_usd,
@@ -743,7 +996,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         sample.realizedValueUsd, sample.remainingCostUsd, sample.launchAt,
         sample.lifecycleStageAtEntry, sample.sourceState, sample.sampleStatus,
         sample.exclusionReason, sample.createdAt, sample.updatedAt,
-      );
+      ));
     },
 
     traderTokenSample(entityId, chain, tokenAddress) {
@@ -759,11 +1012,35 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     },
 
     saveMarketObservation(chain, tokenAddress, observation) {
-      database.prepare(`
-        INSERT INTO market_observations(chain, token_address, observed_at, price_usd, source)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(chain, token_address, observed_at, source) DO UPDATE SET price_usd = excluded.price_usd
-      `).run(chain, tokenAddress, observation.observedAt, observation.priceUsd, observation.source);
+      withAddressRadarWriteTransaction(database, () => {
+        database.prepare(`
+          INSERT INTO market_observations(chain, token_address, observed_at, price_usd, source)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(chain, token_address, observed_at, source) DO UPDATE SET price_usd = excluded.price_usd
+        `).run(chain, tokenAddress, observation.observedAt, observation.priceUsd, observation.source);
+        const automationJobsAvailable = database.prepare(`
+          SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'automation_jobs'
+        `).get();
+        if (automationJobsAvailable) {
+          database.prepare(`
+            UPDATE automation_job_blocks
+            SET resolved_at = COALESCE(resolved_at, ?), updated_at = ?
+            WHERE resolved_at IS NULL
+              AND job_id IN (
+                SELECT job_id
+                FROM automation_jobs
+                WHERE job_type = 'candidate_evidence' AND subject_key = ?
+                  AND status IN ('blocked_source', 'waiting_source')
+              )
+          `).run(observation.observedAt, observation.observedAt, `${chain}:${tokenAddress}`);
+          database.prepare(`
+            UPDATE automation_jobs
+            SET status = 'pending', next_attempt_at = ?, last_error = NULL, updated_at = ?
+            WHERE job_type = 'candidate_evidence' AND subject_key = ?
+              AND status IN ('blocked_source', 'waiting_source')
+          `).run(observation.observedAt, observation.observedAt, `${chain}:${tokenAddress}`);
+        }
+      });
     },
 
     marketObservations(chain, tokenAddress, from, to) {
@@ -776,7 +1053,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     },
 
     saveTraderTokenOutcome(outcome) {
-      database.prepare(`
+      withAddressRadarWriteTransaction(database, () => database.prepare(`
         INSERT INTO trader_token_outcomes(
           sample_id, horizon, target_at, observed_at, close_multiple, mfe_multiple,
           mae_multiple, captured_multiple, hit_1_5x, hit_2x, hit_5x, hit_10x,
@@ -800,7 +1077,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         nullableBoolean(outcome.hit5x), nullableBoolean(outcome.hit10x), outcome.timeTo1_5xMs,
         outcome.timeTo2xMs, outcome.timeTo5xMs, outcome.timeTo10xMs,
         outcome.coverageStatus, outcome.source, outcome.computedAt,
-      );
+      ));
     },
 
     traderTokenOutcomes(sampleId) {
@@ -818,19 +1095,30 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     },
 
     saveTraderAbilitySnapshot(snapshot) {
-      database.prepare(`
-        INSERT INTO trader_ability_snapshots(
-          snapshot_id, entity_id, window, as_of, strategy_version, raw_quality,
-          adjusted_quality, sample_confidence, coverage_confidence, metrics,
-          components, styles, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        snapshot.snapshotId, snapshot.entityId, snapshot.window, snapshot.asOf,
-        snapshot.strategyVersion, snapshot.rawQuality, snapshot.adjustedQuality,
-        snapshot.sampleConfidence, snapshot.coverageConfidence, JSON.stringify(snapshot.metrics),
-        JSON.stringify(snapshot.components), JSON.stringify(snapshot.styles), snapshot.createdAt,
-      );
-      synchronizeTraderSignalProfile(snapshot.entityId, snapshot.createdAt);
+      withAddressRadarWriteTransaction(database, () => {
+        database.prepare(`
+          INSERT INTO trader_ability_snapshots(
+            snapshot_id, entity_id, window, as_of, strategy_version, raw_quality,
+            adjusted_quality, sample_confidence, coverage_confidence, metrics,
+            components, styles, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(snapshot_id) DO UPDATE SET
+            raw_quality = excluded.raw_quality,
+            adjusted_quality = excluded.adjusted_quality,
+            sample_confidence = excluded.sample_confidence,
+            coverage_confidence = excluded.coverage_confidence,
+            metrics = excluded.metrics,
+            components = excluded.components,
+            styles = excluded.styles,
+            created_at = excluded.created_at
+        `).run(
+          snapshot.snapshotId, snapshot.entityId, snapshot.window, snapshot.asOf,
+          snapshot.strategyVersion, snapshot.rawQuality, snapshot.adjustedQuality,
+          snapshot.sampleConfidence, snapshot.coverageConfidence, JSON.stringify(snapshot.metrics),
+          JSON.stringify(snapshot.components), JSON.stringify(snapshot.styles), snapshot.createdAt,
+        );
+        synchronizeTraderSignalProfile(snapshot.entityId, snapshot.createdAt);
+      });
     },
 
     latestTraderAbility(entityId, window) {
@@ -942,6 +1230,109 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     latestMilestoneEvaluation(milestoneId) {
       const row = database.prepare("SELECT * FROM milestone_evaluations WHERE milestone_id = ? ORDER BY evaluated_at DESC, evaluation_id DESC LIMIT 1").get(milestoneId) as Record<string, unknown> | undefined;
       return row ? toMilestoneEvaluation(row) : null;
+    },
+
+    enqueueHistoricalBackfillPartition(partition) {
+      return withAddressRadarWriteTransaction(database, () => {
+        const result = database.prepare(`
+          INSERT OR IGNORE INTO historical_backfill_partitions(
+            partition_id, query_kind, chain, day_start, day_end, token_addresses, status,
+            execution_id, next_offset, row_count, attempt_count, watermark, next_retry_at,
+            lease_expires_at, last_error, created_at, updated_at, completed_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(partition.partitionId, partition.queryKind, partition.chain, partition.dayStart, partition.dayEnd,
+          JSON.stringify(partition.tokenAddresses), partition.status, partition.executionId, partition.nextOffset,
+          partition.rowCount, partition.attemptCount, partition.watermark, partition.nextRetryAt,
+          partition.leaseExpiresAt, partition.lastError, partition.createdAt, partition.updatedAt, partition.completedAt);
+        return Object.freeze({ inserted: result.changes === 1 });
+      });
+    },
+
+    claimHistoricalBackfillPartition(now, leaseMs) {
+      return transaction(() => {
+        database.prepare(`
+          UPDATE historical_backfill_partitions
+          SET status = 'pending', lease_expires_at = NULL, next_retry_at = MIN(next_retry_at, ?), updated_at = ?
+          WHERE status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+        `).run(now, now, now);
+        if (database.prepare("SELECT 1 FROM historical_backfill_partitions WHERE status = 'running' LIMIT 1").get()) return null;
+        const row = database.prepare(`
+          SELECT * FROM historical_backfill_partitions
+          WHERE status IN ('pending', 'failed') AND next_retry_at <= ?
+          ORDER BY
+            COALESCE((
+              SELECT MAX(completed.completed_at)
+              FROM historical_backfill_partitions completed
+              WHERE completed.chain = historical_backfill_partitions.chain
+                AND completed.query_kind = historical_backfill_partitions.query_kind
+                AND completed.status = 'completed'
+            ), 0),
+            day_start, next_retry_at, partition_id
+          LIMIT 1
+        `).get(now) as Record<string, unknown> | undefined;
+        if (!row) return null;
+        database.prepare(`
+          UPDATE historical_backfill_partitions
+          SET status = 'running', attempt_count = attempt_count + 1, lease_expires_at = ?, updated_at = ?
+          WHERE partition_id = ?
+        `).run(now + leaseMs, now, row.partition_id as string);
+        return toHistoricalBackfillPartition(database.prepare("SELECT * FROM historical_backfill_partitions WHERE partition_id = ?").get(row.partition_id as string) as Record<string, unknown>);
+      });
+    },
+
+    checkpointHistoricalBackfillPartition(partitionId, input) {
+      database.prepare(`
+        UPDATE historical_backfill_partitions
+        SET status = 'pending', execution_id = ?, next_offset = ?, row_count = ?, watermark = ?,
+            next_retry_at = ?, lease_expires_at = NULL, last_error = NULL, updated_at = ?
+        WHERE partition_id = ? AND status = 'running'
+      `).run(input.executionId, input.nextOffset, input.rowCount, input.watermark, input.updatedAt, input.updatedAt, partitionId);
+    },
+
+    completeHistoricalBackfillPartition(partitionId, input) {
+      database.prepare(`
+        UPDATE historical_backfill_partitions
+        SET status = 'completed', execution_id = ?, next_offset = NULL, row_count = ?, watermark = ?,
+            lease_expires_at = NULL, last_error = NULL, completed_at = ?, updated_at = ?
+        WHERE partition_id = ? AND status = 'running'
+      `).run(input.executionId, input.rowCount, input.watermark, input.completedAt, input.completedAt, partitionId);
+    },
+
+    failHistoricalBackfillPartition(partitionId, error, nextRetryAt) {
+      database.prepare(`
+        UPDATE historical_backfill_partitions
+        SET status = 'failed', last_error = ?, next_retry_at = ?, lease_expires_at = NULL, updated_at = ?
+        WHERE partition_id = ? AND status = 'running'
+      `).run(error, nextRetryAt, nextRetryAt, partitionId);
+    },
+
+    historicalBackfillPartitions() {
+      return Object.freeze((database.prepare("SELECT * FROM historical_backfill_partitions ORDER BY created_at, partition_id").all() as Record<string, unknown>[]).map(toHistoricalBackfillPartition));
+    },
+
+    recordHistoricalCreditUsage(usageDay, creditsUsed, updatedAt) {
+      if (!Number.isSafeInteger(creditsUsed) || creditsUsed < 0) throw new Error("Historical credits must be a nonnegative integer");
+      database.prepare(`
+        INSERT INTO historical_backfill_credit_usage(usage_day, credits_used, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(usage_day) DO UPDATE SET credits_used = historical_backfill_credit_usage.credits_used + excluded.credits_used, updated_at = excluded.updated_at
+      `).run(usageDay, creditsUsed, updatedAt);
+    },
+
+    historicalCreditsUsed(usageDay) {
+      const row = database.prepare("SELECT credits_used AS creditsUsed FROM historical_backfill_credit_usage WHERE usage_day = ?").get(usageDay) as { creditsUsed: number } | undefined;
+      return row?.creditsUsed ?? 0;
+    },
+
+    advanceHistoricalWatermark(chain, queryKind, watermark, updatedAt) {
+      database.prepare(`
+        INSERT INTO historical_backfill_watermarks(chain, query_kind, watermark, updated_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT(chain, query_kind) DO UPDATE SET watermark = MAX(historical_backfill_watermarks.watermark, excluded.watermark), updated_at = excluded.updated_at
+      `).run(chain, queryKind, watermark, updatedAt);
+    },
+
+    historicalWatermark(chain, queryKind) {
+      const row = database.prepare("SELECT watermark FROM historical_backfill_watermarks WHERE chain = ? AND query_kind = ?").get(chain, queryKind) as { watermark: number } | undefined;
+      return row?.watermark ?? null;
     },
 
     saveCandidateDiscovery(input) {
@@ -1065,14 +1456,120 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
       })));
     },
 
+    claimEventProjection(input) {
+      assertTimestamp(input.now, "now");
+      if (!Number.isSafeInteger(input.leaseMs) || input.leaseMs <= 0) throw new Error("leaseMs must be a positive safe integer");
+      return transaction(() => {
+        database.prepare(`
+          INSERT OR IGNORE INTO event_projections(
+            event_id, projection_type, source_revision, status, attempt_count,
+            next_attempt_at, created_at, updated_at
+          ) VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
+        `).run(input.eventId, input.projectionType, input.sourceRevision, input.now, input.now, input.now);
+        const claimed = database.prepare(`
+          UPDATE event_projections
+          SET status = 'running', attempt_count = attempt_count + 1,
+            lease_owner = ?, lease_expires_at = ?, updated_at = ?, last_error = NULL
+          WHERE event_id = ? AND projection_type = ? AND source_revision = ?
+            AND status != 'completed'
+            AND next_attempt_at <= ?
+            AND (status != 'running' OR lease_expires_at IS NULL OR lease_expires_at <= ?)
+        `).run(
+          input.owner,
+          input.now + input.leaseMs,
+          input.now,
+          input.eventId,
+          input.projectionType,
+          input.sourceRevision,
+          input.now,
+          input.now,
+        );
+        if (claimed.changes === 1) return "claimed" as const;
+        const row = database.prepare(`
+          SELECT status FROM event_projections
+          WHERE event_id = ? AND projection_type = ? AND source_revision = ?
+        `).get(input.eventId, input.projectionType, input.sourceRevision) as { status: string } | undefined;
+        return row?.status === "completed" ? "completed" as const : "busy" as const;
+      });
+    },
+
+    completeEventProjection(input) {
+      assertTimestamp(input.completedAt, "completedAt");
+      const result = transaction(() => database.prepare(`
+        UPDATE event_projections
+        SET status = 'completed', result_key = ?, completed_at = ?, updated_at = ?,
+          lease_owner = NULL, lease_expires_at = NULL, last_error = NULL
+        WHERE event_id = ? AND projection_type = ? AND source_revision = ?
+          AND status = 'running' AND lease_owner = ?
+      `).run(
+        input.resultKey,
+        input.completedAt,
+        input.completedAt,
+        input.eventId,
+        input.projectionType,
+        input.sourceRevision,
+        input.owner,
+      ));
+      return result.changes === 1;
+    },
+
+    failEventProjection(input) {
+      assertTimestamp(input.failedAt, "failedAt");
+      assertTimestamp(input.nextAttemptAt, "nextAttemptAt");
+      const result = transaction(() => database.prepare(`
+        UPDATE event_projections
+        SET status = 'retryable', next_attempt_at = ?, updated_at = ?, last_error = ?,
+          lease_owner = NULL, lease_expires_at = NULL
+        WHERE event_id = ? AND projection_type = ? AND source_revision = ?
+          AND status = 'running' AND lease_owner = ?
+      `).run(
+        input.nextAttemptAt,
+        input.failedAt,
+        input.error.slice(0, 1_000),
+        input.eventId,
+        input.projectionType,
+        input.sourceRevision,
+        input.owner,
+      ));
+      return result.changes === 1;
+    },
+
+    recordWalletBundlePairs(chain, tokenAddress, pairs) {
+      if (pairs.length === 0) return;
+      const tokenId = addressRadarTokenId(chain, tokenAddress);
+      transaction(() => {
+        const statement = database.prepare(`
+          INSERT INTO wallet_bundle_pair_tokens(pair_key, token_id, chain, left_entity_id, right_entity_id, min_delta_ms, first_observed_at, last_observed_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(pair_key, token_id) DO UPDATE SET
+            min_delta_ms = MIN(wallet_bundle_pair_tokens.min_delta_ms, excluded.min_delta_ms),
+            first_observed_at = MIN(wallet_bundle_pair_tokens.first_observed_at, excluded.first_observed_at),
+            last_observed_at = MAX(wallet_bundle_pair_tokens.last_observed_at, excluded.last_observed_at)
+        `);
+        for (const pair of pairs) statement.run(pair.pairKey, tokenId, chain.toLowerCase(), pair.leftEntityId, pair.rightEntityId, pair.deltaMs, pair.observedAt, pair.observedAt);
+      });
+    },
+
+    walletBundleRelations(entityIds) {
+      const selected = new Set(entityIds);
+      if (selected.size < 2) return Object.freeze([]);
+      const rows = database.prepare(`
+        SELECT pair_key AS pairKey, left_entity_id AS leftEntityId, right_entity_id AS rightEntityId,
+          COUNT(*) AS distinctTokenCount, MIN(min_delta_ms) AS deltaMs, MAX(last_observed_at) AS observedAt
+        FROM wallet_bundle_pair_tokens
+        GROUP BY pair_key, left_entity_id, right_entity_id
+      `).all() as Array<Omit<WalletBundleRelation, "recurring">>;
+      return Object.freeze(rows.filter(row => selected.has(row.leftEntityId) && selected.has(row.rightEntityId)).map(row => Object.freeze({ ...row, recurring: row.distinctTokenCount >= 2 })));
+    },
+
     saveTokenEvaluation(input) {
       const tokenId = addressRadarTokenId(input.chain, input.tokenAddress);
       database.prepare(`
         INSERT INTO token_evaluation_state(
           token_id, chain, token_address, action, signal_family, lifecycle_stage,
           score, participant_count, total_buy_usd, source_state, window_ms,
-          missing_conditions, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          missing_conditions, bundle_diagnostics, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(token_id) DO UPDATE SET
           action = excluded.action,
           signal_family = excluded.signal_family,
@@ -1083,6 +1580,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
           source_state = excluded.source_state,
           window_ms = excluded.window_ms,
           missing_conditions = excluded.missing_conditions,
+          bundle_diagnostics = excluded.bundle_diagnostics,
           updated_at = excluded.updated_at
       `).run(
         tokenId,
@@ -1097,6 +1595,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         input.sourceState,
         input.windowMs,
         JSON.stringify(input.missingConditions),
+        JSON.stringify(input.bundleDiagnostics ?? {}),
         input.updatedAt,
       );
     },
@@ -1107,11 +1606,11 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
           signal_family AS signalFamily, lifecycle_stage AS lifecycleStage, score,
           participant_count AS participantCount, total_buy_usd AS totalBuyUsd,
           source_state AS sourceState, window_ms AS windowMs,
-          missing_conditions AS missingConditions, updated_at AS updatedAt
+          missing_conditions AS missingConditions, bundle_diagnostics AS bundleDiagnostics, updated_at AS updatedAt
         FROM token_evaluation_state
         WHERE token_id = ?
-      `).get(addressRadarTokenId(chain, tokenAddress)) as (Omit<TokenEvaluationRecord, "missingConditions"> & { missingConditions: string }) | undefined;
-      return row ? Object.freeze({ ...row, missingConditions: Object.freeze(JSON.parse(row.missingConditions) as string[]) }) : null;
+      `).get(addressRadarTokenId(chain, tokenAddress)) as (Omit<TokenEvaluationRecord, "missingConditions" | "bundleDiagnostics"> & { missingConditions: string; bundleDiagnostics: string }) | undefined;
+      return row ? Object.freeze({ ...row, missingConditions: Object.freeze(JSON.parse(row.missingConditions) as string[]), bundleDiagnostics: Object.freeze(JSON.parse(row.bundleDiagnostics) as BundleDiagnostics) }) : null;
     },
 
     tokenAggregationState(chain, tokenAddress) {
@@ -1177,13 +1676,13 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
         for (const key of input.economicKeys) consumeEconomic.run(key, broadcastId, input.triggeredAt);
         const evaluation = input.evaluation;
         database.prepare(`
-          INSERT INTO token_evaluation_state(token_id, chain, token_address, action, signal_family, lifecycle_stage, score, participant_count, total_buy_usd, source_state, window_ms, missing_conditions, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO token_evaluation_state(token_id, chain, token_address, action, signal_family, lifecycle_stage, score, participant_count, total_buy_usd, source_state, window_ms, missing_conditions, bundle_diagnostics, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(token_id) DO UPDATE SET action = excluded.action, signal_family = excluded.signal_family,
             lifecycle_stage = excluded.lifecycle_stage, score = excluded.score, participant_count = excluded.participant_count,
             total_buy_usd = excluded.total_buy_usd, source_state = excluded.source_state, window_ms = excluded.window_ms,
-            missing_conditions = excluded.missing_conditions, updated_at = excluded.updated_at
-        `).run(tokenId, input.chain.toLowerCase(), normalizeAddressRadarTokenAddress(input.chain, input.tokenAddress), evaluation.action, evaluation.signalFamily, evaluation.lifecycleStage, evaluation.score, evaluation.participantCount, evaluation.totalBuyUsd, evaluation.sourceState, evaluation.windowMs, JSON.stringify(evaluation.missingConditions), evaluation.updatedAt);
+            missing_conditions = excluded.missing_conditions, bundle_diagnostics = excluded.bundle_diagnostics, updated_at = excluded.updated_at
+        `).run(tokenId, input.chain.toLowerCase(), normalizeAddressRadarTokenAddress(input.chain, input.tokenAddress), evaluation.action, evaluation.signalFamily, evaluation.lifecycleStage, evaluation.score, evaluation.participantCount, evaluation.totalBuyUsd, evaluation.sourceState, evaluation.windowMs, JSON.stringify(evaluation.missingConditions), JSON.stringify(evaluation.bundleDiagnostics ?? {}), evaluation.updatedAt);
         database.prepare(`
           INSERT INTO signal_outbox(outbox_id, broadcast_id, token_id, broadcast_sequence, payload, status, attempt_count, next_retry_at, last_error, claimed_by, claimed_at, delivered_at, created_at)
           VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, NULL, NULL, NULL, NULL, ?)
@@ -1851,6 +2350,11 @@ export interface TokenMilestoneRecord { readonly milestoneId: string; readonly c
 export interface MilestoneBackfillJob { readonly jobId: string; readonly milestoneId: string; readonly chain: string; readonly tokenAddress: string; readonly status: MilestoneBackfillStatus; readonly source: MilestoneBackfillSource; readonly cursor: string | null; readonly attemptCount: number; readonly nextAttemptAt: number; readonly coverageStartAt: number | null; readonly coverageEndAt: number | null; readonly recordsSeen: number; readonly recordsInserted: number; readonly lastError: string | null; readonly createdAt: number; readonly updatedAt: number; readonly completedAt: number | null; }
 export interface MilestoneBackfillCompletion { readonly coverageStartAt: number | null; readonly coverageEndAt: number | null; readonly recordsSeen: number; readonly recordsInserted: number; readonly status: "completed" | "partial"; readonly completedAt: number; }
 export interface MilestoneEvaluation { readonly evaluationId: string; readonly milestoneId: string; readonly strategyVersion: string; readonly eventWatermark: number; readonly eligibleBuyCount: number; readonly evaluatedAccountCount: number; readonly qualifiedCandidateCount: number; readonly coverageStatus: MilestoneCoverageStatus; readonly evaluatedAt: number; }
+export type HistoricalBackfillQueryKind = "token_universe" | "milestone_crossings" | "pre_milestone_trades";
+export type HistoricalBackfillStatus = "pending" | "running" | "completed" | "failed";
+export interface HistoricalBackfillPartition { readonly partitionId: string; readonly queryKind: HistoricalBackfillQueryKind; readonly chain: string; readonly dayStart: number; readonly dayEnd: number; readonly tokenAddresses: readonly string[]; readonly status: HistoricalBackfillStatus; readonly executionId: string | null; readonly nextOffset: number | null; readonly rowCount: number; readonly attemptCount: number; readonly watermark: number | null; readonly nextRetryAt: number; readonly leaseExpiresAt: number | null; readonly lastError: string | null; readonly createdAt: number; readonly updatedAt: number; readonly completedAt: number | null; }
 
 const toMilestoneBackfillJob = (row: Record<string, unknown>): MilestoneBackfillJob => Object.freeze({ jobId: row.job_id as string, milestoneId: row.milestone_id as string, chain: row.chain as string, tokenAddress: row.token_address as string, status: row.status as MilestoneBackfillJob["status"], source: row.source as MilestoneBackfillJob["source"], cursor: row.cursor as string | null, attemptCount: row.attempt_count as number, nextAttemptAt: row.next_attempt_at as number, coverageStartAt: row.coverage_start_at as number | null, coverageEndAt: row.coverage_end_at as number | null, recordsSeen: row.records_seen as number, recordsInserted: row.records_inserted as number, lastError: row.last_error as string | null, createdAt: row.created_at as number, updatedAt: row.updated_at as number, completedAt: row.completed_at as number | null });
 const toMilestoneEvaluation = (row: Record<string, unknown>): MilestoneEvaluation => Object.freeze({ evaluationId: row.evaluation_id as string, milestoneId: row.milestone_id as string, strategyVersion: row.strategy_version as string, eventWatermark: row.event_watermark as number, eligibleBuyCount: row.eligible_buy_count as number, evaluatedAccountCount: row.evaluated_account_count as number, qualifiedCandidateCount: row.qualified_candidate_count as number, coverageStatus: row.coverage_status as MilestoneEvaluation["coverageStatus"], evaluatedAt: row.evaluated_at as number });
+const toHistoricalBackfillPartition = (row: Record<string, unknown>): HistoricalBackfillPartition => Object.freeze({ partitionId: row.partition_id as string, queryKind: row.query_kind as HistoricalBackfillQueryKind, chain: row.chain as string, dayStart: row.day_start as number, dayEnd: row.day_end as number, tokenAddresses: Object.freeze(JSON.parse(row.token_addresses as string) as string[]), status: row.status as HistoricalBackfillStatus, executionId: row.execution_id as string | null, nextOffset: row.next_offset as number | null, rowCount: row.row_count as number, attemptCount: row.attempt_count as number, watermark: row.watermark as number | null, nextRetryAt: row.next_retry_at as number, leaseExpiresAt: row.lease_expires_at as number | null, lastError: row.last_error as string | null, createdAt: row.created_at as number, updatedAt: row.updated_at as number, completedAt: row.completed_at as number | null });
+import type { DatabaseSync } from "node:sqlite";

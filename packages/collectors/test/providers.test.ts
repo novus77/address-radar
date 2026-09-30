@@ -148,7 +148,7 @@ describe("Dex Screener client", () => {
 
 describe("RPC discovery contract", () => {
   it("preserves supported-chain configuration invariants", () => {
-    expect(RADAR_DISCOVERY_CHAINS).toEqual(["eth", "bsc", "monad", "robinhood", "base", "solana"]);
+    expect(RADAR_DISCOVERY_CHAINS).toEqual(["eth", "bsc", "robinhood", "base", "solana"]);
     expect(createRadarChainDiscoveryConfiguration({
       chain: "base",
       version: "v1",

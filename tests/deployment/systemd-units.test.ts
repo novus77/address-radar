@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const units = ["scanner", "wallet-monitor", "wallet-analysis", "console", "backup"] as const;
+const runtimeUnits = ["scanner", "wallet-monitor", "wallet-analysis", "historical-backfill", "automation", "console"] as const;
 
 describe("standalone systemd units", () => {
   it.each(units)("isolates the %s service", async name => {
@@ -20,6 +21,40 @@ describe("standalone systemd units", () => {
     expect(content).toContain("/var/lib/address-radar/address-radar.db");
     expect(content).not.toContain("/opt/fomo-radar");
     expect(content).not.toContain("/var/lib/fomo-address-radar");
+  });
+
+  it("runs the Fomo verification bridge through an explicit shell", async () => {
+    const content = await readFile(
+      resolve("deployment/systemd/address-radar-fomo-verification-sync.service"),
+      "utf8",
+    );
+    expect(content).toContain(
+      "ExecStart=/bin/sh /opt/address-radar/current/scripts/sync-fomo-verification.sh",
+    );
+  });
+
+  it.each(runtimeUnits)("waits for the migration barrier before starting %s", async name => {
+    const content = await readFile(resolve(`deployment/systemd/address-radar-${name}.service`), "utf8");
+    expect(content).toContain("After=network-online.target address-radar-migrate.service");
+    expect(content).toContain("Requires=address-radar-migrate.service");
+    expect(content).toContain("Environment=ADDRESS_RADAR_RUNTIME_MIGRATIONS=false");
+  });
+
+  it("runs migrations through a dedicated one-shot unit", async () => {
+    const content = await readFile(resolve("deployment/systemd/address-radar-migrate.service"), "utf8");
+    expect(content).toContain("Type=oneshot");
+    expect(content).toContain("scripts/migrate-database.ts");
+    expect(content).toContain("RemainAfterExit=yes");
+  });
+
+  it("publishes an atomic Fomo verification transfer watermark", async () => {
+    const content = await readFile(resolve("scripts/sync-fomo-verification.sh"), "utf8");
+    expect(content).toContain("fomo-sync-status.json");
+    expect(content).toContain('"requestBytesCopied"');
+    expect(content).toContain('"resultBytesCopied"');
+    expect(content).toContain('"requestSourceSize"');
+    expect(content).toContain('"resultSourceSize"');
+    expect(content).toContain('mv -f "$temporary_status" "$status_file"');
   });
 
   it("bounds backup resource usage and publishes completed snapshots atomically", async () => {

@@ -19,7 +19,7 @@ describe("configured scanner end to end", () => {
     const directory = await mkdtemp(join(tmpdir(), "scanner-e2e-"));
     const eventPath = join(directory, "fomo.jsonl");
     const make = (id: string, handle: string, at: number) => ({ kind: "event", value: { eventType: "fomo.activity.buy", eventId: `event-${id}`, occurredAt: at, payload: { action: "buy", occurredAt: at, usdAmount: 1_000, price: 0.01, marketCap: 100_000, asset: { chain: "solana", tokenAddress: "TokenA" }, trader: { id, handle } } } });
-    await writeFile(eventPath, [make("a", "alpha", 1_000), make("b", "beta", 1_001)].map(value => JSON.stringify(value)).join("\n") + "\n");
+    await writeFile(eventPath, [make("a", "alpha", 1_000), make("b", "beta", 12_000)].map(value => JSON.stringify(value)).join("\n") + "\n");
     repository = openAddressRadarRepository(":memory:");
     for (const [accountId, handle] of [["a", "alpha"], ["b", "beta"]] as const) {
       const entityId = `fomo:${accountId}`;
@@ -31,8 +31,8 @@ describe("configured scanner end to end", () => {
     }
     const config = parseScannerConfig({ ADDRESS_RADAR_DATABASE_PATH: join(directory, "address.sqlite"), ADDRESS_RADAR_STRATEGY_VERSION: "address-v1", ADDRESS_RADAR_FOMO_EVENT_LOG_PATH: eventPath, ADDRESS_RADAR_FILE_START_AT_END: "false" });
     const runtime = createScannerRuntime({
-      repository, collectors: createConfiguredCollectors({ config, repository, now: () => 3_000 }),
-      clock: { now: () => 3_000 },
+      repository, collectors: createConfiguredCollectors({ config, repository, now: () => 20_000 }),
+      clock: { now: () => 20_000 },
       lifecycleResolver: { resolve: async () => "launched_0_2h" },
       marketProvider: { lookup: async () => ({ chain: "solana", tokenAddress: "TokenA", symbol: "TOK", name: "Token A", imageUrl: null, priceUsd: 0.01, marketCapUsd: 100_000, liquidityUsd: 50_000, createdAt: 500, launchedAt: 900, observedAt: new Date(3_000).toISOString() }) },
       config,
@@ -78,11 +78,11 @@ describe("configured scanner end to end", () => {
     expect(JSON.parse(await (await import("node:fs/promises")).readFile(cursorPath, "utf8")).byteOffset).toBeGreaterThan(0);
   });
 
-  it("reaches created lifecycle from configured Fomo creation evidence without a market launch", async () => {
+  it("keeps configured Fomo creation evidence in observation until market launch", async () => {
     const directory = await mkdtemp(join(tmpdir(), "scanner-created-"));
     const eventPath = join(directory, "fomo.jsonl");
-    const make = (id: string) => ({ kind: "event", value: { eventType: "fomo.activity.buy", eventId: `event-${id}`, occurredAt: 5_000, payload: { action: "buy", occurredAt: 5_000, usdAmount: 1_000, asset: { chain: "solana", tokenAddress: "Prelaunch", createdAt: 1_000 }, trader: { id, handle: id } } } });
-    await writeFile(eventPath, ["a", "b", "c"].map(id => JSON.stringify(make(id))).join("\n") + "\n");
+    const make = (id: string, occurredAt: number) => ({ kind: "event", value: { eventType: "fomo.activity.buy", eventId: `event-${id}`, occurredAt, payload: { action: "buy", occurredAt, usdAmount: 1_000, asset: { chain: "solana", tokenAddress: "Prelaunch", createdAt: 1_000 }, trader: { id, handle: id } } } });
+    await writeFile(eventPath, [["a", 5_000], ["b", 16_000], ["c", 27_000]].map(([id, occurredAt]) => JSON.stringify(make(String(id), Number(occurredAt)))).join("\n") + "\n");
     repository = openAddressRadarRepository(":memory:");
     for (const id of ["a", "b", "c"]) {
       repository.upsertFomoAccount({ accountId: id, handle: id, firstSeenAt: 1, lastSeenAt: 1 });
@@ -91,8 +91,8 @@ describe("configured scanner end to end", () => {
       saveAbility(`fomo:${id}`);
     }
     const config = parseScannerConfig({ ADDRESS_RADAR_DATABASE_PATH: join(directory, "address.sqlite"), ADDRESS_RADAR_STRATEGY_VERSION: "address-v1", ADDRESS_RADAR_FOMO_EVENT_LOG_PATH: eventPath, ADDRESS_RADAR_FILE_START_AT_END: "false" });
-    const runtime = createScannerRuntime({ repository, collectors: createConfiguredCollectors({ config, repository, now: () => 6_000 }), clock: { now: () => 6_000 }, lifecycleResolver: { resolve: async input => input.createdAt ? "created" : "unknown" }, config });
+    const runtime = createScannerRuntime({ repository, collectors: createConfiguredCollectors({ config, repository, now: () => 30_000 }), clock: { now: () => 30_000 }, lifecycleResolver: { resolve: async input => input.createdAt ? "created" : "unknown" }, config });
     await runtime.runOnce();
-    expect(repository.pendingSignalOutbox().map(row => row.payload)).toEqual([expect.objectContaining({ category: "new_token_discovery" })]);
+    expect(repository.pendingSignalOutbox()).toEqual([]);
   });
 });

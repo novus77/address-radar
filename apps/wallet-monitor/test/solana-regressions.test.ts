@@ -47,6 +47,32 @@ test("Solana scheduling rotates fairly beyond batchSize", async () => {
   assert.equal(JSON.parse(checkpoints.get("schedule") ?? "{}").nextIndex, 1);
 });
 
+test("Solana rate limiting preserves the failed wallet schedule cursor", async () => {
+  const rpc: WalletRpcClient = {
+    async request(_chain, method) {
+      if (method === "getSignaturesForAddress") {
+        const error = new Error("provider cooldown");
+        error.name = "WalletRpcRateLimitError";
+        throw error;
+      }
+      throw new Error(`unexpected ${method}`);
+    },
+  };
+  const collector = createSolanaWalletCollector({ rpc, batchSize: 1 });
+  const result = await collector.collect({
+    wallets: wallets(2),
+    checkpoint: (partition) => partition === "schedule"
+      ? JSON.stringify({ nextIndex: 0 })
+      : JSON.stringify({ latestSignature: "stable", checkedAt: 100 }),
+    signal: new AbortController().signal,
+  });
+
+  const schedule = result.partitions.find((partition) => partition.partitionKey === "schedule");
+  assert.equal(JSON.parse(schedule?.nextCheckpoint ?? "{}").nextIndex, 0);
+  assert.equal(result.partitions.some((partition) => partition.partitionKey === "wallet:wallet-0"), false);
+  assert.equal(result.failures?.[0]?.partitionKey, "wallet:wallet-0");
+});
+
 test("Solana pagination persists intermediate state and closes the whole backlog without gaps", async () => {
   const signatureRequests: unknown[][] = [];
   const rpc: WalletRpcClient = {
@@ -115,6 +141,27 @@ test("Solana transfer-only balance changes are skipped with a diagnostic", async
 
   assert.equal(result.partitions.flatMap((partition) => partition.events).length, 0);
   assert.equal(result.diagnostics?.[0]?.reason, "insufficient_swap_evidence");
+});
+
+test("Solana transaction lookup supports version one transactions", async () => {
+  let transactionOptions: unknown;
+  const rpc: WalletRpcClient = {
+    async request(_chain, method, params) {
+      if (method === "getSignaturesForAddress") return [{ signature: "versioned", blockTime: 100 }];
+      if (method === "getTransaction") {
+        transactionOptions = params[1];
+        return swapTransaction("versioned", 100);
+      }
+      throw new Error(`unexpected ${method}`);
+    },
+  };
+  await createSolanaWalletCollector({ rpc, batchSize: 1 }).collect({
+    wallets: wallets(1),
+    checkpoint: () => null,
+    signal: new AbortController().signal,
+  });
+
+  assert.deepEqual(transactionOptions, { encoding: "jsonParsed", maxSupportedTransactionVersion: 1 });
 });
 
 test("Solana claim plus fee-only native decrease is not treated as a buy", async () => {

@@ -1,5 +1,5 @@
-export type SupportedCollectorChain = "eth" | "bnb" | "bsc" | "monad" | "robinhood" | "base" | "solana" | "sol";
-export type DiscoveryChain = "eth" | "bsc" | "monad" | "robinhood" | "base" | "solana";
+export type SupportedCollectorChain = "eth" | "bnb" | "bsc" | "robinhood" | "base" | "solana" | "sol";
+export type DiscoveryChain = "eth" | "bsc" | "robinhood" | "base" | "solana";
 
 export interface RadarRpcTradeEvent {
   readonly eventId: string;
@@ -33,7 +33,7 @@ export interface RadarChainDiscoveryConfiguration {
   readonly minimumLiquidityUsd: number;
 }
 
-export const RADAR_DISCOVERY_CHAINS = ["eth", "bsc", "monad", "robinhood", "base", "solana"] as const;
+export const RADAR_DISCOVERY_CHAINS = ["eth", "bsc", "robinhood", "base", "solana"] as const;
 
 export function createRadarChainDiscoveryConfiguration(input: RadarChainDiscoveryConfiguration): RadarChainDiscoveryConfiguration {
   if (!RADAR_DISCOVERY_CHAINS.includes(input.chain as DiscoveryChain)) throw new Error(`Unsupported discovery chain: ${input.chain}`);

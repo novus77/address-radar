@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 
 import { openAddressRadarRepository } from "@address-radar/database";
+import { applyWalletBundleGroups, detectTemporalBundlePairs } from "../src/index.js";
 
 describe("canonical trader events", () => {
   it("merges matching Fomo and on-chain observations into one economic event", async () => {
@@ -23,9 +24,38 @@ describe("canonical trader events", () => {
     const database = new DatabaseSync(databasePath);
     const canonical = database.prepare("SELECT source_status AS sourceStatus FROM canonical_trader_events").all();
     const observations = database.prepare("SELECT COUNT(*) AS count FROM canonical_trader_event_observations").get() as { count: number };
+    const marketObservations = database.prepare("SELECT source, price_usd AS priceUsd FROM market_observations ORDER BY observed_at").all();
     database.close();
 
     expect(canonical).toEqual([{ sourceStatus: "FOMO_AND_ONCHAIN" }]);
     expect(observations.count).toBe(2);
+    expect(marketObservations).toEqual([
+      { source: "trader_event:fomo_stream", priceUsd: 0.01 },
+      { source: "trader_event:onchain_wallet", priceUsd: 0.01 },
+    ]);
+  });
+});
+
+describe("wallet bundle evidence", () => {
+  const evidence = (entityId: string, occurredAt: number) => ({ eventId: `${entityId}-${occurredAt}`, entityId, contribution: 0.8, occurredAt, side: "buy" as const, amountUsd: 1_000 });
+
+  it("detects temporal pairs and assigns one independence key", () => {
+    const events = [evidence("a", 1_000), evidence("b", 6_000), evidence("c", 20_000)];
+    const pairs = detectTemporalBundlePairs(events);
+    const grouped = applyWalletBundleGroups({ evidence: events, temporalPairs: pairs });
+    expect(pairs).toEqual([expect.objectContaining({ pairKey: "a::b", deltaMs: 5_000 })]);
+    expect(grouped.slice(0, 2)).toEqual([expect.objectContaining({ independenceKey: "bundle:a+b", bundleRisk: "strong" }), expect.objectContaining({ independenceKey: "bundle:a+b", bundleRisk: "strong" })]);
+    expect(grouped[2]).not.toHaveProperty("independenceKey");
+  });
+
+  it("confirms a recurring pair only after two distinct tokens", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "wallet-bundle-"));
+    const repository = openAddressRadarRepository(join(directory, "address.sqlite"));
+    const pair = detectTemporalBundlePairs([evidence("a", 1_000), evidence("b", 2_000)]);
+    repository.recordWalletBundlePairs?.("solana", "TokenA", pair);
+    expect(repository.walletBundleRelations?.(["a", "b"])).toEqual([expect.objectContaining({ distinctTokenCount: 1, recurring: false })]);
+    repository.recordWalletBundlePairs?.("solana", "TokenB", pair);
+    expect(repository.walletBundleRelations?.(["a", "b"])).toEqual([expect.objectContaining({ distinctTokenCount: 2, recurring: true })]);
+    repository.close();
   });
 });

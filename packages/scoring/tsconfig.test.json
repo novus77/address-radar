@@ -4,6 +4,7 @@
     "composite": false,
     "noEmit": true,
     "rootDir": "../..",
+    "types": ["node"],
     "paths": {
       "@address-radar/domain": ["../domain/src/index.ts"],
       "@address-radar/scoring": ["./src/index.ts"]

@@ -1,6 +1,7 @@
 import type { MonitoringRegistry, MonitoredWallet } from "@address-radar/identity";
 
 import type { NormalizedWalletObservation, WalletCollector } from "./contracts.js";
+import { recordCollectorCoverage, recordCollectorFailure } from "./coverage-controller.js";
 import type { WalletMonitorStore } from "./store.js";
 
 export function createWalletMonitorRuntime(input: {
@@ -61,17 +62,33 @@ export function createWalletMonitorRuntime(input: {
           failures,
           collectedAt,
         );
+        recordCollectorCoverage({
+          collector,
+          wallets,
+          result,
+          store: input.store,
+          collectedAt,
+        });
       }));
       settled.forEach((result, index) => {
         if (result.status === "fulfilled") return;
         if (signal.aborted) throw result.reason;
         providerFailures += 1;
         const collector = input.collectors[index]!;
+        const failedAt = now();
+        const error = result.reason instanceof Error ? result.reason.message : String(result.reason);
         input.store.recordFailure(
           collector.name,
-          result.reason instanceof Error ? result.reason.message : String(result.reason),
-          now(),
+          error,
+          failedAt,
         );
+        recordCollectorFailure({
+          collector,
+          wallets: walletsByFamily[collector.chainFamily],
+          error,
+          store: input.store,
+          failedAt,
+        });
       });
       return { accepted, providerFailures, registryVersion };
     },

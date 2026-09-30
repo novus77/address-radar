@@ -29,8 +29,9 @@ export function createWalletAnalysisRuntime(input: {
   const now = input.now ?? Date.now;
   return Object.freeze({
     async runOnce(signal: AbortSignal = new AbortController().signal) {
-      const job = input.store.next();
+      const job = input.store.next(now());
       if (!job) return Object.freeze({ processed: false, analysisId: null, status: null });
+      input.store.heartbeat(job.analysisId, "collecting", now());
       const provider = input.providers[job.chainFamily];
       if (!provider) {
         const error = `wallet_history_provider_unavailable:${job.chainFamily}`;
@@ -46,10 +47,12 @@ export function createWalletAnalysisRuntime(input: {
           return Object.freeze({ analysisId: job.analysisId, processed: true, status, saved: 0, metrics });
         }
         const page = await provider.collect({ analysisId: job.analysisId, address: job.address, from: job.from, to: job.to, limit: job.maxTokens, cursor: job.checkpoint, signal });
+        input.store.heartbeat(job.analysisId, "normalizing", now());
         if (!page.done && page.nextCursor === null) throw new Error("Incomplete wallet history page requires nextCursor");
         const bounded = page.positions.filter(position => position.enteredAt >= job.from && position.enteredAt <= job.to);
         const saved = input.store.savePage(job.analysisId, bounded, page.done ? null : page.nextCursor, page.provenance, now());
         if (!page.done) return Object.freeze({ analysisId: job.analysisId, processed: true, status: "collecting" as const, saved });
+        input.store.heartbeat(job.analysisId, "evaluating", now());
         const metrics = analyzeWalletPositions({ requestedSamples: job.requestedSamples, positions: input.store.positions(job.analysisId) });
         const status = input.store.complete(job.analysisId, metrics, now());
         return Object.freeze({ analysisId: job.analysisId, processed: true, status, saved, metrics });
