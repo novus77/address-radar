@@ -561,12 +561,17 @@ export function createSourceLedgerStore(database: DatabaseSync): SourceLedgerSto
           WHERE status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
         `).run(now, now, now);
         const row = database.prepare(`
-          SELECT ready.* FROM recovery_jobs ready
-          WHERE ready.status IN ('pending', 'failed') AND ready.next_attempt_at <= ?
-          ORDER BY COALESCE((
-            SELECT MAX(previous.updated_at) FROM recovery_jobs previous
-            WHERE previous.job_type = ready.job_type AND previous.attempt_count > 0
-          ), -1), ready.next_attempt_at, ready.priority, ready.created_at, ready.job_id LIMIT 1
+          WITH attempts AS (
+            SELECT job_type, MAX(updated_at) AS last_attempt_at
+            FROM recovery_jobs WHERE attempt_count > 0 GROUP BY job_type
+          ), due AS (
+            SELECT *, MIN(next_attempt_at) OVER (PARTITION BY job_type) AS type_due_at
+            FROM recovery_jobs WHERE status IN ('pending', 'failed') AND next_attempt_at <= ?
+          )
+          SELECT ready.* FROM due ready
+          LEFT JOIN attempts ON attempts.job_type = ready.job_type
+          ORDER BY COALESCE(attempts.last_attempt_at, -1), ready.type_due_at,
+            ready.priority, ready.next_attempt_at, ready.created_at, ready.job_id LIMIT 1
         `).get(now) as Record<string, unknown> | undefined;
         if (!row) return null;
         database.prepare(`

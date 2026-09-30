@@ -37,3 +37,19 @@ describe("indexed early-trade providers", () => {
   });
 });
 
+
+ describe("early-trade fallback failures", () => {
+  const request = { chain: "base" as const, tokenAddress: "0xtoken", fromTimestamp: 1000, toTimestamp: 3000 };
+  const partial = { status: "partial" as const, poolAddress: "pool", coverageStartAt: 1000, coverageEndAt: 2000, trades: [{ eventId: "primary", economicKey: "tx", chain: "base", tokenAddress: "0xtoken", traderAddress: "0xbuyer", side: "buy" as const, amountUsd: 100, marketCapUsd: 100000, occurredAt: 2000, source: "primary" }] };
+  it("tries the configured fallback when the primary throws", async () => {
+    const provider = createFallbackEarlyTradeProvider({ primary: { recover: async () => { throw new Error("primary unavailable"); } }, fallbackByChain: { base: { recover: async () => partial } } });
+    await expect(provider.recover(request)).resolves.toEqual(partial);
+  });
+  it.each(["empty", "error"])("preserves primary evidence on fallback %s", async outcome => {
+    const provider = createFallbackEarlyTradeProvider({ primary: { recover: async () => partial }, fallbackByChain: { base: { recover: async () => {
+      if (outcome === "error") throw new Error("fallback unavailable");
+      return { status: "not_found", poolAddress: null, coverageStartAt: null, coverageEndAt: null, trades: [] };
+    } } } });
+    await expect(provider.recover(request)).resolves.toEqual(partial);
+  });
+ });

@@ -188,3 +188,19 @@ describe("source ledger store", () => {
     secondDatabase.close();
   });
 });
+
+ it("honors priority within a recovery type without starving other types", () => {
+  const database = openAddressRadarDatabase(databasePath());
+  migrateAddressRadarDatabase(database);
+  const store = createSourceLedgerStore(database);
+  for (const [jobId, jobType, priority, nextAttemptAt] of [
+    ["old", "historical_research", 60, 1],
+    ["urgent", "historical_research", 5, 100],
+    ["other", "market_history", 25, 150],
+  ] as const) {
+    store.enqueueRecoveryJob({ jobId, jobType, priority, nextAttemptAt, chain: "base", subjectKey: jobId, cursor: null, createdAt: nextAttemptAt });
+  }
+  expect(store.claimRecoveryJob(200, 1000)?.jobId).toBe("urgent");
+  expect(store.claimRecoveryJob(201, 1000)?.jobId).toBe("other");
+  database.close();
+ });

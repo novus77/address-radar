@@ -226,11 +226,23 @@ export function createFallbackEarlyTradeProvider(input: {
 }): EarlyTradeProvider {
   return Object.freeze({
     async recover(request: RecoverEarlyTradesInput): Promise<EarlyTradeRecoveryResult> {
-      const primary = await input.primary.recover(request);
-      if (primary.status === "available") return primary;
       const fallback = input.fallbackByChain[request.chain];
-      if (!fallback) return primary;
-      const secondary = await fallback.recover(request);
+      let primary: EarlyTradeRecoveryResult;
+      try {
+        primary = await input.primary.recover(request);
+      } catch (error) {
+        if (!fallback) throw error;
+        return fallback.recover(request);
+      }
+      if (primary.status === "available" || !fallback) return primary;
+      let secondary: EarlyTradeRecoveryResult;
+      try {
+        secondary = await fallback.recover(request);
+      } catch (error) {
+        if (primary.trades.length > 0) return primary;
+        throw error;
+      }
+      if (secondary.status !== "available" && primary.trades.length > 0 && secondary.trades.length === 0) return primary;
       const trades = new Map<string, HistoricalTradeEvidenceRow>();
       for (const trade of [...primary.trades, ...secondary.trades]) trades.set(`${trade.chain}:${trade.economicKey}`, trade);
       return Object.freeze({
