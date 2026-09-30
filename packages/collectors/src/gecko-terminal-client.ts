@@ -86,6 +86,8 @@ export interface GeckoTerminalClientOptions {
   timeoutMs?: number;
   minimumRequestIntervalMs?: number;
   rateLimitCooldownMs?: number;
+  beforeRequest?: (signal?: AbortSignal) => Promise<void>;
+  onRateLimit?: (delayMs: number) => void | Promise<void>;
   now?: () => number;
 }
 
@@ -136,6 +138,10 @@ export function createGeckoTerminalClient(options: GeckoTerminalClientOptions = 
         });
       } catch (error) { release(); throw error; }
     }
+    try {
+      await options.beforeRequest?.(signal);
+      signal?.throwIfAborted();
+    } catch (error) { release(); throw error; }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const abort = () => controller.abort();
@@ -156,7 +162,10 @@ export function createGeckoTerminalClient(options: GeckoTerminalClientOptions = 
             ? retryAfterSeconds * 1000
             : rateLimitCooldownMs
           : null;
-        if (retryAfterMs !== null) rateLimitedUntil = Math.max(rateLimitedUntil, now() + retryAfterMs);
+        if (retryAfterMs !== null) {
+          rateLimitedUntil = Math.max(rateLimitedUntil, now() + retryAfterMs);
+          await options.onRateLimit?.(retryAfterMs);
+        }
         throw new GeckoTerminalError(
           `GeckoTerminal request failed with status ${response.status}`,
           response.status,

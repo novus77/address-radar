@@ -11,7 +11,7 @@ import type {
   TokenFactStore,
   TokenFactType,
 } from "@address-radar/database";
-import { withAddressRadarWriteTransaction } from "@address-radar/database";
+import { resolveObservedMarketSupply, withAddressRadarWriteTransaction } from "@address-radar/database";
 import { CANDIDATE_MILESTONES } from "@address-radar/scoring";
 
 import {
@@ -339,7 +339,7 @@ export function createSourceRecoveryHandlers(input: {
           ohlcv: async (...args) => { consumeGecko(); const value = await client.ohlcv(...args); assertActive?.(); return value; },
           trades: (...args) => client.trades(...args),
         };
-        const reconstruction = await createGeckoMilestoneProvider({ client: budgeted, maxPages: MAX_MILESTONE_HISTORY_PAGES, maxPools: 3,
+        const reconstruction = await createGeckoMilestoneProvider({ client: budgeted, resolveSupply: async request => resolveObservedMarketSupply({ database: input.database, chain: request.chain, tokenAddress: request.tokenAddress, asOf: request.toTimestamp }), maxPages: MAX_MILESTONE_HISTORY_PAGES, maxPools: 3,
           thresholdsUsd: CANDIDATE_MILESTONES.map(milestone => milestone.marketCapUsd) }).reconstruct({ chain: job.chain, tokenAddress: token.tokenAddress,
           fromTimestamp: Math.max(bounds.fromAt, observedAt - 60 * DAY_MS, 0), toTimestamp: observedAt, ...(signal ? { signal } : {}) });
         assertActive?.();
@@ -354,7 +354,7 @@ export function createSourceRecoveryHandlers(input: {
             crossedAt: crossing.crossedAt,
             precision: "estimated",
             source: "gecko_terminal_ohlcv",
-            sourceEventIds: [JSON.stringify({ pool: crossing.poolAddress, bucketStartAt: crossing.crossedAt, bucketEndAt: crossing.bucketEndAt, supplyBasis: crossing.supplyBasis, precision: crossing.precision })],
+            sourceEventIds: [JSON.stringify({ pool: crossing.poolAddress, bucketStartAt: crossing.crossedAt, bucketEndAt: crossing.bucketEndAt, supplyBasis: crossing.supplyBasis, supplyEvidence: crossing.supplyEvidence, precision: crossing.precision })],
             strategyVersion: "candidate-market-recovery-v3",
           });
           inserted += 1;

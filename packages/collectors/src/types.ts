@@ -11,6 +11,7 @@ export interface TokenMarketSnapshot {
   readonly tokenAddress: string;
   readonly priceUsd: number | null;
   readonly marketCapUsd: number | null;
+  readonly marketCapBasis?: "market_cap" | "unavailable";
   readonly liquidityUsd: number | null;
   readonly symbol?: string | null;
   readonly name?: string | null;

@@ -254,6 +254,28 @@ describe("Dune historical backfill worker", () => {
     repository.close();
   });
 
+  it.each(["missing", "fdv"] as const)("does not complete temporary or FDV-only milestone evidence: %s", async kind => {
+    const path = await databasePath();
+    const repository = openAddressRadarRepository(path);
+    const database = new DatabaseSync(path);
+    const historyStore = createCandidateHistoryStore(database);
+    const worker = createDuneHistoricalBackfillWorker({
+      repository, historyStore, queryIds: {}, pageSize: 100, strategyVersion: "candidate-history-v3", duneFallbackEnabled: false,
+      milestoneRouter: {
+        fallbackCircuit: () => ({ open: false, retryAt: null }),
+        reconstruct: async () => ({
+          provider: "gecko_terminal",
+          result: { status: kind === "missing" ? "insufficient_market_data" : "available", poolAddress: "pool", supplyEstimate: kind === "fdv" ? 100000 : null, supplyBasis: kind === "fdv" ? "fdv" : null, candleCount: 1, milestones: kind === "fdv" ? [{ thresholdUsd: 500000, crossedAt: START + 1000, estimatedMarketCapUsd: 500000, source: "gecko_terminal_ohlcv", precision: "estimated_market_cap", supplyBasis: "fdv" }] : [] },
+          attempts: [{ provider: "gecko_terminal", outcome: "not_found", retryable: true, message: null }],
+        }),
+      },
+    });
+    const [partition] = createHistoricalPartitions({ queryKind: "milestone_crossings", chains: ["base"], from: START, to: START + DAY, tokenAddressesByChain: { base: ["0xABC"] }, createdAt: 1 });
+    await expect(worker.execute(partition!, new AbortController().signal)).rejects.toThrow("historical_milestone_evidence_unavailable");
+    expect(historyStore.milestoneCrossings("base:0xabc")).toEqual([]);
+    database.close(); repository.close();
+  });
+
   it("completes permanently unavailable milestone tokens when Dune fallback is disabled", async () => {
     const path = await databasePath();
     const repository = openAddressRadarRepository(path);

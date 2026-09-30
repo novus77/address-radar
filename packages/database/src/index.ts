@@ -142,3 +142,6 @@ export {
   initializeWalletCoverageSchema,
 } from "./wallet-coverage-store.js";
 export type { WalletChainCoverage, WalletCoverageStatus } from "./wallet-coverage-store.js";
+
+export { createSharedProviderRequestGate } from "./shared-provider-request-gate.js";
+export { resolveObservedMarketSupply } from "./observed-market-supply.js";

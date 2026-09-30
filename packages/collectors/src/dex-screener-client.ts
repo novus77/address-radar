@@ -80,7 +80,7 @@ export function createDexScreenerClient(input: {
           if (pair.chainId !== providerChain) return false;
           const base = typeof pair.baseToken?.address === "string" ? normalizeAddress(providerChain, pair.baseToken.address) : null;
           const quote = typeof pair.quoteToken?.address === "string" ? normalizeAddress(providerChain, pair.quoteToken.address) : null;
-          return base === normalizedAddress || quote === normalizedAddress;
+          return base === normalizedAddress;
         });
         const selected = pairs.sort((left, right) => (finite(right.liquidity?.usd) ?? -1) - (finite(left.liquidity?.usd) ?? -1))[0];
         if (!selected) return null;
@@ -91,7 +91,8 @@ export function createDexScreenerClient(input: {
           chain: normalizedChain,
           tokenAddress: normalizedAddress,
           priceUsd: finite(selected.priceUsd),
-          marketCapUsd: finite(selected.marketCap) ?? finite(selected.fdv),
+          marketCapUsd: finite(selected.marketCap),
+          marketCapBasis: finite(selected.marketCap) !== null ? "market_cap" : "unavailable",
           liquidityUsd: finite(selected.liquidity?.usd),
           ...(text(selectedBase?.symbol) ? { symbol: text(selectedBase?.symbol) } : {}),
           ...(text(selectedBase?.name) ? { name: text(selectedBase?.name) } : {}),

@@ -12,6 +12,7 @@ export interface ReconstructedMilestone {
   supplyBasis?: "market_cap" | "fdv";
   poolAddress?: string;
   bucketEndAt?: number;
+  supplyEvidence?: { readonly source: string; readonly snapshotId: string; readonly observedAt: number };
 }
 
 export interface MilestoneReconstructionResult {
@@ -30,6 +31,7 @@ export interface GeckoMilestoneProviderOptions {
   maxPages?: number;
   pageSize?: number;
   maxPools?: number;
+  resolveSupply?: (input: ReconstructMilestonesInput) => Promise<{ readonly supply: number; readonly source: string; readonly snapshotId: string; readonly observedAt: number } | null>;
 }
 
 export interface ReconstructMilestonesInput {
@@ -65,13 +67,23 @@ export function createGeckoMilestoneProvider(options: GeckoMilestoneProviderOpti
 
       let primary: { pool: GeckoTerminalPool; supply: number; basis: "market_cap" | "fdv" } | null = null;
       let candleCount = 0;
+      let fallbackSupply: Awaited<ReturnType<NonNullable<GeckoMilestoneProviderOptions["resolveSupply"]>>> | undefined;
       const crossings = new Map<number, ReconstructedMilestone>();
       const coveredPools: string[] = [];
       for (const pool of pools) {
         input.signal?.throwIfAborted();
         const currentValue = pool.marketCapUsd ?? pool.fdvUsd;
-        const basis = pool.marketCapUsd !== null ? "market_cap" : pool.fdvUsd !== null ? "fdv" : null;
-        const supply = currentValue !== null && pool.tokenPriceUsd > 0 ? currentValue / pool.tokenPriceUsd : null;
+        let basis = pool.marketCapUsd !== null ? "market_cap" as const : pool.fdvUsd !== null ? "fdv" as const : null;
+        let supply = currentValue !== null && pool.tokenPriceUsd > 0 ? currentValue / pool.tokenPriceUsd : null;
+        let supplyEvidence: ReconstructedMilestone["supplyEvidence"];
+        if (basis !== "market_cap" || supply === null || !Number.isFinite(supply) || supply <= 0) {
+          if (fallbackSupply === undefined) fallbackSupply = await options.resolveSupply?.(input) ?? null;
+          if (fallbackSupply && Number.isFinite(fallbackSupply.supply) && fallbackSupply.supply > 0) {
+            supply = fallbackSupply.supply;
+            basis = "market_cap";
+            supplyEvidence = { source: fallbackSupply.source, snapshotId: fallbackSupply.snapshotId, observedAt: fallbackSupply.observedAt };
+          }
+        }
         if (supply === null || basis === null || !Number.isFinite(supply) || supply <= 0) continue;
         primary ??= { pool, supply, basis };
         const candles: GeckoTerminalOhlcvCandle[] = [];
@@ -92,7 +104,7 @@ export function createGeckoMilestoneProvider(options: GeckoMilestoneProviderOpti
         for (const thresholdUsd of thresholds) {
           const candle = chronological.find((item) => item.high * supply >= thresholdUsd);
           if (!candle) continue;
-          const crossing: ReconstructedMilestone = { thresholdUsd, crossedAt: candle.timestamp, estimatedMarketCapUsd: candle.high * supply, source: "gecko_terminal_ohlcv", precision: "estimated_market_cap", supplyBasis: basis, poolAddress: pool.poolAddress, bucketEndAt: candle.timestamp + 3_600_000 };
+          const crossing: ReconstructedMilestone = { thresholdUsd, crossedAt: candle.timestamp, estimatedMarketCapUsd: candle.high * supply, source: "gecko_terminal_ohlcv", precision: "estimated_market_cap", supplyBasis: basis, poolAddress: pool.poolAddress, bucketEndAt: candle.timestamp + 3_600_000, ...(supplyEvidence ? { supplyEvidence } : {}) };
           const existing = crossings.get(thresholdUsd);
           if (!existing || crossing.crossedAt < existing.crossedAt) crossings.set(thresholdUsd, crossing);
         }

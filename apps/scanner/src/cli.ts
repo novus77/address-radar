@@ -1,6 +1,7 @@
 import { addressRadarTokenId } from "@address-radar/domain";
 import {
   createCandidateHistoryStore,
+  createSharedProviderRequestGate,
   createAutomationJobStore,
   createRecoveryFactLinkStore,
   createSourceLedgerStore,
@@ -34,7 +35,8 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
   const recoveryFactLinks = createRecoveryFactLinkStore(historyDatabase);
   const monitoringRegistry = openMonitoringRegistry(config.databasePath);
   const marketProvider = createDexScreenerClient({ ...(config.marketBaseUrl ? { baseUrl: config.marketBaseUrl } : {}) });
-  const historicalMarketProvider = createGeckoTerminalClient({ minimumRequestIntervalMs: 12_500 });
+  const geckoGate = createSharedProviderRequestGate({ database: historyDatabase, provider: "geckoterminal:public", minimumIntervalMs: 12_500 });
+  const historicalMarketProvider = createGeckoTerminalClient({ minimumRequestIntervalMs: 12_500, beforeRequest: geckoGate.acquire, onRateLimit: geckoGate.cooldown });
   const historicalPriceFallback = createDefiLlamaPriceClient();
   if (config.recoveryEnabled) reconcileCandidateSourceRecovery({ database: historyDatabase, ledger: sourceLedger });
   const lifecycleResolver = createTokenLifecycleResolver({});

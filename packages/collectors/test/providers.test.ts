@@ -110,7 +110,8 @@ describe("Dex Screener client", () => {
       chain: "base",
       tokenAddress: "0xabc",
       priceUsd: 2.5,
-      marketCapUsd: 250,
+      marketCapUsd: null,
+      marketCapBasis: "unavailable",
       liquidityUsd: 500,
       observedAt: "1970-01-01T00:00:01.000Z",
     });

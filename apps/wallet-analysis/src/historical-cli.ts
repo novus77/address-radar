@@ -1,5 +1,5 @@
 import { createDuneDataApiClient, createGeckoTerminalClient, FomoTokenLookupProducer, FomoTokenLookupResultConsumer, type DiscoveryChain } from "@address-radar/collectors";
-import { createAutomationJobStore, createCandidateHistoryStore, createTokenFactStore, migrateAddressRadarDatabase, openAddressRadarDatabase, openAddressRadarRepository } from "@address-radar/database";
+import { createSharedProviderRequestGate, resolveObservedMarketSupply, createAutomationJobStore, createCandidateHistoryStore, createTokenFactStore, migrateAddressRadarDatabase, openAddressRadarDatabase, openAddressRadarRepository } from "@address-radar/database";
 
 import { loadHistoricalBackfillConfig } from "./config.js";
 import { createDuneHistoricalBackfillWorker } from "./dune-historical-worker.js";
@@ -33,7 +33,8 @@ const verification = createFomoHistoricalVerificationService({
   onFactUpdated: tokenId => automationJobs.wakeBlockedSource(tokenId, Date.now(), "candidate_evidence"),
 });
 const client = config.duneFallbackEnabled && config.apiKey ? createDuneDataApiClient({ apiKey: config.apiKey, timeoutMs: config.timeoutMs, pollIntervalMs: config.pollIntervalMs }) : undefined;
-const geckoClient = createGeckoTerminalClient({ baseUrl: config.geckoTerminal.baseUrl, timeoutMs: config.geckoTerminal.timeoutMs, minimumRequestIntervalMs: config.geckoTerminal.minimumRequestIntervalMs });
+const geckoGate = createSharedProviderRequestGate({ database, provider: "geckoterminal:public", minimumIntervalMs: Math.max(12_500, config.geckoTerminal.minimumRequestIntervalMs) });
+const geckoClient = createGeckoTerminalClient({ beforeRequest: geckoGate.acquire, onRateLimit: geckoGate.cooldown, baseUrl: config.geckoTerminal.baseUrl, timeoutMs: config.geckoTerminal.timeoutMs, minimumRequestIntervalMs: config.geckoTerminal.minimumRequestIntervalMs });
 const milestoneRouter = createHistoricalProviderRouter({
   primary: {
     id: "local_market_snapshot",
@@ -41,7 +42,7 @@ const milestoneRouter = createHistoricalProviderRouter({
   },
   fallback: {
     id: "gecko_terminal",
-    provider: createGeckoMilestoneProvider({ client: geckoClient, maxPages: config.geckoTerminal.maxPages }),
+    provider: createGeckoMilestoneProvider({ resolveSupply: async request => resolveObservedMarketSupply({ database, chain: request.chain, tokenAddress: request.tokenAddress, asOf: request.toTimestamp }), client: geckoClient, maxPages: config.geckoTerminal.maxPages }),
   },
 });
 const geckoEarlyTrades = createGeckoEarlyTradeProvider({ client: geckoClient });

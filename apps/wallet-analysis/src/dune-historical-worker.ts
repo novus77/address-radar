@@ -80,23 +80,32 @@ export function createDuneHistoricalBackfillWorker(input: {
             signal,
           });
           if (route.result.status !== "available") {
+            const permanentlyMissing = route.result.status === "not_found"
+              && route.attempts.length > 0
+              && route.attempts.every(attempt => attempt.outcome === "not_found" && !attempt.retryable);
+            if (!permanentlyMissing) unavailable += 1;
+            continue;
+          }
+          const acceptedMilestones = route.result.milestones.filter(milestone => milestone.supplyBasis !== "fdv");
+          if (route.result.milestones.length > 0 && acceptedMilestones.length === 0) {
             unavailable += 1;
             continue;
           }
           reconstructed += 1;
           const normalized = normalizeAddress(partition.chain, tokenAddress);
-          for (const milestone of route.result.milestones) input.historyStore.saveMilestoneCrossing({
+          for (const milestone of acceptedMilestones) input.historyStore.saveMilestoneCrossing({
             milestoneId: `${partition.chain}:${normalized}:${milestone.thresholdUsd}`,
             tokenId: `${partition.chain}:${normalized}`,
             marketCapUsd: milestone.thresholdUsd,
             crossedAt: milestone.crossedAt,
             precision: "estimated",
             source: milestone.source,
-            sourceEventIds: [`${route.result.poolAddress ?? "unknown-pool"}:${milestone.crossedAt}`],
+            sourceEventIds: [JSON.stringify({ pool: milestone.poolAddress ?? route.result.poolAddress, crossedAt: milestone.crossedAt, supplyBasis: milestone.supplyBasis, supplyEvidence: milestone.supplyEvidence, precision: milestone.precision })],
             strategyVersion: input.strategyVersion,
           });
         }
-        if (unavailable === 0 || !input.duneFallbackEnabled) return Object.freeze({
+        if (unavailable > 0 && !input.duneFallbackEnabled) throw new Error(`historical_milestone_evidence_unavailable:${unavailable}`);
+        if (unavailable === 0) return Object.freeze({
           executionId: partition.executionId ?? `gecko-terminal:${partition.partitionId}`,
           nextOffset: null,
           rowCount: partition.rowCount + reconstructed,
