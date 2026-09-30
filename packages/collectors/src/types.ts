@@ -21,7 +21,7 @@ export interface TokenMarketSnapshot {
 }
 
 export interface TokenMarketProvider {
-  lookup(chain: string, tokenAddress: string): Promise<TokenMarketSnapshot | null>;
+  lookup(chain: string, tokenAddress: string, signal?: AbortSignal): Promise<TokenMarketSnapshot | null>;
 }
 
 export interface TradeEventRepository {

@@ -105,7 +105,7 @@ export function loadHistoricalBackfillConfig(env: Readonly<Record<string, string
   const blockscoutEndpoints = Object.freeze({
     eth: env.ADDRESS_RADAR_BLOCKSCOUT_ETH_URL?.trim() || "https://eth.blockscout.com",
     base: env.ADDRESS_RADAR_BLOCKSCOUT_BASE_URL?.trim() || "https://base.blockscout.com",
-    bsc: env.ADDRESS_RADAR_BLOCKSCOUT_BSC_URL?.trim() || "https://bsc.blockscout.com",
+    ...(env.ADDRESS_RADAR_BLOCKSCOUT_BSC_URL?.trim() ? { bsc: env.ADDRESS_RADAR_BLOCKSCOUT_BSC_URL.trim() } : {}),
   });
   for (const [chain, endpoint] of Object.entries(blockscoutEndpoints)) ensureHttpUrl(endpoint, `blockscout-${chain}`);
   return Object.freeze({

@@ -1,5 +1,6 @@
 export { createDexScreenerClient, DexScreenerProviderError, DEX_SCREENER_CHAIN_IDS, dexScreenerChainId } from "./dex-screener-client.js";
 export * from "./gecko-terminal-client.js";
+export * from "./gecko-milestone-provider.js";
 export * from "./defillama-price-client.js";
 export * from "./dune/index.js";
 export * from "./evm/index.js";

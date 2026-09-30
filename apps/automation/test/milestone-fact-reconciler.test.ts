@@ -11,7 +11,7 @@ describe("milestone fact reconciliation", () => {
     const first = reconcileMilestoneEarlyTradeFacts(input);
     const second = reconcileMilestoneEarlyTradeFacts(input);
     expect(first).toMatchObject({ milestoneExamined: 1, milestoneScheduled: 1 });
-    expect(second).toMatchObject({ milestoneExamined: 1, milestoneScheduled: 0 });
+    expect(second).toMatchObject({ milestoneExamined: 0, milestoneScheduled: 0 });
     expect(database.prepare("SELECT job_type AS jobType FROM recovery_jobs WHERE subject_key='base:0xdef' ORDER BY job_type").all()).toEqual([
       { jobType: "historical_research" },
       { jobType: "market_enrichment" },

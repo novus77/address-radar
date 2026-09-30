@@ -31,6 +31,7 @@ export interface ScannerConfig extends ScannerPolicyConfig {
   readonly recoveryEnabled: boolean;
   readonly recoveryPollIntervalMs: number;
   readonly recoveryLeaseMs: number;
+  readonly recoveryDeadlineMs?: number;
   readonly recoveryRetryBaseMs: number;
   readonly minimumFreeDiskBytes: number;
   readonly diskCheckIntervalMs: number;
@@ -95,6 +96,7 @@ export function parseScannerConfig(env: Readonly<Record<string, string | undefin
     recoveryEnabled: env.ADDRESS_RADAR_RECOVERY_ENABLED === "true",
     recoveryPollIntervalMs: finiteNumber(env.ADDRESS_RADAR_RECOVERY_POLL_INTERVAL_MS, 5_000, "ADDRESS_RADAR_RECOVERY_POLL_INTERVAL_MS"),
     recoveryLeaseMs: finiteNumber(env.ADDRESS_RADAR_RECOVERY_LEASE_MS, 60_000, "ADDRESS_RADAR_RECOVERY_LEASE_MS"),
+    recoveryDeadlineMs: finiteNumber(env.ADDRESS_RADAR_RECOVERY_DEADLINE_MS, 120_000, "ADDRESS_RADAR_RECOVERY_DEADLINE_MS"),
     recoveryRetryBaseMs: finiteNumber(env.ADDRESS_RADAR_RECOVERY_RETRY_BASE_MS, 30_000, "ADDRESS_RADAR_RECOVERY_RETRY_BASE_MS"),
     minimumFreeDiskBytes: finiteNumber(env.ADDRESS_RADAR_MINIMUM_FREE_DISK_BYTES, 2 * 1024 * 1024 * 1024, "ADDRESS_RADAR_MINIMUM_FREE_DISK_BYTES"),
     diskCheckIntervalMs: finiteNumber(env.ADDRESS_RADAR_DISK_CHECK_INTERVAL_MS, 60_000, "ADDRESS_RADAR_DISK_CHECK_INTERVAL_MS"),

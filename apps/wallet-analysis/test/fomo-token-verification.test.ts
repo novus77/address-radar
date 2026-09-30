@@ -201,7 +201,7 @@ describe("FOMO historical verification", () => {
       .toEqual({ status: "deferred", lastError: "fomo_result_timeout" });
   });
 
-  it("records a confirmed empty milestone lookup as an available fact", async () => {
+  it("does not mark an empty milestone result as an available early trade", async () => {
     database = new DatabaseSync(":memory:");
     migrateAddressRadarDatabase(database);
     directory = mkdtempSync(join(tmpdir(), "address-radar-fomo-verification-"));
@@ -236,11 +236,8 @@ describe("FOMO historical verification", () => {
 
     await expect(service.runOnce()).resolves.toEqual({ processed: true, action: "result" });
     expect(facts.fact("bsc:0xempty", "early_trades")).toMatchObject({
-      status: "available",
-      precision: "exact",
-      primarySource: "fomo_lookup_empty",
-      coverageEndAt: 150,
+      status: "scheduled",
     });
-    expect(onFactUpdated).toHaveBeenCalledWith("bsc:0xempty");
+    expect(onFactUpdated).not.toHaveBeenCalled();
   });
 });

@@ -3,7 +3,7 @@ import type { DiscoveryChain } from "./rpc-provider.js";
 const DEFAULT_BASE_URL = "https://coins.llama.fi";
 const DEFAULT_TIMEOUT_MS = 10_000;
 const HOUR_MS = 60 * 60_000;
-const MAX_HOURLY_POINTS = 2_000;
+const MAX_HOURLY_POINTS = 500;
 
 const CHAIN_IDS: Partial<Record<DiscoveryChain, string>> = {
   eth: "ethereum",
@@ -64,6 +64,7 @@ export function createDefiLlamaPriceClient(options: {
       range: { readonly fromAt: number; readonly toAt: number },
       signal?: AbortSignal,
     ) {
+      signal?.throwIfAborted();
       const chainId = CHAIN_IDS[chain];
       if (!chainId) return Object.freeze({ source: "defillama_chart" as const, confidence: null, prices: Object.freeze([]) });
       if (!Number.isSafeInteger(range.fromAt) || !Number.isSafeInteger(range.toAt) || range.fromAt < 0 || range.toAt < range.fromAt) {
@@ -71,19 +72,20 @@ export function createDefiLlamaPriceClient(options: {
       }
       const address = chain === "solana" ? tokenAddress.trim() : tokenAddress.trim().toLowerCase();
       const coinId = `${chainId}:${address}`;
-      const span = Math.min(MAX_HOURLY_POINTS, Math.max(2, Math.ceil((range.toAt - range.fromAt) / HOUR_MS) + 2));
-      const params = new URLSearchParams({
-        start: String(Math.floor(Math.max(0, range.fromAt - HOUR_MS) / 1_000)),
-        span: String(span),
-        period: "1h",
-      });
+      const startAt = Math.max(0, range.fromAt - HOUR_MS);
+      const totalPoints = Math.max(2, Math.ceil((range.toAt - startAt) / HOUR_MS) + 1);
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
       const abort = () => controller.abort();
       signal?.addEventListener("abort", abort, { once: true });
       try {
+        const merged = new Map<number, HistoricalTokenPricePoint>();
+        let minimumConfidence: number | null = null;
+        for (let offset = 0; offset < totalPoints; offset += MAX_HOURLY_POINTS) {
+        controller.signal.throwIfAborted();
+        const params = new URLSearchParams({ start: String(Math.floor((startAt + offset * HOUR_MS) / 1_000)), span: String(Math.min(MAX_HOURLY_POINTS, totalPoints - offset)), period: "1h" });
         const response = await fetchImpl(`${baseUrl}/chart/${encodeURIComponent(coinId)}?${params}`, { headers: { Accept: "application/json" }, signal: controller.signal });
-        if (response.status === 404) return Object.freeze({ source: "defillama_chart" as const, confidence: null, prices: Object.freeze([]) });
+        if (response.status === 404) continue;
         if (!response.ok) {
           throw new DefiLlamaPriceError(
             `DefiLlama request failed with status ${response.status}`,
@@ -92,7 +94,7 @@ export function createDefiLlamaPriceClient(options: {
           );
         }
         const payload = await response.json() as { coins?: Record<string, { confidence?: unknown; prices?: unknown }> };
-        const coin = payload.coins?.[coinId] ?? Object.values(payload.coins ?? {})[0];
+        const coin = payload.coins?.[coinId];
         const confidence = finiteNumber(coin?.confidence);
         const rows = Array.isArray(coin?.prices) ? coin.prices : [];
         const prices = rows.flatMap((row): HistoricalTokenPricePoint[] => {
@@ -102,7 +104,10 @@ export function createDefiLlamaPriceClient(options: {
           if (timestamp === null || priceUsd === null || timestamp < 0 || priceUsd <= 0) return [];
           return [{ observedAt: Math.round(timestamp * 1_000), priceUsd }];
         }).sort((left, right) => left.observedAt - right.observedAt);
-        return Object.freeze({ source: "defillama_chart" as const, confidence, prices: Object.freeze(prices) });
+        if (confidence !== null) minimumConfidence = minimumConfidence === null ? confidence : Math.min(minimumConfidence, confidence);
+        for (const point of prices) if (point.observedAt >= startAt && point.observedAt <= range.toAt) merged.set(point.observedAt, point);
+        }
+        return Object.freeze({ source: "defillama_chart" as const, confidence: minimumConfidence, prices: Object.freeze([...merged.values()].sort((left, right) => left.observedAt - right.observedAt)) });
       } catch (error) {
         if (error instanceof DefiLlamaPriceError) throw error;
         throw new DefiLlamaPriceError(error instanceof Error ? error.message : "DefiLlama request failed", null, true);

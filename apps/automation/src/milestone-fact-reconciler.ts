@@ -21,9 +21,10 @@ export function reconcileMilestoneEarlyTradeFacts(input: {
       AND COALESCE(fact.status, 'missing') IN (
         'missing', 'scheduled', 'retry_scheduled', 'partial', 'degraded', 'conflicted'
       )
-    ORDER BY snapshot.token_id
+      AND (fact.next_attempt_at IS NULL OR fact.next_attempt_at <= ?)
+    ORDER BY COALESCE(fact.updated_at, 0), snapshot.token_id
     LIMIT ?
-  `).all(limit) as Array<{ tokenId: string }>;
+  `).all(at, limit) as Array<{ tokenId: string }>;
   const planner = createCandidateSourceRecoveryPlanner({ ledger: input.ledger, now: () => at });
   let milestoneScheduled = 0;
   let recoveryRequeued = 0;
@@ -54,7 +55,8 @@ export function reconcileMilestoneEarlyTradeFacts(input: {
       AND COALESCE(f.status, 'missing') IN (
         'missing', 'scheduled', 'retry_scheduled', 'partial', 'degraded', 'conflicted'
       )
-    ORDER BY m.token_id LIMIT ?`).all(limit) as Array<{ tokenId: string }>;
+      AND (f.next_attempt_at IS NULL OR f.next_attempt_at <= ?)
+    ORDER BY COALESCE(f.updated_at, 0), m.token_id LIMIT ?`).all(at, limit) as Array<{ tokenId: string }>;
   let available = 0; let scheduled = 0; let terminal = 0;
   for (const row of rows) {
     input.facts.ensure(row.tokenId, "early_trades", "milestone-fact-reconciliation-v1", at);

@@ -27,6 +27,7 @@ import { createSqliteHistoricalTokenSource } from "./token-source-adapters.js";
 import { migrateManualIdentityAutomationJobs } from "./migrations/manual-identity-job-cleanup.js";
 import { createEarlyTradeReconciler } from "./early-trade-reconciler.js";
 import { reconcileMilestoneEarlyTradeFacts } from "./milestone-fact-reconciler.js";
+import { createSourceFactRevisionReconciler } from "./source-fact-revision-reconciler.js";
 import { automationJobStoreOptions, createQueueAdmissionPolicy } from "./queue-policy.js";
 import {
   createSignalProjectionReconciler,
@@ -79,6 +80,7 @@ export function createAutomationRuntime(input: {
   const now = input.now ?? Date.now;
   const facts = createTokenFactStore(database);
   const earlyTradeReconciler = createEarlyTradeReconciler({ database, jobs: store, facts, now });
+  const sourceFactReconciler = createSourceFactRevisionReconciler({ database, jobs: store, now });
   const reconcileMilestoneFacts = () => reconcileMilestoneEarlyTradeFacts({
     database,
     jobs: store,
@@ -164,6 +166,7 @@ export function createAutomationRuntime(input: {
         reconcileResolvedWalletAutomationJobs(database, plannedAt);
         earlyTradeReconciler.runOnce();
         reconcileMilestoneFacts();
+        sourceFactReconciler.runOnce();
         signalProjectionReconciler.runOnce();
         const decision = queuePolicy.evaluate(store.metrics(plannedAt, 15 * 60_000));
         if (decision.admitHistorical) {

@@ -117,14 +117,25 @@ export function createGeckoTerminalClient(options: GeckoTerminalClientOptions = 
   let rateLimitedUntil = 0;
 
   async function request(path: string, cacheTtlMs: number, signal?: AbortSignal): Promise<unknown> {
+    signal?.throwIfAborted();
     const cached = cache.get(path);
     if (cached && cached.expiresAt > now()) return cached.value;
     let release: () => void = () => undefined;
     const previous = requestTail;
     requestTail = new Promise<void>((resolve) => { release = resolve; });
     await previous;
+    if (signal?.aborted) { release(); signal.throwIfAborted(); }
     const waitMs = Math.max(0, lastRequestAt + minimumRequestIntervalMs - now(), rateLimitedUntil - now());
-    if (waitMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
+    if (waitMs > 0) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const abortWait = () => { clearTimeout(timer); reject(signal?.reason ?? new Error("Request aborted")); };
+          const timer = setTimeout(() => { signal?.removeEventListener("abort", abortWait); resolve(); }, waitMs);
+          signal?.addEventListener("abort", abortWait, { once: true });
+          if (signal?.aborted) abortWait();
+        });
+      } catch (error) { release(); throw error; }
+    }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const abort = () => controller.abort();

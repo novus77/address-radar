@@ -132,6 +132,7 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
   const recovery = config.recoveryEnabled ? createRecoveryRuntime({
     ledger: sourceLedger,
     factLinks: recoveryFactLinks,
+    tokenFacts,
     handlers: createSourceRecoveryHandlers({
       database: historyDatabase,
       ledger: sourceLedger,
@@ -146,6 +147,7 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
     }),
     clock: { now: Date.now },
     leaseMs: config.recoveryLeaseMs,
+    deadlineMs: config.recoveryDeadlineMs ?? 120_000,
     retryBaseMs: config.recoveryRetryBaseMs,
     onReEvaluate: request => {
       if (request.kind === "token") automationJobs.wakeBlockedSource(request.key, Date.now(), "candidate_evidence");

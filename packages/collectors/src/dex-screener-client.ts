@@ -56,7 +56,8 @@ export function createDexScreenerClient(input: {
   const now = input.now ?? Date.now;
 
   return Object.freeze({
-    async lookup(chain: string, tokenAddress: string): Promise<TokenMarketSnapshot | null> {
+    async lookup(chain: string, tokenAddress: string, signal?: AbortSignal): Promise<TokenMarketSnapshot | null> {
+      signal?.throwIfAborted();
       const normalizedChain = chain.trim().toLowerCase();
       const providerChain = dexScreenerChainId(normalizedChain);
       const normalizedAddress = normalizeAddress(providerChain, tokenAddress);
@@ -64,6 +65,8 @@ export function createDexScreenerClient(input: {
       const endpoint = `${baseUrl}/latest/dex/tokens/${encodeURIComponent(normalizedAddress)}`;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const abort = () => controller.abort(signal?.reason);
+      signal?.addEventListener("abort", abort, { once: true });
       try {
         const response = await fetcher(endpoint, { signal: controller.signal });
         if (response.status === 429) throw new JsonRpcRateLimitError(endpoint);
@@ -98,6 +101,7 @@ export function createDexScreenerClient(input: {
         });
       } finally {
         clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
       }
     },
   });

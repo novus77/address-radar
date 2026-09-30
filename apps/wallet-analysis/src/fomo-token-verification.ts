@@ -61,20 +61,29 @@ export function createFomoHistoricalVerificationService(input: {
       const completedAt = result.completedAt;
       input.facts?.ensure(tokenId, "early_trades", "token-facts-v1", completedAt);
       const current = input.facts?.fact(tokenId, "early_trades") ?? null;
-      const hasEvents = (result.eventIds?.length ?? 0) > 0 || result.observationCount > 0;
-      const conclusiveEmpty = !hasEvents
-        && inferredStatus(result) === "confirmed"
-        && result.historyAvailable !== false
-        && !result.errorCode;
-      if (hasEvents || conclusiveEmpty) {
+      const eligible = input.database.prepare(`
+        SELECT MIN(e.occurred_at) AS firstBuyAt, COUNT(*) AS count
+        FROM canonical_trader_events e
+        JOIN trader_entities owner ON owner.entity_id=e.entity_id
+        WHERE e.chain=? AND e.token_address=? AND e.side='buy'
+          AND e.amount_usd>0 AND e.occurred_at<=?
+      `).get(chain, tokenAddress, result.beforeAt ?? -1) as { firstBuyAt: number | null; count: number };
+      const hasEligibleTrade = eligible.count > 0 && result.exactAddressMatch !== false
+        && inferredStatus(result) !== "mismatch";
+      if (hasEligibleTrade) {
         if (current?.status === "terminal_unavailable") input.facts?.transition({ tokenId, factType: "early_trades", status: "scheduled", reopenTerminal: true, terminalReason: null, nextAttemptAt: completedAt, strategyVersion: "token-facts-v1", updatedAt: completedAt });
-        input.facts?.transition({ tokenId, factType: "early_trades", status: "available", precision: "exact", primarySource: hasEvents ? "fomo_lookup" : "fomo_lookup_empty", coverageStartAt: null, coverageEndAt: result.beforeAt ?? completedAt, observedAt: completedAt, knownAt: completedAt, nextAttemptAt: null, terminalReason: null, strategyVersion: "token-facts-v1", updatedAt: completedAt });
+        input.facts?.transition({ tokenId, factType: "early_trades", status: "available", precision: "exact", primarySource: "canonical_trader_events", coverageStartAt: eligible.firstBuyAt, coverageEndAt: result.beforeAt ?? completedAt, observedAt: eligible.firstBuyAt ?? completedAt, knownAt: completedAt, nextAttemptAt: null, terminalReason: null, strategyVersion: "token-facts-v1", updatedAt: completedAt });
         input.onFactUpdated?.(tokenId);
       } else if (current && current.status !== "available" && current.status !== "terminal_unavailable") {
         const nextAttemptAt = completedAt + retryDelayMs(current.attemptCount);
         const target = current.status === "missing" ? "scheduled" : "retry_scheduled";
         input.facts?.transition({ tokenId, factType: "early_trades", status: target, nextAttemptAt, strategyVersion: "token-facts-v1", updatedAt: completedAt });
       }
+      input.facts?.recordAttempt({ attemptId: `fomo-result:${result.lookupId}`, tokenId, factType: "early_trades", provider: "fomo_lookup",
+        outcome: hasEligibleTrade ? "available" : result.observationCount > 0 ? "partial" : "empty",
+        startedAt: completedAt, finishedAt: completedAt, factsWritten: hasEligibleTrade && current?.status !== "available" ? 1 : 0,
+        message: hasEligibleTrade ? "eligible_trade_persisted" : result.observationCount > 0 ? "waiting_canonical_trade" : "no_eligible_trade",
+        payload: { lookupId: result.lookupId, milestoneId: result.milestoneId, recordsSeen: result.observationCount, eligibleTrades: eligible.count } });
       return true;
     }
     const row = input.database.prepare(`

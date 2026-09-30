@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 
 import type { GeckoTerminalClient, HistoricalTokenPriceClient, TokenMarketProvider } from "@address-radar/collectors";
+import { createGeckoMilestoneProvider } from "@address-radar/collectors";
 import type {
   AutomationJobStore,
   CandidateHistoryStore,
@@ -16,9 +17,13 @@ import { CANDIDATE_MILESTONES } from "@address-radar/scoring";
 import {
   RetryableRecoveryError,
   TerminalRecoveryError,
+  WaitingRecoveryResultError,
   type RecoveryHandlers,
 } from "./recovery-runtime.js";
 import type { RecoveryPostcondition } from "./recovery-postcondition.js";
+import { hasHistoricalPriceCoverage, mergeHistoricalPrices } from "./price-recovery-coverage.js";
+import { milestoneRecoveryGap } from "./milestone-recovery-policy.js";
+import { parseRecoveryHandoff, recoveryHandoffAction } from "./recovery-handoff.js";
 
 const HOUR_MS = 60 * 60_000;
 const DAY_MS = 24 * HOUR_MS;
@@ -36,6 +41,7 @@ interface FomoMilestoneLookupProducer {
     readonly milestoneId?: string;
     readonly beforeAt?: number;
     readonly cursor?: string;
+    readonly lookupRevision?: number;
   }): Promise<unknown>;
 }
 
@@ -90,10 +96,11 @@ export function createSourceRecoveryHandlers(input: {
   });
 
   return Object.freeze({
-    async market_enrichment({ job }) {
+    async market_enrichment({ job, signal, assertActive }) {
       const token = tokenParts(job.subjectKey, job.chain);
       const observedAt = now();
-      const market = await input.marketProvider.lookup(token.chain, token.tokenAddress);
+      const market = await input.marketProvider.lookup(token.chain, token.tokenAddress, signal);
+      assertActive?.();
       if (!market || market.priceUsd == null || !Number.isFinite(market.priceUsd) || market.priceUsd <= 0) {
         throw new RetryableRecoveryError("market_price_unavailable");
       }
@@ -164,7 +171,7 @@ export function createSourceRecoveryHandlers(input: {
       return { reEvaluate: { kind: "token" as const, key: job.subjectKey }, postcondition: factPostcondition("market_identity", job.subjectKey) };
     },
 
-    async market_history({ job, consumeBudget }) {
+    async market_history({ job, consumeBudget, signal, assertActive }) {
       if (!input.historicalMarketProvider && !input.historicalPriceFallback) throw new RetryableRecoveryError("historical_market_provider_unavailable");
       if (job.chain === "robinhood") throw new TerminalRecoveryError("historical_market_chain_unsupported");
       const token = tokenParts(job.subjectKey, job.chain);
@@ -190,7 +197,8 @@ export function createSourceRecoveryHandlers(input: {
       if (input.historicalMarketProvider) {
         try {
           consumeGecko();
-          const pool = await input.historicalMarketProvider.topPool(job.chain, token.tokenAddress);
+          const pool = await input.historicalMarketProvider.topPool(job.chain, token.tokenAddress, signal);
+          assertActive?.();
           if (pool) {
             let beforeTimestamp = range.toAt + HOUR_MS;
             for (let page = 0; page < MAX_HISTORY_PAGES; page += 1) {
@@ -201,7 +209,8 @@ export function createSourceRecoveryHandlers(input: {
                 aggregate: 1,
                 beforeTimestamp,
                 limit: 1_000,
-              });
+              }, signal);
+              assertActive?.();
               if (batch.length === 0) break;
               for (const candle of batch) {
                 if (candle.timestamp <= range.toAt && candle.timestamp >= range.fromAt - HOUR_MS && candle.close > 0) {
@@ -217,7 +226,10 @@ export function createSourceRecoveryHandlers(input: {
           primaryError = error;
         }
       }
-      let ordered = [...candles].sort((left, right) => left[0] - right[0]);
+      assertActive?.();
+      const primaryPrices = mergeHistoricalPrices([...candles], [], range);
+      saveHistoricalPrices(input.database, token.chain, token.tokenAddress, primaryPrices, source);
+      let ordered = mergeHistoricalPrices(local, primaryPrices, range);
       if (!hasEntryCoverage(ordered, range) && input.historicalPriceFallback) {
         consumeBudget({
           provider: "defillama",
@@ -226,21 +238,25 @@ export function createSourceRecoveryHandlers(input: {
           limit: DEFILLAMA_CALLS_PER_MINUTE,
           retryAt: (Math.floor(observedAt / 60_000) + 1) * 60_000,
         });
-        const fallback = await input.historicalPriceFallback.chart(job.chain, token.tokenAddress, range);
-        ordered = fallback.prices.map(point => [point.observedAt, point.priceUsd] as const);
-        source = fallback.source;
+        const fallback = await input.historicalPriceFallback.chart(job.chain, token.tokenAddress, range, signal);
+        assertActive?.();
+        const fallbackPrices = mergeHistoricalPrices(fallback.prices.map(point => [point.observedAt, point.priceUsd] as const), [], range);
+        saveHistoricalPrices(input.database, token.chain, token.tokenAddress, fallbackPrices, fallback.source);
+        ordered = mergeHistoricalPrices(ordered, fallbackPrices, range);
+        if (fallbackPrices.length > 0) source = "market_observations";
       }
       if (!hasEntryCoverage(ordered, range)) {
         if (primaryError !== null && !input.historicalPriceFallback) throw primaryError;
-        if (job.attemptCount >= 3) throw new TerminalRecoveryError("historical_market_coverage_unavailable");
+        if (ordered.length > 0) saveFact("price_history", job.subjectKey, "partial", "derived", "market_observations", observedAt, ordered[0]![0], ordered.at(-1)![0]);
         throw new RetryableRecoveryError("historical_market_coverage_unavailable");
       }
-      saveHistoricalPrices(input.database, token.chain, token.tokenAddress, ordered, source);
-      saveFact("price_history", job.subjectKey, "available", source === "geckoterminal_ohlcv" ? "exact" : "derived", source, observedAt, ordered[0]![0], ordered.at(-1)![0]);
+      assertActive?.();
+      saveFact("price_history", job.subjectKey, "available", "derived", source, observedAt, ordered[0]![0], ordered.at(-1)![0]);
       return { reEvaluate: { kind: "token" as const, key: job.subjectKey }, postcondition: factPostcondition("price_history", job.subjectKey) };
     },
 
-    async milestone_early_buyers({ job }) {
+    async milestone_early_buyers({ job, assertActive, checkpoint }) {
+      assertActive?.();
       const token = tokenParts(job.subjectKey, job.chain);
       const milestone = input.database.prepare(`
         SELECT milestone_id AS milestoneId, crossed_at AS crossedAt
@@ -258,18 +274,39 @@ export function createSourceRecoveryHandlers(input: {
         saveFact("early_trades", job.subjectKey, "available", "exact", "canonical_trader_events", now(), null, milestone.crossedAt);
         return { reEvaluate: { kind: "token" as const, key: job.subjectKey }, postcondition: factPostcondition("early_trades", job.subjectKey) };
       }
-      await input.fomoProducer.enqueue({
+      const pending = parseRecoveryHandoff(job.cursor);
+      const submittedAt = now();
+      let lookupRevision = 0;
+      let checkAt = submittedAt + 30 * 60_000;
+      if (pending && pending.milestoneId === milestone.milestoneId && pending.beforeAt === milestone.crossedAt) {
+        const result = input.database.prepare(`
+          SELECT outcome, message FROM token_fact_attempts
+          WHERE token_id=? AND fact_type='early_trades' AND provider='fomo_lookup'
+            AND json_extract(payload, '$.lookupId')=?
+          ORDER BY finished_at DESC LIMIT 1
+        `).get(job.subjectKey, pending.lookupId) as { outcome: string; message: string | null } | undefined;
+        const action = recoveryHandoffAction(pending, submittedAt, Boolean(result));
+        if (action.action === "wait") throw new WaitingRecoveryResultError(result?.message ?? action.reason, action.retryAt);
+        lookupRevision = action.lookupRevision;
+        checkAt = action.retryAt;
+      }
+      const queued = await input.fomoProducer.enqueue({
         chainId: token.chain,
         tokenAddress: token.tokenAddress,
         requestedAt: now(),
         purpose: "milestone_backfill",
         milestoneId: milestone.milestoneId,
         beforeAt: milestone.crossedAt,
+        lookupRevision,
       });
-      throw new RetryableRecoveryError("early_trade_lookup_queued");
+      assertActive?.();
+      const request = queued && typeof queued === "object" ? (queued as { request?: { lookupId?: unknown } }).request : null;
+      if (!request || typeof request.lookupId !== "string" || !request.lookupId.trim()) throw new RetryableRecoveryError("early_trade_request_identity_missing");
+      checkpoint(JSON.stringify({ kind: "fomo_milestone_lookup", lookupId: request.lookupId, milestoneId: milestone.milestoneId, beforeAt: milestone.crossedAt, submittedAt, checkAt, lookupRevision }));
+      throw new WaitingRecoveryResultError("waiting_result", checkAt);
     },
 
-    async historical_research({ job, consumeBudget }) {
+    async historical_research({ job, consumeBudget, signal, assertActive }) {
       const token = tokenParts(job.subjectKey, job.chain);
       const observedAt = now();
       let milestoneRange = input.database.prepare(`
@@ -281,23 +318,13 @@ export function createSourceRecoveryHandlers(input: {
         if (!input.historicalMarketProvider) {
           throw new RetryableRecoveryError("historical_milestone_provider_unavailable");
         }
-        const usageWindow = String(Math.floor(observedAt / 60_000));
         const consumeGecko = (): void => consumeBudget({
           provider: "geckoterminal",
-          usageWindow,
+          usageWindow: String(Math.floor(now() / 60_000)),
           units: 1,
           limit: GECKO_TERMINAL_CALLS_PER_MINUTE,
-          retryAt: (Math.floor(observedAt / 60_000) + 1) * 60_000,
+          retryAt: (Math.floor(now() / 60_000) + 1) * 60_000,
         });
-        consumeGecko();
-        const pool = await input.historicalMarketProvider.topPool(job.chain, token.tokenAddress);
-        const currentValue = pool?.marketCapUsd ?? pool?.fdvUsd ?? null;
-        const supply = pool && currentValue !== null && pool.tokenPriceUsd > 0
-          ? currentValue / pool.tokenPriceUsd
-          : null;
-        if (!pool || supply === null || !Number.isFinite(supply) || supply <= 0) {
-          throw new RetryableRecoveryError("historical_milestone_supply_unavailable");
-        }
         const bounds = input.database.prepare(`
           SELECT COALESCE(
             (SELECT first_trade_at FROM historical_tokens WHERE token_id=?),
@@ -305,45 +332,35 @@ export function createSourceRecoveryHandlers(input: {
             ?
           ) AS fromAt
         `).get(job.subjectKey, job.subjectKey, Math.max(0, observedAt - 60 * DAY_MS)) as { fromAt: number };
-        const candles = new Map<number, number>();
-        let beforeTimestamp = observedAt + HOUR_MS;
-        for (let page = 0; page < MAX_MILESTONE_HISTORY_PAGES; page += 1) {
-          consumeGecko();
-          const batch = await input.historicalMarketProvider.ohlcv(job.chain, pool.poolAddress, {
-            timeframe: "hour",
-            tokenSide: pool.tokenSide,
-            aggregate: 1,
-            beforeTimestamp,
-            limit: 1_000,
-          });
-          if (batch.length === 0) break;
-          for (const candle of batch) {
-            if (candle.timestamp >= bounds.fromAt && candle.timestamp <= observedAt && candle.high > 0) {
-              candles.set(candle.timestamp, candle.high);
-            }
-          }
-          const earliest = Math.min(...batch.map((candle) => candle.timestamp));
-          if (earliest <= bounds.fromAt || earliest >= beforeTimestamp || batch.length < 1_000) break;
-          beforeTimestamp = earliest - 1;
-        }
-        const chronological = [...candles].sort((left, right) => left[0] - right[0]);
+        const client = input.historicalMarketProvider;
+        const budgeted: GeckoTerminalClient = {
+          topPool: async (...args) => { consumeGecko(); const value = await client.topPool(...args); assertActive?.(); return value; },
+          ...(client.pools ? { pools: async (...args: Parameters<NonNullable<GeckoTerminalClient["pools"]>>) => { consumeGecko(); const value = await client.pools!(...args); assertActive?.(); return value; } } : {}),
+          ohlcv: async (...args) => { consumeGecko(); const value = await client.ohlcv(...args); assertActive?.(); return value; },
+          trades: (...args) => client.trades(...args),
+        };
+        const reconstruction = await createGeckoMilestoneProvider({ client: budgeted, maxPages: MAX_MILESTONE_HISTORY_PAGES, maxPools: 3,
+          thresholdsUsd: CANDIDATE_MILESTONES.map(milestone => milestone.marketCapUsd) }).reconstruct({ chain: job.chain, tokenAddress: token.tokenAddress,
+          fromTimestamp: Math.max(bounds.fromAt, observedAt - 60 * DAY_MS, 0), toTimestamp: observedAt, ...(signal ? { signal } : {}) });
+        assertActive?.();
         let inserted = 0;
-        for (const milestone of CANDIDATE_MILESTONES) {
-          const crossing = chronological.find(([, high]) => high * supply >= milestone.marketCapUsd);
-          if (!crossing) continue;
+        for (const crossing of reconstruction.milestones) {
+          // FDV-derived estimates are not historical circulating market-cap evidence.
+          if (crossing.supplyBasis === "fdv") continue;
           input.history.saveMilestoneCrossing({
-            milestoneId: `${job.subjectKey}:${milestone.marketCapUsd}`,
+            milestoneId: `${job.subjectKey}:${crossing.thresholdUsd}`,
             tokenId: job.subjectKey,
-            marketCapUsd: milestone.marketCapUsd,
-            crossedAt: crossing[0],
+            marketCapUsd: crossing.thresholdUsd,
+            crossedAt: crossing.crossedAt,
             precision: "estimated",
             source: "gecko_terminal_ohlcv",
-            sourceEventIds: [`${pool.poolAddress}:${crossing[0]}`],
-            strategyVersion: "candidate-market-recovery-v2",
+            sourceEventIds: [JSON.stringify({ pool: crossing.poolAddress, bucketStartAt: crossing.crossedAt, bucketEndAt: crossing.bucketEndAt, supplyBasis: crossing.supplyBasis, precision: crossing.precision })],
+            strategyVersion: "candidate-market-recovery-v3",
           });
           inserted += 1;
         }
-        if (inserted === 0) throw new TerminalRecoveryError("historical_milestone_crossing_unavailable");
+        if (inserted === 0) throw new RetryableRecoveryError(milestoneRecoveryGap({ poolFound: reconstruction.poolAddress !== null,
+          supplyAvailable: reconstruction.supplyEstimate !== null && reconstruction.supplyBasis !== "fdv", candleCount: reconstruction.candleCount }));
         milestoneRange = input.database.prepare(`
           SELECT MIN(crossed_at) AS coverageStartAt, MAX(crossed_at) AS coverageEndAt
           FROM token_milestone_crossings
@@ -356,7 +373,8 @@ export function createSourceRecoveryHandlers(input: {
       return { reEvaluate: { kind: "token" as const, key: job.subjectKey }, postcondition: factPostcondition("milestone_crossings", job.subjectKey) };
     },
 
-    async fomo_token_history({ job }) {
+    async fomo_token_history({ job, assertActive }) {
+      assertActive?.();
       const token = tokenParts(job.subjectKey, job.chain);
       const observedAt = now();
       const range = historyRange(input.database, job.subjectKey, token.chain, token.tokenAddress, observedAt);
@@ -368,6 +386,7 @@ export function createSourceRecoveryHandlers(input: {
         }
       }
       await input.fomoProducer.enqueue({ chainId: token.chain, tokenAddress: token.tokenAddress, requestedAt: observedAt });
+      assertActive?.();
       if (job.attemptCount >= 12) throw new TerminalRecoveryError("fomo_token_history_unavailable");
       throw new RetryableRecoveryError("fomo_token_history_queued");
     },
@@ -412,12 +431,12 @@ function localHistoricalPrices(database: DatabaseSync, chain: string, tokenAddre
     WHERE chain = ? AND token_address = ? AND price_usd > 0
       AND observed_at BETWEEN ? AND ?
     ORDER BY observed_at
-  `).all(chain, tokenAddress, Math.max(0, range.fromAt - HOUR_MS), range.toAt + HOUR_MS) as Array<{ observedAt: number; priceUsd: number }>;
+  `).all(chain, tokenAddress, Math.max(0, range.fromAt - HOUR_MS), range.toAt) as Array<{ observedAt: number; priceUsd: number }>;
   return rows.map(row => [row.observedAt, row.priceUsd] as const);
 }
 
-function hasEntryCoverage(prices: readonly (readonly [number, number])[], range: { readonly fromAt: number }): boolean {
-  return prices.length > 0 && prices[0]![0] <= range.fromAt + HOUR_MS;
+function hasEntryCoverage(prices: readonly (readonly [number, number])[], range: { readonly fromAt: number; readonly toAt: number }): boolean {
+  return hasHistoricalPriceCoverage(prices, range);
 }
 
 function saveHistoricalPrices(database: DatabaseSync, chain: string, tokenAddress: string, prices: readonly (readonly [number, number])[], source = "geckoterminal_ohlcv"): void {

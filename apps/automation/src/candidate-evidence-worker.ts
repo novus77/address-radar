@@ -278,6 +278,15 @@ function enqueueTokenJob(input: {
   enqueueRequestedRevision(input.jobs, requests, request, input.now);
 }
 
+export function enqueueCandidateFactEvaluation(input: Parameters<typeof enqueueTokenJob>[0]): void {
+  const subject = input.tokenId ?? `${input.chain}:${input.tokenAddress}`;
+  const requests = createCandidateEvaluationRequestStore(input.database);
+  const request = requests.request(subject, REQUEST_STRATEGY_VERSION, input.sourceKey, input.evaluatedAt);
+  if (request.activeJobId || input.jobs.activeJobForSubject("candidate_evidence", subject)
+    || request.requestedRevision <= request.processedRevision) return;
+  enqueueRequestedRevision(input.jobs, requests, request, input.now);
+}
+
 function enqueueRequestedRevision(
   jobs: AutomationJobStore,
   requests: ReturnType<typeof createCandidateEvaluationRequestStore>,

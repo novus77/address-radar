@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
 import type { AutomationJobStore, TokenFactStore } from "@address-radar/database";
+import { withAddressRadarWriteTransaction } from "@address-radar/database";
 
 export interface EarlyTradeReconciliationResult {
   readonly examined: number;
@@ -18,6 +19,8 @@ interface ParsedTrade {
   readonly side: "buy" | "sell";
   readonly amountUsd: number | null;
   readonly occurredAt: number;
+  readonly transactionHash: string | null;
+  readonly executionIndex: string | null;
 }
 
 interface ObservationRow {
@@ -54,6 +57,8 @@ function parseTrade(row: ObservationRow): ParsedTrade | null {
     ? record.occurredAt
     : row.observedAt;
   if (!entityId || !tokenAddress || !side || occurredAt < 0) return null;
+  const transactionHash = [record.transactionHash, record.txHash, record.signature].find(value => typeof value === "string" && value.trim());
+  const executionIndex = record.logIndex ?? record.eventIndex;
   return {
     eventId: typeof record.eventId === "string" ? record.eventId : row.sourceEventId,
     entityId,
@@ -61,6 +66,8 @@ function parseTrade(row: ObservationRow): ParsedTrade | null {
     side,
     amountUsd: typeof record.amountUsd === "number" && Number.isFinite(record.amountUsd) ? record.amountUsd : null,
     occurredAt,
+    transactionHash: typeof transactionHash === "string" ? normalizeAddress(row.chain, transactionHash) : null,
+    executionIndex: typeof executionIndex === "string" || typeof executionIndex === "number" ? String(executionIndex) : null,
   };
 }
 
@@ -91,6 +98,7 @@ export function createEarlyTradeReconciler(input: {
 
   return Object.freeze({
     runOnce(): EarlyTradeReconciliationResult {
+      return withAddressRadarWriteTransaction(input.database, () => {
       const cursor = input.database.prepare(`
         SELECT cursor_collected_at AS collectedAt, cursor_observation_id AS observationId
         FROM early_trade_reconciliation_state WHERE state_id='source_observations'
@@ -117,18 +125,28 @@ export function createEarlyTradeReconciler(input: {
           continue;
         }
 
-        const existing = input.database.prepare(`
-          SELECT canonical_event_id AS canonicalEventId, source_status AS sourceStatus
-          FROM canonical_trader_events
-          WHERE entity_id=? AND chain=? AND token_address=? AND side=?
-            AND occurred_at BETWEEN ? AND ?
-          ORDER BY ABS(occurred_at - ?) LIMIT 1
-        `).get(
-          trade.entityId, row.chain, trade.tokenAddress, trade.side,
-          trade.occurredAt - 10_000, trade.occurredAt + 10_000, trade.occurredAt,
-        ) as { canonicalEventId: string; sourceStatus: string } | undefined;
+        const matched = input.database.prepare(`
+          SELECT c.canonical_event_id AS canonicalEventId, c.source_status AS sourceStatus,
+            r.event_id AS eventId, r.source_family AS sourceFamily, r.payload
+          FROM canonical_trader_events c
+          JOIN canonical_trader_event_observations link ON link.canonical_event_id=c.canonical_event_id
+          JOIN raw_trader_observations r ON r.observation_id=link.observation_id
+          WHERE c.entity_id=? AND c.chain=? AND c.token_address=? AND c.side=?
+        `).all(trade.entityId, row.chain, trade.tokenAddress, trade.side) as Array<{ canonicalEventId: string; sourceStatus: string; eventId: string; sourceFamily: string; payload: string }>;
+        const incomingFamily = row.source.startsWith("rpc_") ? "onchain" : "fomo";
+        const existing = matched.find(candidate => {
+          let payload: Record<string, unknown>;
+          try { payload = JSON.parse(candidate.payload) as Record<string, unknown>; } catch { return false; }
+          const hash = [payload.transactionHash, payload.txHash, payload.signature].find(value => typeof value === "string" && value.trim());
+          if (trade.transactionHash && typeof hash === "string") {
+            const index = payload.logIndex ?? payload.eventIndex;
+            return normalizeAddress(row.chain, hash) === trade.transactionHash && (index === undefined || index === null ? null : String(index)) === trade.executionIndex;
+          }
+          return !trade.transactionHash && candidate.sourceFamily === incomingFamily && candidate.eventId === trade.eventId;
+        });
         const eventId = existing?.canonicalEventId ?? canonicalEventId([
-          trade.entityId, row.chain, trade.tokenAddress, trade.side, trade.occurredAt,
+          trade.entityId, row.chain, trade.tokenAddress, trade.side,
+          trade.transactionHash ? [trade.transactionHash, trade.executionIndex] : [incomingFamily, trade.eventId],
         ]);
         const incomingStatus = row.source.startsWith("rpc_") ? "ONCHAIN_ONLY" : "FOMO_ONLY";
         const sourceStatus = existing && existing.sourceStatus !== incomingStatus ? "FOMO_AND_ONCHAIN" : incomingStatus;
@@ -174,6 +192,7 @@ export function createEarlyTradeReconciler(input: {
         if (milestone.crossedAt === null || trade.occurredAt > milestone.crossedAt) continue;
         input.facts.ensure(tokenId, "early_trades", "early-trade-reconciliation-v1", now());
         const fact = input.facts.fact(tokenId, "early_trades")!;
+        if (fact.status === "terminal_unavailable") input.facts.transition({ tokenId, factType: "early_trades", status: "scheduled", reopenTerminal: true, terminalReason: null, strategyVersion: "early-trade-reconciliation-v1", updatedAt: now() });
         if (fact.status !== "available") {
           input.facts.transition({
             tokenId, factType: "early_trades", status: "available", precision: "exact",
@@ -199,6 +218,7 @@ export function createEarlyTradeReconciler(input: {
         earlyTradeFactsProduced,
         skipped,
         hasMore: rows.length === batchSize,
+      });
       });
     },
   });

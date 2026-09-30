@@ -29,7 +29,7 @@ const automationJob = {
 };
 
 describe("source recovery handlers", () => {
-  it("terminalizes historical research when complete history never crosses a milestone", async () => {
+  it("keeps unverified historical scans retryable instead of proving absence", async () => {
     const database = new DatabaseSync(":memory:");
     migrateAddressRadarDatabase(database);
     initializeCandidateHistorySchema(database);
@@ -67,11 +67,11 @@ describe("source recovery handlers", () => {
     });
 
     expect(await runtime.runOnce()).toMatchObject({
-      outcome: "dead_letter",
+      outcome: "retry",
     });
     expect(ledger.recoveryJob("historical-no-crossing")).toMatchObject({
-      status: "dead_letter",
-      lastError: "historical_milestone_crossing_unavailable",
+      status: "failed",
+      lastError: "historical_milestone_crossing_unverified",
     });
     database.close();
   });
@@ -152,7 +152,7 @@ describe("source recovery handlers", () => {
       history,
       facts: createTokenFactStore(database),
       marketProvider: { async lookup() { return null; } },
-      fomoProducer: { async enqueue(request) { requests.push(request); return { enqueued: true, request: request as never }; } },
+      fomoProducer: { async enqueue(request) { requests.push(request); return { enqueued: true, request: { ...request, lookupId: "milestone:solana:Mint:500000" } }; } },
       now: () => NOW,
     });
     const runtime = createRecoveryRuntime({ ledger, handlers, clock: { now: () => NOW }, retryBaseMs: 500 });

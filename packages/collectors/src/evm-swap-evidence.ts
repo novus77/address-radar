@@ -35,7 +35,7 @@ export function extractEvmSwapEvidence(input: {
 } {
   const wallet = input.wallet.toLowerCase();
   const transfers = input.logs.flatMap((log, index) => {
-    if (!log.topics[0]?.toLowerCase().startsWith(TRANSFER_TOPIC) || log.topics.length < 3) return [];
+    if (!log.topics[0]?.toLowerCase().startsWith(TRANSFER_TOPIC) || log.topics.length !== 3 || !/^0x[0-9a-f]+$/i.test(log.data)) return [];
     const from = topicAddress(log.topics[1]!);
     const to = topicAddress(log.topics[2]!);
     if (from !== wallet && to !== wallet) return [];

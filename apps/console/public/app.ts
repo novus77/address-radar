@@ -342,6 +342,11 @@ const renderAutomationOperations = () => {
     ["缺前置数据", queue.byStatus?.blocked_source || 0],
     ["旧版等待任务", queue.byStatus?.waiting_source || 0],
     ["补数后已唤醒", queue.blockedToWoken || 0],
+    ["补数可执行", closedLoop.recoveryExecution?.runnable ?? "尚未上报"],
+    ["补数等待结果", closedLoop.recoveryExecution?.waitingResults ?? "尚未上报"],
+    ["补数最老到期", closedLoop.recoveryExecution ? duration(closedLoop.recoveryExecution.oldestDueAgeMs) : "尚未上报"],
+    ["30分钟采集尝试", closedLoop.recoveryExecution?.attempts30m ?? "尚未上报"],
+    ["30分钟事实更新（非新增代币）", closedLoop.recoveryExecution?.factUpdates30m ?? "尚未上报"],
     ["数据冲突类型", conflict.distinctConflicts || 0],
     ["冲突累计次数", conflict.occurrences || 0],
   ].map(([label, value]) => `<article><span>${escapeHtml(label)}</span><strong>${escapeHtml(text(value, 0))}</strong></article>`).join("");

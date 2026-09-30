@@ -23,6 +23,7 @@ for (const [chain, endpoint] of Object.entries(config.indexedEndpoints)) {
   collectors.push(createIndexedEvmWalletCollector({
     chain: chain as Exclude<DiscoveryChain, "solana">,
     endpoint,
+    ...(process.env[`ADDRESS_RADAR_BLOCKSCOUT_${chain.toUpperCase()}_FALLBACK_URL`]?.trim() ? { fallbackEndpoint: process.env[`ADDRESS_RADAR_BLOCKSCOUT_${chain.toUpperCase()}_FALLBACK_URL`]!.trim() } : {}),
     market,
     walletBatchSize: config.indexedWalletBatchSize,
     maxPagesPerWallet: config.indexedWalletMaxPages,

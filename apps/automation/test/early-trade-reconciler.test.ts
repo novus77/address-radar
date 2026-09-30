@@ -13,6 +13,21 @@ import { describe, expect, it } from "vitest";
 import { createEarlyTradeReconciler } from "../src/early-trade-reconciler.js";
 
 describe("early trade reconciler", () => {
+  it("preserves distinct transactions within five seconds and deduplicates the same transaction", () => {
+    const database = new DatabaseSync(":memory:");
+    migrateAddressRadarDatabase(database);
+    database.prepare("INSERT INTO trader_entities(entity_id, lifecycle, manual, locked, created_at, updated_at) VALUES ('trader', 'candidate', 0, 0, 1, 1)").run();
+    const ledger = createSourceLedgerStore(database);
+    for (const [index, transactionHash, occurredAt] of [[1, "tx-a", 100], [2, "tx-b", 5_100], [3, "tx-a", 100]] as const) {
+      ledger.saveObservation(createSourceObservation({ source: "fomo_feed", sourceEventId: `event-${index}`, chain: "base", observedAt: occurredAt, collectedAt: 10_000 + index, payloadVersion: 1,
+        payload: { eventId: `event-${index}`, entityId: "trader", tokenAddress: "0xabc", side: "buy", amountUsd: 60, occurredAt, transactionHash },
+        confidence: 0.9, extractionMode: "network", provenance: {} }));
+    }
+    const reconciler = createEarlyTradeReconciler({ database, jobs: createAutomationJobStore(database), facts: createTokenFactStore(database), now: () => 20_000 });
+    expect(reconciler.runOnce()).toMatchObject({ canonicalEventsInserted: 2 });
+    expect(database.prepare("SELECT COUNT(*) count, SUM(amount_usd) total FROM canonical_trader_events").get()).toEqual({ count: 2, total: 120 });
+    database.close();
+  });
   it("promotes eligible source observations and remains idempotent", () => {
     const database = new DatabaseSync(":memory:");
     migrateAddressRadarDatabase(database);

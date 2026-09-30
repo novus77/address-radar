@@ -9,6 +9,7 @@ import { createAutomationJobStore, createSourceLedgerStore, migrateAddressRadarD
 
 import { createManualResolutionService } from "@address-radar/identity";
 import { explainTokenMissingCondition } from "@address-radar/aggregation";
+import { recoveryExecutionMetrics } from "./recovery-execution-metrics.js";
 
 
 export interface ConsoleResult {
@@ -253,6 +254,7 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
           converging: queue.completed > queue.admitted,
         },
         walletCoverage,
+        recoveryExecution: recoveryExecutionMetrics(database, now),
         contention: {
           sqliteTelemetryAvailable: false,
           diagnosticZh: "SQLite 重试已在写事务层生效，进程级聚合遥测尚未上报",

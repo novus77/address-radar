@@ -13,6 +13,7 @@ export interface FomoTokenLookupRequest {
   readonly milestoneId?: string;
   readonly beforeAt?: number;
   readonly cursor?: string;
+  readonly lookupRevision?: number;
 }
 
 export interface FomoTokenLookupLease {
@@ -76,14 +77,15 @@ function normalizedToken(chainId: string, tokenAddress: string) {
   return { chainId: chain, tokenAddress: chain === "solana" ? address : address.toLowerCase() };
 }
 
-function validMilestone(input: { readonly purpose?: unknown; readonly milestoneId?: unknown; readonly beforeAt?: unknown; readonly cursor?: unknown }): void {
+function validMilestone(input: { readonly purpose?: unknown; readonly milestoneId?: unknown; readonly beforeAt?: unknown; readonly cursor?: unknown; readonly lookupRevision?: unknown }): void {
   if (input.purpose === "milestone_backfill") {
     if (typeof input.milestoneId !== "string" || !input.milestoneId.trim()) throw new Error("milestoneId is required for milestone_backfill");
     if (!validInteger(input.beforeAt)) throw new Error("beforeAt is required for milestone_backfill");
     if (input.cursor !== undefined && (typeof input.cursor !== "string" || !input.cursor.trim())) throw new Error("cursor must not be empty");
+    if (input.lookupRevision !== undefined && !validInteger(input.lookupRevision)) throw new Error("lookupRevision must be a non-negative integer");
     return;
   }
-  if (input.purpose !== undefined || input.milestoneId !== undefined || input.beforeAt !== undefined || input.cursor !== undefined) throw new Error("Milestone fields require purpose milestone_backfill");
+  if (input.purpose !== undefined || input.milestoneId !== undefined || input.beforeAt !== undefined || input.cursor !== undefined || input.lookupRevision !== undefined) throw new Error("Milestone fields require purpose milestone_backfill");
 }
 
 function parseRequest(line: string): FomoTokenLookupRequest | null {
@@ -93,7 +95,7 @@ function parseRequest(line: string): FomoTokenLookupRequest | null {
     if (value.version === 2) {
       validMilestone(value);
       if (value.purpose !== "milestone_backfill") return null;
-    } else if (value.purpose !== undefined || value.milestoneId !== undefined || value.beforeAt !== undefined || value.cursor !== undefined) return null;
+    } else if (value.purpose !== undefined || value.milestoneId !== undefined || value.beforeAt !== undefined || value.cursor !== undefined || value.lookupRevision !== undefined) return null;
     return Object.freeze(value as FomoTokenLookupRequest);
   } catch { return null; }
 }
@@ -128,7 +130,7 @@ export class FomoTokenLookupProducer {
     if (!Number.isSafeInteger(this.#bucketMs) || this.#bucketMs < 1) throw new Error("bucketMs must be positive");
   }
 
-  enqueue(input: { readonly chainId: string; readonly tokenAddress: string; readonly requestedAt: number; readonly purpose?: "milestone_backfill"; readonly milestoneId?: string; readonly beforeAt?: number; readonly cursor?: string }) {
+  enqueue(input: { readonly chainId: string; readonly tokenAddress: string; readonly requestedAt: number; readonly purpose?: "milestone_backfill"; readonly milestoneId?: string; readonly beforeAt?: number; readonly cursor?: string; readonly lookupRevision?: number }) {
     const operation = this.#writeTail.then(() => withExclusiveFileLock(`${this.#filePath}.lock`, async () => {
       if (!validInteger(input.requestedAt)) throw new Error("requestedAt must be a non-negative integer");
       validMilestone(input);
@@ -136,7 +138,8 @@ export class FomoTokenLookupProducer {
       const cursor = input.cursor?.trim();
       const milestoneId = input.milestoneId?.trim();
       const bucket = Math.floor(input.requestedAt / this.#bucketMs);
-      const lookupId = input.purpose === "milestone_backfill" ? `milestone:${milestoneId!}${cursor ? `:${cursor}` : ""}` : `${token.chainId}:${token.tokenAddress}:${bucket}`;
+      const revision = input.lookupRevision !== undefined ? `:before:${input.beforeAt}:revision:${input.lookupRevision}` : "";
+      const lookupId = input.purpose === "milestone_backfill" ? `milestone:${milestoneId!}${revision}${cursor ? `:${cursor}` : ""}` : `${token.chainId}:${token.tokenAddress}:${bucket}`;
       const request: FomoTokenLookupRequest = Object.freeze({
         version: input.purpose ? 2 : 1,
         lookupId,
@@ -146,6 +149,7 @@ export class FomoTokenLookupProducer {
         ...(milestoneId ? { milestoneId } : {}),
         ...(input.beforeAt !== undefined ? { beforeAt: input.beforeAt } : {}),
         ...(cursor ? { cursor } : {}),
+        ...(input.lookupRevision !== undefined ? { lookupRevision: input.lookupRevision } : {}),
       });
       const known = new Set((await readText(this.#filePath)).split("\n").flatMap((line) => {
         const parsed = line.trim() ? parseRequest(line) : null;

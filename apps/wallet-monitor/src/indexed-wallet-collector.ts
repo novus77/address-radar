@@ -10,6 +10,7 @@ import type {
   WalletCollectorPartition,
   WalletCollectorResult,
 } from "./contracts.js";
+import { createIndexedHistoryFetch } from "./indexed-history-fallback.js";
 
 type EvmDiscoveryChain = Exclude<DiscoveryChain, "solana">;
 
@@ -68,6 +69,7 @@ const normalize = (value: string): string => value.trim().toLowerCase();
 export function createIndexedEvmWalletCollector(input: {
   readonly chain: EvmDiscoveryChain;
   readonly endpoint: string;
+  readonly fallbackEndpoint?: string;
   readonly market?: TokenMarketProvider;
   readonly fetch?: FetchLike;
   readonly walletBatchSize?: number;
@@ -75,7 +77,7 @@ export function createIndexedEvmWalletCollector(input: {
   readonly lookbackMs?: number;
   readonly now?: () => number;
 }): WalletCollector {
-  const fetchImpl = input.fetch ?? globalThis.fetch;
+  const fetchImpl = createIndexedHistoryFetch({ fetch: input.fetch ?? globalThis.fetch, ...(input.fallbackEndpoint ? { fallbackEndpoint: input.fallbackEndpoint } : {}), ...(input.now ? { now: input.now } : {}) });
   const walletBatchSize = input.walletBatchSize ?? 5;
   const maxPagesPerWallet = input.maxPagesPerWallet ?? 2;
   const lookbackMs = input.lookbackMs ?? 60 * 24 * 60 * 60 * 1_000;

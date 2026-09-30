@@ -139,7 +139,7 @@ export interface SourceLedgerStore {
   requeueCompletedRecoveryJob(jobId: string, nextAttemptAt: number, updatedAt: number): boolean;
   claimRecoveryJob(now: number, leaseMs: number): RecoveryJobRecord | null;
   checkpointRecoveryJob(jobId: string, cursor: string, updatedAt: number): void;
-  failRecoveryJob(jobId: string, error: string, nextAttemptAt: number, terminal?: boolean): void;
+  failRecoveryJob(jobId: string, error: string, nextAttemptAt: number, terminal?: boolean, updatedAt?: number): void;
   completeRecoveryJob(jobId: string, completedAt: number): void;
   recoveryJob(jobId: string): RecoveryJobRecord | null;
   saveTokenObservation(patch: TokenObservationPatch): TokenObservationRecord;
@@ -561,9 +561,12 @@ export function createSourceLedgerStore(database: DatabaseSync): SourceLedgerSto
           WHERE status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
         `).run(now, now, now);
         const row = database.prepare(`
-          SELECT * FROM recovery_jobs
-          WHERE status IN ('pending', 'failed') AND next_attempt_at <= ?
-          ORDER BY next_attempt_at, priority, created_at, job_id LIMIT 1
+          SELECT ready.* FROM recovery_jobs ready
+          WHERE ready.status IN ('pending', 'failed') AND ready.next_attempt_at <= ?
+          ORDER BY COALESCE((
+            SELECT MAX(previous.updated_at) FROM recovery_jobs previous
+            WHERE previous.job_type = ready.job_type AND previous.attempt_count > 0
+          ), -1), ready.next_attempt_at, ready.priority, ready.created_at, ready.job_id LIMIT 1
         `).get(now) as Record<string, unknown> | undefined;
         if (!row) return null;
         database.prepare(`
@@ -579,10 +582,10 @@ export function createSourceLedgerStore(database: DatabaseSync): SourceLedgerSto
           .run(cursor, updatedAt, updatedAt, jobId);
       });
     },
-    failRecoveryJob(jobId, error, nextAttemptAt, terminal = false) {
+    failRecoveryJob(jobId, error, nextAttemptAt, terminal = false, updatedAt = Date.now()) {
       transaction(() => {
         database.prepare("UPDATE recovery_jobs SET status = ?, lease_expires_at = NULL, last_error = ?, next_attempt_at = ?, updated_at = ? WHERE job_id = ?")
-          .run(terminal ? "dead_letter" : "failed", error, nextAttemptAt, nextAttemptAt, jobId);
+          .run(terminal ? "dead_letter" : "failed", error, nextAttemptAt, updatedAt, jobId);
       });
     },
     completeRecoveryJob(jobId, completedAt) {
