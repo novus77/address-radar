@@ -5,6 +5,8 @@ import {
   createSourceLedgerStore,
   createTraderAutomationStore,
   createTokenFactStore,
+  drainResolvedWalletAutomationOutbox,
+  reconcileResolvedWalletAutomationJobs,
   initializeCandidateHistorySchema,
   migrateAddressRadarDatabase,
   openAddressRadarDatabase,
@@ -158,6 +160,8 @@ export function createAutomationRuntime(input: {
   return Object.freeze({
     pollOnce(signal: AbortSignal) {
       planningGate.runIfDue((plannedAt) => {
+        drainResolvedWalletAutomationOutbox(database, plannedAt);
+        reconcileResolvedWalletAutomationJobs(database, plannedAt);
         earlyTradeReconciler.runOnce();
         reconcileMilestoneFacts();
         signalProjectionReconciler.runOnce();

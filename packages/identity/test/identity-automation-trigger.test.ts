@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   drainResolvedWalletAutomationOutbox,
+  reconcileResolvedWalletAutomationJobs,
   recordResolvedWalletAutomation,
 } from '../src/identity-automation.js';
 
@@ -73,6 +74,27 @@ function createDatabase(): DatabaseSync {
 }
 
 describe('resolved wallet automation trigger', () => {
+  it('repairs a missing initial backfill for an existing canonical wallet', () => {
+    const database = createDatabase();
+    database.exec(`
+      CREATE TABLE entity_wallet_identities (
+        entity_id TEXT NOT NULL, chain_family TEXT NOT NULL, address TEXT NOT NULL,
+        confidence TEXT NOT NULL, source TEXT NOT NULL, first_observed_at INTEGER NOT NULL,
+        last_observed_at INTEGER NOT NULL, PRIMARY KEY(entity_id, chain_family, address)
+      );
+      CREATE TABLE entity_accounts (entity_id TEXT NOT NULL, account_id TEXT NOT NULL);
+      INSERT INTO trader_entities(entity_id, lifecycle) VALUES ('trader-existing', 'candidate');
+      INSERT INTO entity_wallet_identities VALUES ('trader-existing', 'evm', '0xAABB', 'confirmed', 'test', 1, 1);
+      INSERT INTO entity_accounts VALUES ('trader-existing', 'account-existing');
+    `);
+    expect(reconcileResolvedWalletAutomationJobs(database, 3_000)).toBe(1);
+    expect(reconcileResolvedWalletAutomationJobs(database, 4_000)).toBe(0);
+    expect(database.prepare("SELECT job_type AS jobType, status FROM automation_jobs").all()).toEqual([
+      { jobType: 'initial_wallet_backfill', status: 'pending' },
+    ]);
+    database.close();
+  });
+
   it('publishes one monitoring change and one initial backfill for a wallet', () => {
     const database = createDatabase();
     database.exec(`

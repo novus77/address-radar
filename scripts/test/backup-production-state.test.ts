@@ -75,6 +75,31 @@ function findBackups(backupRoot: string, suffix: string) {
 }
 
 describe("backup-production-state", () => {
+  it("retains the newest verified backups within the configured count", () => {
+    const fixture = createWalFixture(100);
+    const scriptPath = resolve("scripts/backup-production-state.sh");
+    const wrapperBin = createPortableCommandWrappers(fixture.root);
+    for (const name of ["20200101T000000Z", "20200102T000000Z", "20200103T000000Z"]) {
+      const directory = join(fixture.backupRoot, name);
+      mkdirSync(directory);
+      writeFileSync(join(directory, "address-radar.db"), name);
+    }
+    const result = spawnSync("bash", [scriptPath], {
+      cwd: resolve("."), encoding: "utf8", env: {
+        ...process.env,
+        ADDRESS_RADAR_BACKUP_DIR: fixture.backupRoot,
+        ADDRESS_RADAR_BACKUP_MAX_COUNT: "2",
+        ADDRESS_RADAR_BACKUP_MIN_FREE_BYTES: "1",
+        ADDRESS_RADAR_BACKUP_RETENTION_DAYS: "36500",
+        ADDRESS_RADAR_DATABASE_PATH: fixture.databasePath,
+        PATH: `${wrapperBin}:${process.env.PATH ?? ""}`,
+      },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(findBackups(fixture.backupRoot, "address-radar.db")).toHaveLength(2);
+    fixture.database.close();
+  });
+
   it("creates a complete offline snapshot without leaving a partial backup", () => {
     const fixture = createWalFixture(25_000);
     const scriptPath = resolve("scripts/backup-production-state.sh");

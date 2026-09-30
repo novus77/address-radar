@@ -8,6 +8,8 @@ User=address-radar
 Group=address-radar
 WorkingDirectory=/opt/address-radar/current
 EnvironmentFile=/etc/address-radar/address-radar.env
+Environment=ADDRESS_RADAR_BACKUP_MAX_COUNT=8
+Environment=ADDRESS_RADAR_BACKUP_MIN_FREE_BYTES=3221225472
 ExecStartPre=+/usr/bin/systemctl stop address-radar-scanner.service address-radar-wallet-monitor.service address-radar-wallet-analysis.service address-radar-historical-backfill.service address-radar-automation.service address-radar-console.service
 ExecStart=/opt/address-radar/current/scripts/backup-production-state.sh
 ExecStopPost=+/usr/bin/systemctl start address-radar-scanner.service address-radar-wallet-monitor.service address-radar-wallet-analysis.service address-radar-historical-backfill.service address-radar-automation.service address-radar-console.service

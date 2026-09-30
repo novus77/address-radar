@@ -34,6 +34,13 @@ describe("closed-loop operations", () => {
       INSERT INTO token_milestone_crossings(milestone_id, token_id, market_cap_usd, crossed_at, precision, source, source_event_ids, strategy_version)
       VALUES ('milestone-1', 'base:0xabc', 100000, ?, 'exact', 'test', '[]', 'test-v1')
     `).run(now - 800);
+    database.prepare("INSERT INTO trader_entities(entity_id,lifecycle,manual,locked,created_at,updated_at) VALUES ('trader-1','candidate',0,0,?,?)").run(now - 700, now - 700);
+    database.prepare(`INSERT INTO candidate_evidence_v3(
+      evidence_id,trader_id,token_id,milestone_id,evidence_type,admission_class,
+      cumulative_buy_usd,weighted_entry_market_cap_usd,theoretical_opportunity,
+      capturable_multiple,realized_multiple,evidence_at,source_event_ids,strategy_version
+    ) VALUES ('evidence-1','trader-1','base:0xabc','milestone-1','MC100K_5X','early',
+      100,10000,10,8,NULL,?,'[]','test')`).run(now - 600);
     createAutomationOutcomeStore(database).record({ jobId: "candidate-1", jobType: "candidate_evidence", attempt: 1, outcome: "produced", inputCount: 1, producedCount: 1, createdAt: now - 500 });
     const facts = createRecoveryFactLinkStore(database);
     facts.ensure("recovery-1", "early_trades", "base:0xabc", now - 700);
@@ -52,6 +59,7 @@ describe("closed-loop operations", () => {
           expect.objectContaining({ stage: "milestone_confirmation", completed: 1 }),
           expect.objectContaining({ stage: "early_trade_recovery", pending: 1, untracked: 1 }),
           expect.objectContaining({ stage: "candidate_evidence", completed15m: 1 }),
+          expect.objectContaining({ stage: "candidate_admission", eligible: 1, pending: 1 }),
         ]),
         outcomes: { total24h: 1, productive24h: 1, productiveRate24h: 1 },
         recoveryClosure: { total: 1, satisfied: 1, rate: 1 },

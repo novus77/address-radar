@@ -24,6 +24,7 @@ export {
   drainResolvedWalletAutomationOutbox,
   IDENTITY_WALLET_BACKFILL_STRATEGY_VERSION,
   materializeLegacyWalletIdentities,
+  reconcileResolvedWalletAutomationJobs,
   recordResolvedWalletAutomation,
 } from "./identity-automation.js";
 export type { ResolvedWalletAutomationInput } from "./identity-automation.js";

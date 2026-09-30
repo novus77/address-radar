@@ -136,6 +136,7 @@ export interface SourceLedgerStore {
     readonly nextAttemptAt: number;
     readonly createdAt: number;
   }): { readonly inserted: boolean };
+  requeueCompletedRecoveryJob(jobId: string, nextAttemptAt: number, updatedAt: number): boolean;
   claimRecoveryJob(now: number, leaseMs: number): RecoveryJobRecord | null;
   checkpointRecoveryJob(jobId: string, cursor: string, updatedAt: number): void;
   failRecoveryJob(jobId: string, error: string, nextAttemptAt: number, terminal?: boolean): void;
@@ -539,6 +540,17 @@ export function createSourceLedgerStore(database: DatabaseSync): SourceLedgerSto
         `).run(job.jobId, job.jobType, job.chain, job.subjectKey, job.priority, job.cursor,
           job.nextAttemptAt, job.createdAt, job.createdAt);
         return Object.freeze({ inserted: result.changes === 1 });
+      });
+    },
+    requeueCompletedRecoveryJob(jobId, nextAttemptAt, updatedAt) {
+      return transaction(() => {
+        const result = database.prepare(`
+          UPDATE recovery_jobs
+          SET status = 'pending', next_attempt_at = ?, lease_expires_at = NULL,
+            last_error = NULL, completed_at = NULL, updated_at = ?
+          WHERE job_id = ? AND status = 'completed'
+        `).run(nextAttemptAt, updatedAt, jobId);
+        return result.changes === 1;
       });
     },
     claimRecoveryJob(now, leaseMs) {

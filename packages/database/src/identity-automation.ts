@@ -59,6 +59,31 @@ function backfillKeyFor(payload: ResolvedWalletPayload): string {
   ].join(":");
 }
 
+function ensureInitialWalletBackfillJob(
+  database: DatabaseSync,
+  payload: ResolvedWalletPayload,
+): boolean {
+  const result = database
+    .prepare(
+      `INSERT OR IGNORE INTO automation_jobs(
+         job_id, idempotency_key, lane, job_type, subject_key, priority,
+         status, cursor, attempt_count, next_attempt_at, lease_expires_at,
+         lease_owner, payload, last_error, created_at, updated_at, completed_at
+       ) VALUES (?, ?, 'trader_backfill', 'initial_wallet_backfill', ?, 20,
+                 'pending', NULL, 0, ?, NULL, NULL, ?, NULL, ?, ?, NULL)`,
+    )
+    .run(
+      randomUUID(),
+      backfillKeyFor(payload),
+      `${payload.chainFamily}:${payload.address}`,
+      payload.occurredAt,
+      JSON.stringify(payload),
+      payload.occurredAt,
+      payload.occurredAt,
+    );
+  return Number(result.changes) === 1;
+}
+
 export function recordResolvedWalletAutomation(
   database: DatabaseSync,
   input: ResolvedWalletAutomationInput,
@@ -156,39 +181,7 @@ export function drainResolvedWalletAutomationOutbox(
 
     for (const event of events) {
       const payload = JSON.parse(event.payload) as ResolvedWalletPayload;
-      const idempotencyKey = backfillKeyFor(payload);
-      database
-        .prepare(
-          `INSERT OR IGNORE INTO automation_jobs(
-             job_id,
-             idempotency_key,
-             lane,
-             job_type,
-             subject_key,
-             priority,
-             status,
-             cursor,
-             attempt_count,
-             next_attempt_at,
-             lease_expires_at,
-             lease_owner,
-             payload,
-             last_error,
-             created_at,
-             updated_at,
-             completed_at
-           ) VALUES (?, ?, 'trader_backfill', 'initial_wallet_backfill', ?, 20,
-                     'pending', NULL, 0, ?, NULL, NULL, ?, NULL, ?, ?, NULL)`,
-        )
-        .run(
-          randomUUID(),
-          idempotencyKey,
-          `${payload.chainFamily}:${payload.address}`,
-          payload.occurredAt,
-          JSON.stringify(payload),
-          payload.occurredAt,
-          payload.occurredAt,
-        );
+      ensureInitialWalletBackfillJob(database, payload);
       database
         .prepare(
           `UPDATE monitoring_registry_outbox
@@ -201,6 +194,45 @@ export function drainResolvedWalletAutomationOutbox(
     }
 
     return events.length;
+  });
+}
+
+export function reconcileResolvedWalletAutomationJobs(
+  database: DatabaseSync,
+  occurredAt: number,
+  limit = 250,
+): number {
+  const rows = database.prepare(`
+    SELECT wallet.entity_id AS traderId,
+      COALESCE(MIN(account.account_id), wallet.entity_id) AS accountId,
+      wallet.chain_family AS chainFamily,
+      wallet.address
+    FROM entity_wallet_identities wallet
+    LEFT JOIN entity_accounts account ON account.entity_id = wallet.entity_id
+    GROUP BY wallet.entity_id, wallet.chain_family, wallet.address
+    ORDER BY wallet.last_observed_at, wallet.entity_id, wallet.chain_family, wallet.address
+    LIMIT ?
+  `).all(limit) as Array<{
+    traderId: string;
+    accountId: string;
+    chainFamily: "evm" | "solana";
+    address: string;
+  }>;
+
+  return withAddressRadarWriteTransaction(database, () => {
+    let inserted = 0;
+    for (const row of rows) {
+      const payload = toPayload({ ...row, occurredAt });
+      if (ensureInitialWalletBackfillJob(database, payload)) inserted += 1;
+      database.prepare(`
+        INSERT INTO trader_monitoring_policy(trader_id, policy, updated_at)
+        VALUES (?, 'realtime', ?)
+        ON CONFLICT(trader_id) DO UPDATE SET
+          policy = CASE WHEN trader_monitoring_policy.policy = 'off' THEN 'off' ELSE 'realtime' END,
+          updated_at = MAX(trader_monitoring_policy.updated_at, excluded.updated_at)
+      `).run(row.traderId, occurredAt);
+    }
+    return inserted;
   });
 }
 

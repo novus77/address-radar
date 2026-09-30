@@ -26,6 +26,9 @@ const recoveryTypes = (reason: CandidateSourceBlockReason, chain: string) => {
   if (reason === "missing_milestone" || reason === "insufficient_coverage") {
     return [
       { jobType: "market_enrichment" as const, priority: 20 },
+      chain.toLowerCase() === "robinhood"
+        ? { jobType: "fomo_token_history" as const, priority: 25 }
+        : { jobType: "market_history" as const, priority: 25 },
       { jobType: "historical_research" as const, priority: 60 },
     ];
   }
