@@ -453,6 +453,7 @@ function saveHistoricalPrices(database: DatabaseSync, chain: string, tokenAddres
 
 export function reconcileCandidateSourceRecovery(input: { readonly database: DatabaseSync; readonly ledger: SourceLedgerStore; readonly now?: () => number }): { readonly resolvedBlocks: number; readonly enqueued: number } {
   const updatedAt = (input.now ?? Date.now)();
+  return withAddressRadarWriteTransaction(input.database, () => {
   const resolved = input.database.prepare(`
     UPDATE automation_job_blocks
     SET resolved_at = COALESCE((SELECT completed_at FROM automation_jobs WHERE automation_jobs.job_id = automation_job_blocks.job_id), ?), updated_at = ?
@@ -499,4 +500,5 @@ export function reconcileCandidateSourceRecovery(input: { readonly database: Dat
     if (result.inserted) enqueued += 1;
   }
   return Object.freeze({ resolvedBlocks: Number(resolved.changes), enqueued });
+  }, { label: "reconcile_candidate_source_recovery", maximumAttempts: 20, maximumDelayMs: 1_000 });
 }
