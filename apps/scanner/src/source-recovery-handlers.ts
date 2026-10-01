@@ -1,4 +1,4 @@
-import { readConsumerMarketHistoryRange } from "@address-radar/database";
+import { resolveConsumerMarketHistoryRequestRange } from "@address-radar/database";
 import type { DatabaseSync } from "node:sqlite";
 
 import type { GeckoTerminalClient, HistoricalTokenPriceClient, TokenMarketProvider } from "@address-radar/collectors";
@@ -407,15 +407,13 @@ export function createSourceRecoveryHandlers(input: {
 }
 
 function historyRange(database: DatabaseSync, tokenId: string, chain: string, tokenAddress: string, fallbackTo: number): { readonly fromAt: number; readonly toAt: number } | null {
-  const consumer = readConsumerMarketHistoryRange(database, tokenId, fallbackTo);
+  const consumer = resolveConsumerMarketHistoryRequestRange(database, tokenId, fallbackTo);
+  if (consumer) return consumer;
   const legacy = legacyHistoryRange(database, tokenId, chain, tokenAddress, fallbackTo);
   const validLegacy = legacy && Number.isSafeInteger(legacy.fromAt) && Number.isSafeInteger(legacy.toAt)
     && legacy.fromAt >= 0 && legacy.toAt >= legacy.fromAt && legacy.fromAt <= fallbackTo
     ? { fromAt: legacy.fromAt, toAt: Math.min(legacy.toAt, fallbackTo) } : null;
-  if (!consumer) return validLegacy;
-  if (!validLegacy) return consumer;
-  // A shared fetch envelope is not proof that every consumer's range is complete.
-  return { fromAt: Math.min(consumer.fromAt, validLegacy.fromAt), toAt: Math.max(consumer.toAt, validLegacy.toAt) };
+  return validLegacy;
 }
 
 function legacyHistoryRange(database: DatabaseSync, tokenId: string, chain: string, tokenAddress: string, fallbackTo: number): { readonly fromAt: number; readonly toAt: number } | null {
