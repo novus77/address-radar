@@ -32,6 +32,10 @@ export function createFactDemandStore(database: DatabaseSync) {
   return Object.freeze({
     get,
     record(input: ConsumerFactDemand): PersistedFactDemand {
+      const executionRevision = input.executionRevision ?? 0;
+      if (!Number.isSafeInteger(executionRevision) || executionRevision < 0) {
+        throw new Error("Execution revision must be a non-negative safe integer");
+      }
       for (const value of [input.requiredFrom, input.requiredTo, input.evaluatedAt]) {
         if (!Number.isSafeInteger(value) || value < 0) throw new Error("Fact demand timestamps must be non-negative safe integers");
       }
@@ -40,9 +44,12 @@ export function createFactDemandStore(database: DatabaseSync) {
         const current = get(input.demandId);
         if (current && ["consumerId", "purchaseId", "tokenId", "strategyVersion", "purpose", "requiredFrom"].some(key =>
           current[key as keyof ConsumerFactDemand] !== input[key as keyof ConsumerFactDemand])) throw new Error("Fact demand identity conflict");
-        if (current && input.evaluatedAt < current.evaluatedAt) return current;
+        if (current && (executionRevision < (current.executionRevision ?? 0)
+          || input.evaluatedAt < current.evaluatedAt)) return current;
         const incomingSatisfied = satisfiesFactDemand(input);
-        const currentSatisfied = current !== null && satisfiesFactDemand(input, current.proof);
+        const currentSatisfied = current !== null
+          && (current.executionRevision ?? 0) === executionRevision
+          && satisfiesFactDemand(input, current.proof);
         const preserveStronger = currentSatisfied && input.purpose === "positive_hit"
           && (!incomingSatisfied || current!.proof!.maximumMultiple! >= input.proof!.maximumMultiple!);
         const proof = preserveStronger ? current!.proof

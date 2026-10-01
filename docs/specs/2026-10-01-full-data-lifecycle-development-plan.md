@@ -316,3 +316,22 @@ Use retained, known price-history facts alongside snapshot inventory to enter bo
 ### Historical ability dispatch recovery checkpoint
 
 Read-only production verification exposed an exhausted daily dispatcher cursor without a strategy version and no active historical ability workers. Implement strategy-aware checkpoints and bounded startup rearming, preserving batch/high-water/idempotency controls. Include the explicitly approved leased-state diagnostic correction. The regression suite, full 839-test suite, typecheck/build/smoke/boundaries/browser validation passed; deployment and observed historical-population progress remain required. Audited execution revision propagation is approved but remains a separate unfinished phase; the current production projection audit found no stale amount/price rows.
+
+## Checkpoint: versioned dispatch and execution-proof fencing
+
+- `9da2921-versioned-ability-dispatch` deployed successfully after authorized inactive
+  release-code archival/cleanup. Initial read-only acceptance confirmed an advancing
+  current-strategy cursor and 22 additional distinct v4 evaluations (605 to 627).
+- Implemented a backward-compatible execution revision fence in fact-demand/proof
+  payloads. A newer entry revision invalidates prior proof reuse; older/unversioned
+  replays cannot replace newer requests; same-revision stronger evidence remains
+  preserved. No scoring/admission thresholds or database columns changed.
+- Twelve targeted tests, 849 unit tests across 207 files, type checking, build,
+  package smoke tests, boundary checks, and two browser tests passed for this slice.
+- The audited execution revision SPAC now identifies this consumer-side slice
+  separately from unfinished producer revision derivation, atomic derived-view
+  updates, durable consumer dispatch, revision acknowledgements, and bounded repair.
+- The complete lifecycle plan is not finished. Candidate evidence remained 1,439 in
+  the dispatch acceptance interval. Genuine new candidates/wallets/signals, strict
+  market coverage, provider request accounting, and end-to-end revision propagation
+  still require implementation or production evidence before completion.
