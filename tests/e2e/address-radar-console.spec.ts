@@ -38,7 +38,7 @@ for (const viewport of [
     await page.goto(server.url);
     await expect(page.getByText("账本已连接")).toBeVisible();
 
-    for (const label of ["地址库", "候选队列", "回测与淘汰", "代币聚合", "信号结果", "历史覆盖与重评估", "身份解析", "地址分析"]) {
+    for (const label of ["地址库", "候选队列", "30天能力回测", "代币聚合", "信号结果", "历史覆盖与重评估", "身份解析", "地址分析"]) {
       await page.getByRole("button", { name: label }).click();
       await expect(page.locator("section.module.active").getByRole("heading", { name: label })).toBeVisible();
     }
