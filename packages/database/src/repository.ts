@@ -265,26 +265,34 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     `).run(status, status === "resolved" ? occurredAt : null, status === "resolved" ? occurredAt : occurredAt + 12 * 60 * 60_000, normalizeFomoHandle(handle));
   };
 
+  const trustedCanonicalWalletSql = "(ew.confidence = 'confirmed' OR (ew.confidence = 'high' AND ew.source = 'legacy:fomolens_manual'))";
+  const trustedAccountWalletSql = "((ea.confidence = 'confirmed' AND w.confidence = 'confirmed') OR (ea.confidence IN ('high', 'confirmed') AND w.confidence = 'high' AND w.source = 'fomolens_manual'))";
+  const trustedMappingSql = `(EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id AND ea.confidence = 'confirmed')
+    OR EXISTS(SELECT 1 FROM entity_accounts ea JOIN wallet_identities w ON w.account_id = ea.account_id
+      WHERE ea.entity_id = e.entity_id AND ${trustedAccountWalletSql})
+    OR EXISTS(SELECT 1 FROM entity_wallet_identities ew WHERE ew.entity_id = e.entity_id AND ${trustedCanonicalWalletSql}))`;
+
   const synchronizeTraderSignalProfile = (entityId: string, updatedAt: number): void => {
     const facts = database.prepare(`
       SELECT e.lifecycle, e.manual, e.locked,
         EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id
-          AND ea.confidence = 'confirmed' AND ea.source != 'manual_wallet') AS hasFomoIdentity,
+          AND ea.source != 'manual_wallet' AND (ea.confidence = 'confirmed' OR EXISTS(
+            SELECT 1 FROM wallet_identities w WHERE w.account_id = ea.account_id AND ${trustedAccountWalletSql}
+          ))) AS hasFomoIdentity,
         EXISTS(SELECT 1 FROM trader_monitoring_policy mp WHERE mp.trader_id = e.entity_id
           AND mp.policy = 'off') AS monitoringOff,
-        (EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id AND ea.confidence = 'confirmed')
-          OR EXISTS(SELECT 1 FROM entity_wallet_identities ew WHERE ew.entity_id = e.entity_id AND ew.confidence = 'confirmed')) AS mapped,
+        ${trustedMappingSql} AS mapped,
         EXISTS(
           SELECT 1 FROM entity_accounts ea JOIN wallet_identities w ON w.account_id = ea.account_id
-          WHERE ea.entity_id = e.entity_id AND ea.confidence = 'confirmed' AND w.confidence = 'confirmed'
+          WHERE ea.entity_id = e.entity_id AND ${trustedAccountWalletSql}
         ) OR EXISTS(
           SELECT 1 FROM entity_wallet_identities ew
-          WHERE ew.entity_id = e.entity_id AND ew.confidence = 'confirmed'
+          WHERE ew.entity_id = e.entity_id AND ${trustedCanonicalWalletSql}
         ) AS hasWallet
       FROM trader_entities e WHERE e.entity_id = ?
     `).get(entityId) as { lifecycle: TraderLifecycle; manual: number; locked: number; hasFomoIdentity: number; monitoringOff: number; mapped: number; hasWallet: number } | undefined;
     if (!facts) return;
-    const monitoringEnabled = facts.monitoringOff !== 1 && facts.mapped === 1
+    const monitoringEnabled = facts.monitoringOff !== 1 && facts.mapped === 1 && facts.lifecycle !== "suspended"
       && (facts.manual === 1 || facts.locked === 1 || ["probation", "active", "elite", "degraded"].includes(facts.lifecycle));
     const next = { monitoringEnabled, fomoMonitoringEnabled: monitoringEnabled && facts.hasFomoIdentity === 1, onchainMonitoringEnabled: monitoringEnabled && facts.hasWallet === 1 };
     const current = database.prepare("SELECT monitoring_enabled AS monitoringEnabled, fomo_monitoring_enabled AS fomoMonitoringEnabled, onchain_monitoring_enabled AS onchainMonitoringEnabled FROM trader_profiles WHERE entity_id = ?").get(entityId) as { monitoringEnabled: number; fomoMonitoringEnabled: number; onchainMonitoringEnabled: number } | undefined;
@@ -846,8 +854,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     traderSignalProfile(entityId) {
       const row = database.prepare(`
         SELECT e.entity_id AS entityId, e.lifecycle,
-          (EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id AND ea.confidence = 'confirmed')
-            OR EXISTS(SELECT 1 FROM entity_wallet_identities ew WHERE ew.entity_id = e.entity_id AND ew.confidence IN ('high', 'confirmed'))) AS mapped,
+          ${trustedMappingSql} AS mapped,
           COALESCE(p.monitoring_enabled, 0) AS monitoringEnabled,
           COALESCE(p.fomo_monitoring_enabled, 0) AS fomoMonitoringEnabled,
           COALESCE(p.onchain_monitoring_enabled, 0) AS onchainMonitoringEnabled,
