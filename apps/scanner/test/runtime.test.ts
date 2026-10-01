@@ -98,7 +98,7 @@ describe("scanner runtime", () => {
     await runtime.runOnce();
 
     expect(observed).toHaveBeenCalledTimes(1);
-    expect(observed).toHaveBeenCalledWith(expect.objectContaining({ chain: "base", tokenAddress: "0xToken", observedAt: 2_000, sourceEventIds: ["a", "b"] }));
+    expect(observed).toHaveBeenCalledWith(expect.objectContaining({ chain: "base", tokenAddress: "0xToken", observedAt: 3_000, sourceEventIds: ["a", "b"] }));
   });
 
   it("does not synthesize quality or style tags without an ability snapshot", async () => {

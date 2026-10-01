@@ -1,6 +1,7 @@
+import { normalizeWalletObservations } from "./normalize-observations.js";
 import type { MonitoringRegistry, MonitoredWallet } from "@address-radar/identity";
 
-import type { NormalizedWalletObservation, WalletCollector } from "./contracts.js";
+import type { WalletCollector } from "./contracts.js";
 import { recordCollectorCoverage, recordCollectorFailure } from "./coverage-controller.js";
 import type { WalletMonitorStore } from "./store.js";
 
@@ -43,7 +44,7 @@ export function createWalletMonitorRuntime(input: {
         });
         const collectedAt = now();
         for (const partition of result.partitions) {
-          const observations = normalize(partition.events, wallets, collector.name, collector.chainFamily, collectedAt);
+          const observations = normalizeWalletObservations(partition.events, wallets, collector.name, collector.chainFamily, collectedAt);
           accepted += input.store.persist(
             collector.name,
             partition.partitionKey,
@@ -93,29 +94,4 @@ export function createWalletMonitorRuntime(input: {
       return { accepted, providerFailures, registryVersion };
     },
   };
-}
-
-function normalize(
-  events: readonly Omit<NormalizedWalletObservation, "source" | "chainFamily" | "accountId" | "entityId" | "collectedAt">[],
-  wallets: readonly MonitoredWallet[],
-  source: string,
-  chainFamily: "evm" | "solana",
-  collectedAt: number,
-): NormalizedWalletObservation[] {
-  const ownership = new Map(wallets.map((wallet) => [wallet.address.toLowerCase(), wallet]));
-  return events.flatMap((event) => {
-    const wallet = ownership.get(event.walletAddress.toLowerCase());
-    if (!wallet) return [];
-    return [{
-      ...event,
-      chain: event.chain.toLowerCase(),
-      walletAddress: chainFamily === "evm" ? event.walletAddress.toLowerCase() : event.walletAddress,
-      tokenAddress: chainFamily === "evm" ? event.tokenAddress.toLowerCase() : event.tokenAddress,
-      source,
-      chainFamily,
-      accountId: wallet.accountId,
-      entityId: wallet.entityId,
-      collectedAt,
-    }];
-  });
 }

@@ -72,7 +72,7 @@ describe("scanner token progression", () => {
     });
 
     await runtime.runOnce();
-    expect(ledger.tokenObservation("base:0xabc")).toMatchObject({ fomoStatus: "confirmed", marketStatus: "resolved", milestoneStatus: "observed", milestoneObservedAt: 2_000, marketCapUsd: 600_000 });
+    expect(ledger.tokenObservation("base:0xabc")).toMatchObject({ fomoStatus: "confirmed", marketStatus: "resolved", milestoneStatus: "observed", milestoneObservedAt: 3_000, marketCapUsd: 600_000 });
     expect(ledger.tokenMarketSnapshots("base:0xabc")).toHaveLength(1);
   });
 

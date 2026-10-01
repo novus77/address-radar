@@ -169,6 +169,7 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
           const facts = tokenFacts.get(tokenId)!;
           const resolution = (async () => {
             let market: TokenMarketSnapshot | null = null;
+            let marketObservedAt: number | null = null;
             let launchStatus: "ready" | "unavailable" | undefined;
             let lifecycleStage: NonNullable<AddressSignalEvidence["lifecycleStage"]> = "unknown";
             let failed = false;
@@ -177,24 +178,30 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
                 market = await options.marketProvider.lookup(chain, tokenAddress);
                 launchStatus = "ready";
                 if (market) {
+                  marketObservedAt = Date.parse(market.observedAt);
+                  if (!Number.isSafeInteger(marketObservedAt) || marketObservedAt < 0 || marketObservedAt > options.clock.now()) {
+                    market = null;
+                    marketObservedAt = null;
+                    throw new Error("Market observation timestamp is invalid or in the future");
+                  }
                   const milestoneObserved = typeof market.marketCapUsd === "number" && market.marketCapUsd >= 100_000;
                   options.tokenStateStore?.saveTokenObservation({
                     tokenId,
                     chain,
                     tokenAddress,
-                    observedAt: facts.observedAt,
+                    observedAt: marketObservedAt,
                     marketStatus: "resolved",
                     symbol: market.symbol ?? null,
                     imageUrl: market.imageUrl ?? null,
                     marketCapUsd: market.marketCapUsd,
                     launchedAt: market.launchedAt ?? market.createdAt ?? null,
-                    ...(milestoneObserved ? { milestoneStatus: "observed" as const, milestoneObservedAt: facts.observedAt } : {}),
+                    ...(milestoneObserved ? { milestoneStatus: "observed" as const, milestoneObservedAt: marketObservedAt } : {}),
                   });
                   options.tokenStateStore?.saveTokenMarketSnapshot({
-                    snapshotId: `market:${tokenId}:${facts.observedAt}:${market.marketCapUsd ?? "na"}:${market.priceUsd ?? "na"}`,
+                    snapshotId: `market:${tokenId}:${marketObservedAt}:${market.marketCapUsd ?? "na"}:${market.priceUsd ?? "na"}`,
                     tokenId,
                     source: "dexscreener",
-                    observedAt: facts.observedAt,
+                    observedAt: marketObservedAt,
                     priceUsd: market.priceUsd,
                     marketCapUsd: market.marketCapUsd,
                     liquidityUsd: market.liquidityUsd,
@@ -211,9 +218,9 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
                 options.onCollectorError?.(error, index);
               }
             }
-            if (market && options.onTokenMarketObserved) {
+            if (market && marketObservedAt !== null && options.onTokenMarketObserved) {
               try {
-                await options.onTokenMarketObserved({ chain, tokenAddress, observedAt: facts.observedAt, sourceEventIds: Object.freeze([...facts.sourceEventIds]), market });
+                await options.onTokenMarketObserved({ chain, tokenAddress, observedAt: marketObservedAt, sourceEventIds: Object.freeze([...facts.sourceEventIds]), market });
               } catch (error) {
                 failed = true;
                 options.onCollectorError?.(error, index);
