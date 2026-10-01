@@ -39,3 +39,11 @@ Consumer-specific source precision/revision lineage, demand-aware recovery sched
 ## Local acceptance
 
 The three targeted suites passed 14 tests. All 750 unit tests, build, typecheck, built-package imports, repository boundaries and two desktop/mobile E2E tests passed before release.
+
+## Production checkpoint: 8cfab8a
+
+Released to `/opt/address-radar/releases/8cfab8a-canonical-recovery` after all local gates passed. All six services were active with automatic restarts zero; Gateway delivery remained disabled.
+
+At `2026-10-01T07:08:37.948Z`, a read-only bounded sample of the 100 most recently satisfied recovery links verified 95 market identities and 5 milestone records using the deployed predicate. The sample contained no early-trade or price-history links; it does not certify those production paths or the full historical cohort. Source-bounded positive proofs numbered 1,368 with zero detected interval/time/threshold violations in the read-only predicate check. Recent scanner/automation database error messages were zero; available disk was 3,170,217,984 bytes.
+
+The next dependencies remain demand-aware recovery ranges, explicit source precision/proof lineage, semantic consumer wakeup, frozen-cohort denominators, and bounded audited correction of old derived rows. No old recovery links or historical business records were batch rewritten in this release.
