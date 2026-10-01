@@ -40,6 +40,7 @@ export interface HistoricalTokenPriceClient {
     tokenAddress: string,
     range: { readonly fromAt: number; readonly toAt: number },
     signal?: AbortSignal,
+    onPage?: (page: HistoricalTokenPriceResult) => void | Promise<void>,
   ): Promise<HistoricalTokenPriceResult>;
 }
 
@@ -77,6 +78,7 @@ export function createDefiLlamaPriceClient(options: {
       tokenAddress: string,
       range: { readonly fromAt: number; readonly toAt: number },
       signal?: AbortSignal,
+      onPage?: (page: HistoricalTokenPriceResult) => void | Promise<void>,
     ) {
       signal?.throwIfAborted();
       const chainId = CHAIN_IDS[chain];
@@ -125,7 +127,13 @@ export function createDefiLlamaPriceClient(options: {
           return [{ observedAt: Math.round(timestamp * 1_000), priceUsd }];
         }).sort((left, right) => left.observedAt - right.observedAt);
         if (confidence !== null) minimumConfidence = minimumConfidence === null ? confidence : Math.min(minimumConfidence, confidence);
-        for (const point of prices) if (point.observedAt >= startAt && point.observedAt <= range.toAt) merged.set(point.observedAt, point);
+        const pagePrices = Object.freeze(prices.filter(point => point.observedAt >= startAt && point.observedAt <= range.toAt)
+          .map(point => Object.freeze({ ...point })));
+        for (const point of pagePrices) merged.set(point.observedAt, point);
+        clearTimeout(timeout);
+        if (pagePrices.length > 0) {
+          await onPage?.(Object.freeze({ source: "defillama_chart" as const, confidence, prices: pagePrices }));
+        }
         } finally {
           clearTimeout(timeout);
           signal?.removeEventListener("abort", abort);
