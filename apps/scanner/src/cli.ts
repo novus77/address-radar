@@ -37,7 +37,15 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
   const marketProvider = createDexScreenerClient({ ...(config.marketBaseUrl ? { baseUrl: config.marketBaseUrl } : {}) });
   const geckoGate = createSharedProviderRequestGate({ database: historyDatabase, provider: "geckoterminal:public", minimumIntervalMs: 12_500 });
   const historicalMarketProvider = createGeckoTerminalClient({ minimumRequestIntervalMs: 12_500, beforeRequest: geckoGate.acquire, onRateLimit: geckoGate.cooldown });
-  const historicalPriceFallback = createDefiLlamaPriceClient();
+  const defiLlamaGate = createSharedProviderRequestGate({
+    database: historyDatabase,
+    provider: "defillama:public",
+    minimumIntervalMs: 3_000,
+  });
+  const historicalPriceFallback = createDefiLlamaPriceClient({
+    beforeRequest: defiLlamaGate.acquire,
+    onRateLimit: defiLlamaGate.cooldown,
+  });
   if (config.recoveryEnabled) reconcileCandidateSourceRecovery({ database: historyDatabase, ledger: sourceLedger });
   const lifecycleResolver = createTokenLifecycleResolver({});
   const collectors = Object.freeze([
