@@ -45,3 +45,16 @@ Production release: `/opt/address-radar/releases/2828285-temporal-integrity`.
 - No new scoring weight, unknown-age route, bundle exclusion or retention period has been introduced.
 - No production database migration or old-fact repair has been performed.
 - Remaining plan phases, authoritative frozen-cohort denominators, source ownership cutover, historical acquisition, consumer-specific coverage, complete strategy dispatch and full real-chain acceptance remain outstanding.
+
+### Checkpoint 3 production result
+
+Commit: `fe55741`.
+Production release: `/opt/address-radar/releases/fe55741-data-flow-trace`.
+
+- Full regression: 715 tests passed; type checking, build, smoke, boundaries and two end-to-end cases passed.
+- Six production services active, zero automatic restarts, Gateway delivery disabled.
+- A real trader trace returned attributed evidence, admissions, ability, purchases and monitoring sections.
+- A real token trace returned inventory, fact status, fifteen evidence rows, recovery and projection sections.
+- Read-only market-time audit reported its 1,000-row cap of suspect timestamp mismatches; the report is not exhaustive and no repair was applied.
+- Bounded old-fact revision and affected downstream reevaluation must follow a provenance audit. These rows must not be automatically discarded or counted as trustworthy historical coverage.
+- Execution-basis policy confirmation remains the next blocking checkpoint; the entire four-phase plan is not complete.
