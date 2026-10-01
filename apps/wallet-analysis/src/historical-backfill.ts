@@ -1,3 +1,4 @@
+import { isRetryableContention } from "./retryable-contention.js";
 import type { AddressRadarRepository, HistoricalBackfillPartition } from "@address-radar/database";
 
 export interface HistoricalBackfillWorkerResult { readonly executionId: string; readonly nextOffset: number | null; readonly rowCount: number; readonly watermark: number; readonly creditsUsed: number; readonly done: boolean; }
@@ -7,10 +8,22 @@ export async function runHistoricalBackfillCycle(input: {
   readonly verification: { runOnce(): Promise<{ readonly processed: boolean }> };
   readonly scheduler: { runOnce(signal?: AbortSignal): Promise<{ readonly processed: boolean }> };
   readonly signal: AbortSignal;
-}): Promise<{ readonly processed: boolean }> {
-  const verification = await input.verification.runOnce();
-  const backfill = await input.scheduler.runOnce(input.signal);
-  return Object.freeze({ processed: verification.processed || backfill.processed });
+}): Promise<{ readonly processed: boolean; readonly contention?: boolean; readonly deferredStages?: readonly string[] }> {
+  const deferredStages: string[] = [];
+  const runStage = async (stage: string, operation: () => Promise<{ readonly processed: boolean }>) => {
+    input.signal.throwIfAborted();
+    try { return (await operation()).processed; }
+    catch (error) {
+      input.signal.throwIfAborted();
+      if (!isRetryableContention(error)) throw error;
+      deferredStages.push(stage);
+      return false;
+    }
+  };
+  const verification = await runStage("verification", () => input.verification.runOnce());
+  const backfill = await runStage("scheduler", () => input.scheduler.runOnce(input.signal));
+  return Object.freeze({ processed: verification || backfill,
+    ...(deferredStages.length ? { contention: true, deferredStages: Object.freeze(deferredStages) } : {}) });
 }
 
 const usageDay = (timestamp: number): string => new Date(timestamp).toISOString().slice(0, 10);

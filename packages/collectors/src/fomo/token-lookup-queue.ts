@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { open, readFile, stat } from "node:fs/promises";
+import { StringDecoder } from "node:string_decoder";
 
 import { atomicWrite, durableAppend, durableRemove, readText, withExclusiveFileLock, type FileLockOptions } from "./durable-file.js";
 
@@ -117,6 +118,31 @@ const parseClaim = (text: string): LookupClaim | null => {
 
 const cursorValue = (cursor: LookupCursor): string => `${JSON.stringify(cursor)}\n`;
 
+async function queuedRequestExists(path: string, lookupId: string): Promise<boolean> {
+  const handle = await open(path, "r").catch(error => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
+  if (!handle) return false;
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  const decoder = new StringDecoder("utf8");
+  let pending = "";
+  try {
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (!bytesRead) return parseRequest((pending + decoder.end()).trim())?.lookupId === lookupId;
+      pending += decoder.write(buffer.subarray(0, bytesRead));
+      let start = 0;
+      let end: number;
+      while ((end = pending.indexOf("\n", start)) >= 0) {
+        if (parseRequest(pending.slice(start, end).trim())?.lookupId === lookupId) return true;
+        start = end + 1;
+      }
+      pending = pending.slice(start);
+    }
+  } finally { await handle.close(); }
+}
+
 export class FomoTokenLookupProducer {
   readonly #filePath: string;
   readonly #bucketMs: number;
@@ -151,11 +177,7 @@ export class FomoTokenLookupProducer {
         ...(cursor ? { cursor } : {}),
         ...(input.lookupRevision !== undefined ? { lookupRevision: input.lookupRevision } : {}),
       });
-      const known = new Set((await readText(this.#filePath)).split("\n").flatMap((line) => {
-        const parsed = line.trim() ? parseRequest(line) : null;
-        return parsed ? [parsed.lookupId] : [];
-      }));
-      if (known.has(lookupId)) return Object.freeze({ enqueued: false, request });
+      if (await queuedRequestExists(this.#filePath, lookupId)) return Object.freeze({ enqueued: false, request });
       await durableAppend(this.#filePath, `${JSON.stringify(request)}\n`);
       return Object.freeze({ enqueued: true, request });
     }, this.#lockOptions));

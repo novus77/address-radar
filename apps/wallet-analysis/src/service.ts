@@ -1,20 +1,32 @@
-export async function runWalletAnalysisService(input: { readonly signal: AbortSignal; readonly intervalMs: number; readonly runOnce: () => Promise<{ readonly processed: boolean }> }): Promise<void> {
+import { isRetryableContention } from "./retryable-contention.js";
+
+export async function runWalletAnalysisService(input: {
+  readonly signal: AbortSignal;
+  readonly intervalMs: number;
+  readonly runOnce: () => Promise<{ readonly processed: boolean; readonly contention?: boolean }>;
+}): Promise<void> {
   let contentionAttempts = 0;
   while (!input.signal.aborted) {
-    let processed: boolean;
+    let processed = false;
+    let contention = false;
     try {
-      processed = (await input.runOnce()).processed;
-      contentionAttempts = 0;
+      const result = await input.runOnce();
+      processed = result.processed;
+      contention = result.contention === true;
     } catch (error) {
       if (input.signal.aborted) break;
-      if (!isSqliteContention(error)) throw error;
+      if (!isRetryableContention(error)) throw error;
+      contention = true;
+    }
+    if (input.signal.aborted) break;
+    if (contention) {
       contentionAttempts += 1;
       const delayMs = Math.min(30_000, Math.max(1_000, input.intervalMs) * 2 ** Math.min(contentionAttempts - 1, 5));
       console.warn("wallet_analysis_sqlite_contention", { attempt: contentionAttempts, retryAfterMs: delayMs });
       await sleep(delayMs, input.signal).catch(cause => { if (!input.signal.aborted) throw cause; });
       continue;
     }
-    if (input.signal.aborted) break;
+    contentionAttempts = 0;
     if (!processed) await sleep(input.intervalMs, input.signal).catch(error => { if (!input.signal.aborted) throw error; });
   }
 }
@@ -27,10 +39,4 @@ function sleep(milliseconds: number, signal: AbortSignal): Promise<void> {
     const onAbort = () => { clearTimeout(timer); cleanup(); reject(signal.reason ?? new Error("Aborted")); };
     signal.addEventListener("abort", onAbort, { once: true });
   });
-}
-
-function isSqliteContention(error: unknown): boolean {
-  if (typeof error !== "object" || error === null || !("errcode" in error)) return false;
-  const code = error.errcode;
-  return typeof code === "number" && ((code & 0xff) === 5 || (code & 0xff) === 6);
 }
