@@ -33,3 +33,7 @@ This phase does not establish full historical market coverage or new candidate/s
 - 834 unit tests across 206 files passed.
 - Typecheck, build, package smoke, repository boundaries, and two desktop/mobile browser tests passed.
 - The integration fixture's two non-null metrics were corrected to zero after explicit user approval. Production rows were not changed.
+
+## Persisted lease state correction
+
+Production inspection confirmed `leased` is an active persisted automation state. After explicit user approval, include it when deciding whether an older terminal task is superseded by an active retry. Add a regression test for the terminal-plus-leased combination. This changes diagnostic classification only, not scheduling or admission.

@@ -93,3 +93,19 @@ describe("current opportunity ability task classification", () => {
     });
   });
 });
+
+describe("leased opportunity ability tasks", () => {
+  it("does not treat a leased retry as a terminal trader", () => {
+    const database = fixture();
+    database.exec(`
+      INSERT INTO trader_entities VALUES ('a');
+      INSERT INTO candidate_evidence_v3 VALUES ('a');
+      INSERT INTO automation_jobs VALUES
+        ('ability_evaluation','a','terminal'),
+        ('ability_evaluation','a','leased');
+    `);
+    expect(readCurrentOpportunityAbilityProgress(database, 1_000)).toMatchObject({
+      eligible: 1, completed: 0, pending: 1, blocked: 0, terminal: 0,
+    });
+  });
+});

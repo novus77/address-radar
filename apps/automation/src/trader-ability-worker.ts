@@ -324,13 +324,15 @@ async function dispatch(input: {
   }
   const day = Math.floor(input.now / DAY_MS);
   let cursorDay = -1;
+  let cursorStrategyVersion = "";
   let lastTraderId = "";
   try {
-    const parsed = JSON.parse(input.cursor ?? "{}") as { day?: number; lastTraderId?: string };
+    const parsed = JSON.parse(input.cursor ?? "{}") as { day?: number; lastTraderId?: string; strategyVersion?: string };
     cursorDay = Number(parsed.day ?? -1);
+    cursorStrategyVersion = typeof parsed.strategyVersion === "string" ? parsed.strategyVersion : "";
     lastTraderId = typeof parsed.lastTraderId === "string" ? parsed.lastTraderId : "";
   } catch { /* restart the current daily scan */ }
-  if (cursorDay !== day) lastTraderId = "";
+  if (cursorDay !== day || cursorStrategyVersion !== STRATEGY_VERSION) lastTraderId = "";
   const availableCapacity = Math.min(
     DISPATCH_BATCH_SIZE,
     ACTIVE_JOB_HIGH_WATER_MARK - activeWorkerJobs,
@@ -360,7 +362,7 @@ async function dispatch(input: {
   const exhausted = rows.length < availableCapacity;
   return {
     status: "checkpoint",
-    cursor: JSON.stringify({ day, lastTraderId: exhausted ? "\uffff" : rows.at(-1)!.traderId }),
+    cursor: JSON.stringify({ day, strategyVersion: STRATEGY_VERSION, lastTraderId: exhausted ? "\uffff" : rows.at(-1)!.traderId }),
     retryAt: exhausted ? (day + 1) * DAY_MS : input.now,
     diagnostic: `ability dispatch: ${rows.length} traders`,
   };
@@ -431,6 +433,15 @@ export function createTraderAbilityWorker(input: {
         AND subject_key != 'trader-ability-dispatcher'
         AND status IN ('pending', 'retryable', 'waiting_source', 'blocked_source')
     `).run();
+    const startedAt = now();
+    input.database.prepare(      `UPDATE automation_jobs
+       SET cursor = NULL, next_attempt_at = MIN(next_attempt_at, ?), updated_at = ?
+       WHERE job_id = 'trader-ability-dispatcher-v1'
+         AND job_type = 'ability_evaluation' AND subject_key = 'trader-ability-dispatcher'
+         AND status IN ('pending', 'retryable')
+         AND CASE WHEN json_valid(cursor) THEN json_extract(cursor, '$.strategyVersion')
+           ELSE NULL END IS NOT ?`
+    ).run(startedAt, startedAt, STRATEGY_VERSION);
   }, { label: "prioritize_ability_jobs" });
   return {
     jobType: "ability_evaluation",

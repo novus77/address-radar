@@ -24,7 +24,7 @@ export function readCurrentOpportunityAbilityProgress(database: DatabaseSync, as
         ) AND NOT EXISTS (
           SELECT 1 FROM automation_jobs j WHERE j.job_type = 'ability_evaluation'
             AND j.subject_key = e.entity_id
-            AND j.status IN ('pending', 'retry_scheduled', 'retryable', 'running', 'blocked_source', 'waiting_source')
+            AND j.status IN ('pending', 'retry_scheduled', 'retryable', 'leased', 'running', 'blocked_source', 'waiting_source')
         ) THEN 1 ELSE 0 END AS terminal
       FROM trader_entities e LEFT JOIN evaluations v ON v.entity_id = e.entity_id
       WHERE v.entity_id IS NOT NULL

@@ -312,3 +312,7 @@ Align data-flow due task rows with actual pending/retry-scheduled execution elig
 ### Price-fact to milestone prerequisite handoff checkpoint
 
 Use retained, known price-history facts alongside snapshot inventory to enter bounded milestone repair. Align candidate/reconciler crossing presence with recovery-postcondition source/time validity; future trade-event market caps cannot create current crossings. Preserve retry timing, terminal decisions, source priorities and scoring. Prices never manufacture supply, market-cap facts or candidate admission. See `2026-10-01-price-milestone-handoff-spac.md`.
+
+### Historical ability dispatch recovery checkpoint
+
+Read-only production verification exposed an exhausted daily dispatcher cursor without a strategy version and no active historical ability workers. Implement strategy-aware checkpoints and bounded startup rearming, preserving batch/high-water/idempotency controls. Include the explicitly approved leased-state diagnostic correction. The regression suite, full 839-test suite, typecheck/build/smoke/boundaries/browser validation passed; deployment and observed historical-population progress remain required. Audited execution revision propagation is approved but remains a separate unfinished phase; the current production projection audit found no stale amount/price rows.

@@ -193,3 +193,66 @@ describe("trader ability worker", () => {
     database.close();
   });
 });
+
+describe("strategy-versioned ability dispatch", () => {
+  const strategyVersion = "trader-ability-v4-opportunity";
+  const exhaustedCursor = { day: 40, lastTraderId: "\uffff" };
+
+  function insertDispatcher(database: DatabaseSync, cursor: string, status = "pending"): void {
+    database.prepare(`
+      INSERT INTO automation_jobs(job_id,idempotency_key,lane,job_type,subject_key,
+        status,priority,cursor,attempt_count,next_attempt_at,lease_expires_at,
+        payload,last_error,created_at,updated_at,completed_at)
+      VALUES ('trader-ability-dispatcher-v1','trader-ability-dispatcher-v1','repair',
+        'ability_evaluation','trader-ability-dispatcher',?,72,?,0,?,?,'{"mode":"dispatch"}',NULL,1,1,NULL)
+    `).run(status, cursor, NOW + DAY_MS, status === "leased" ? NOW + 60_000 : null);
+  }
+
+  it("rearms an exhausted legacy scan on startup instead of waiting until tomorrow", () => {
+    const { database } = setup();
+    insertDispatcher(database, JSON.stringify(exhaustedCursor));
+    createTraderAbilityWorker({ database, now: () => NOW });
+    expect(database.prepare("SELECT cursor,next_attempt_at AS nextAttemptAt FROM automation_jobs WHERE job_id='trader-ability-dispatcher-v1'").get())
+      .toMatchObject({ cursor: null, nextAttemptAt: NOW });
+    database.close();
+  });
+
+  it("preserves a completed current-version scan and its next-day schedule", () => {
+    const { database } = setup();
+    const cursor = JSON.stringify({ ...exhaustedCursor, strategyVersion });
+    insertDispatcher(database, cursor);
+    createTraderAbilityWorker({ database, now: () => NOW });
+    expect(database.prepare("SELECT cursor,next_attempt_at AS nextAttemptAt FROM automation_jobs WHERE job_id='trader-ability-dispatcher-v1'").get())
+      .toMatchObject({ cursor, nextAttemptAt: NOW + DAY_MS });
+    database.close();
+  });
+
+  it("does not mutate a leased dispatcher owned by another worker", () => {
+    const { database } = setup();
+    const cursor = JSON.stringify(exhaustedCursor);
+    insertDispatcher(database, cursor, "leased");
+    createTraderAbilityWorker({ database, now: () => NOW });
+    expect(database.prepare("SELECT cursor,next_attempt_at AS nextAttemptAt,status FROM automation_jobs WHERE job_id='trader-ability-dispatcher-v1'").get())
+      .toMatchObject({ cursor, nextAttemptAt: NOW + DAY_MS, status: "leased" });
+    database.close();
+  });
+
+  it("restarts legacy cursors but resumes current-version cursors", async () => {
+    const { database } = setup();
+    for (const id of ["scan-a", "scan-b"]) { addTrader(database, id); addSamples(database, id, [3]); }
+    const enqueued: Array<{ subjectKey: string }> = [];
+    const jobs = {
+      activeCount: () => 1,
+      activeJobForSubject: () => null,
+      enqueue: (job: { subjectKey: string }) => enqueued.push(job),
+    };
+    const worker = createTraderAbilityWorker({ database, jobs: jobs as never, now: () => NOW });
+    const legacy = await worker.execute({ payload: '{"mode":"dispatch"}', cursor: JSON.stringify(exhaustedCursor) } as never, new AbortController().signal);
+    expect(enqueued.map(job => job.subjectKey)).toEqual(["scan-a", "scan-b"]);
+    expect(JSON.parse(String((legacy as { cursor: string }).cursor)).strategyVersion).toBe(strategyVersion);
+    enqueued.length = 0;
+    await worker.execute({ payload: '{"mode":"dispatch"}', cursor: JSON.stringify({ day: 40, lastTraderId: "scan-a", strategyVersion }) } as never, new AbortController().signal);
+    expect(enqueued.map(job => job.subjectKey)).toEqual(["scan-b"]);
+    database.close();
+  });
+});
