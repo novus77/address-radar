@@ -1,3 +1,4 @@
+import { readDataFlowProgress } from "./data-flow-progress.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -104,6 +105,9 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
 
   const read = (pathname: string): ConsoleResult | null => {
     if (pathname === "/api/v2/chains") return { status: 200, body: { items: chainRegistry } };
+    if (pathname === "/api/v2/operations/data-flow") {
+      return { status: 200, body: readDataFlowProgress(database) };
+    }
     if (pathname === "/api/v2/operations/closed-loop") {
       const now = Date.now();
       const count = (sql: string, ...params: SQLInputValue[]): number => Number(
