@@ -282,3 +282,9 @@ Expected: repeated bounded apply makes no duplicate work and rollback does not o
 | Console and full business acceptance | 1, 12, 15 |
 
 Initial implementation batch: Tasks 1–4. Acquisition work proceeds only after observable, trustworthy facts exist. Pending core policy decisions are presented to the user at the corresponding Task 11 checkpoint, not silently invented. Execution remains in the current session.
+
+### Task 4 bounded-request checkpoint (2026-10-01)
+
+Commit `5763098` is deployed as `5763098-bounded-requests`. Disjoint consumer purchases no longer share a multi-month request envelope, active/retry request ranges are frozen, and candidate-history fallback remains available. Two oversized legacy manifests were corrected through the audited API; read-only acceptance confirms zero oversized active tracked manifests. Local checks passed: 35 targeted tests, 782 unit tests, build/type/import/boundary checks and two browser tests. See `2026-10-01-bounded-requests-production-acceptance.md` for evidence and scope.
+
+Task 4 remains unchecked: strict source extrema/continuity certificates and complete-range proofs are not implemented by request coordination. The separate source recovery backlog is not proven to converge. Continue upstream source precision and shared-budget work; do not reinterpret missing data as a losing purchase or lower business admission thresholds. Production disk headroom is only about 22.6MB above the 3GB deployment guard.
