@@ -74,6 +74,60 @@ function createDatabase(): DatabaseSync {
 }
 
 describe('resolved wallet automation trigger', () => {
+  it('repairs monitoring on a repeated wallet notification without duplicating the event', () => {
+    const database = createDatabase();
+    const input = {
+      traderId: 'repeat-trader', accountId: 'repeat-account',
+      chainFamily: 'solana' as const, address: 'CaseSensitiveWallet', occurredAt: 1_000,
+    };
+    expect(recordResolvedWalletAutomation(database, input)).toBe(true);
+    database.prepare('DELETE FROM trader_monitoring_policy WHERE trader_id = ?').run(input.traderId);
+    expect(recordResolvedWalletAutomation(database, { ...input, occurredAt: 2_000 })).toBe(false);
+    expect(database.prepare('SELECT policy FROM trader_monitoring_policy').get()).toEqual({ policy: 'realtime' });
+    expect(database.prepare('SELECT version FROM monitoring_registry_state').get()).toEqual({ version: 2 });
+    expect(database.prepare('SELECT COUNT(*) AS count FROM monitoring_registry_outbox').get()).toEqual({ count: 1 });
+    expect(recordResolvedWalletAutomation(database, { ...input, occurredAt: 3_000 })).toBe(false);
+    expect(database.prepare('SELECT version FROM monitoring_registry_state').get()).toEqual({ version: 2 });
+    database.close();
+  });
+
+  it('preserves an explicit monitoring opt-out during repeated resolution', () => {
+    const database = createDatabase();
+    const input = {
+      traderId: 'off-trader', accountId: 'off-account',
+      chainFamily: 'evm' as const, address: '0xAABB', occurredAt: 1_000,
+    };
+    recordResolvedWalletAutomation(database, input);
+    database.prepare("UPDATE trader_monitoring_policy SET policy = 'off'").run();
+    recordResolvedWalletAutomation(database, { ...input, occurredAt: 2_000 });
+    expect(database.prepare('SELECT policy FROM trader_monitoring_policy').get()).toEqual({ policy: 'off' });
+    expect(database.prepare('SELECT version FROM monitoring_registry_state').get()).toEqual({ version: 1 });
+    database.close();
+  });
+
+  it('advances bounded reconciliation past wallets whose handoff is already complete', () => {
+    const database = createDatabase();
+    database.exec(`
+      CREATE TABLE entity_wallet_identities (
+        entity_id TEXT NOT NULL, chain_family TEXT NOT NULL, address TEXT NOT NULL,
+        last_observed_at INTEGER NOT NULL
+      );
+      CREATE TABLE entity_accounts (entity_id TEXT NOT NULL, account_id TEXT NOT NULL);
+      INSERT INTO entity_wallet_identities VALUES
+        ('first', 'evm', '0xAABB', 1), ('second', 'solana', 'CaseSensitiveWallet', 2);
+      INSERT INTO entity_accounts VALUES ('first', 'account-first'), ('second', 'account-second');
+    `);
+    expect(reconcileResolvedWalletAutomationJobs(database, 1_000, 1)).toBe(1);
+    expect(reconcileResolvedWalletAutomationJobs(database, 2_000, 1)).toBe(1);
+    expect(reconcileResolvedWalletAutomationJobs(database, 3_000, 1)).toBe(0);
+    expect(database.prepare('SELECT COUNT(*) AS count FROM automation_jobs').get()).toEqual({ count: 2 });
+    expect(database.prepare('SELECT version FROM monitoring_registry_state').get()).toEqual({ version: 2 });
+    database.prepare("DELETE FROM trader_monitoring_policy WHERE trader_id = 'first'").run();
+    expect(reconcileResolvedWalletAutomationJobs(database, 4_000, 1)).toBe(0);
+    expect(database.prepare('SELECT version FROM monitoring_registry_state').get()).toEqual({ version: 3 });
+    database.close();
+  });
+
   it('repairs a missing initial backfill for an existing canonical wallet', () => {
     const database = createDatabase();
     database.exec(`

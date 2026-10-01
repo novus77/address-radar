@@ -267,8 +267,11 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
 
   const synchronizeTraderSignalProfile = (entityId: string, updatedAt: number): void => {
     const facts = database.prepare(`
-      SELECT e.lifecycle,
-        EXISTS(SELECT 1 FROM trader_ability_snapshots a WHERE a.entity_id = e.entity_id) AS hasAbility,
+      SELECT e.lifecycle, e.manual, e.locked,
+        EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id
+          AND ea.confidence = 'confirmed' AND ea.source != 'manual_wallet') AS hasFomoIdentity,
+        EXISTS(SELECT 1 FROM trader_monitoring_policy mp WHERE mp.trader_id = e.entity_id
+          AND mp.policy = 'off') AS monitoringOff,
         (EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id AND ea.confidence = 'confirmed')
           OR EXISTS(SELECT 1 FROM entity_wallet_identities ew WHERE ew.entity_id = e.entity_id AND ew.confidence = 'confirmed')) AS mapped,
         EXISTS(
@@ -279,10 +282,11 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
           WHERE ew.entity_id = e.entity_id AND ew.confidence = 'confirmed'
         ) AS hasWallet
       FROM trader_entities e WHERE e.entity_id = ?
-    `).get(entityId) as { lifecycle: TraderLifecycle; hasAbility: number; mapped: number; hasWallet: number } | undefined;
+    `).get(entityId) as { lifecycle: TraderLifecycle; manual: number; locked: number; hasFomoIdentity: number; monitoringOff: number; mapped: number; hasWallet: number } | undefined;
     if (!facts) return;
-    const monitoringEnabled = facts.hasAbility === 1 && facts.mapped === 1 && ["active", "elite", "degraded"].includes(facts.lifecycle);
-    const next = { monitoringEnabled, fomoMonitoringEnabled: monitoringEnabled, onchainMonitoringEnabled: monitoringEnabled && facts.hasWallet === 1 };
+    const monitoringEnabled = facts.monitoringOff !== 1 && facts.mapped === 1
+      && (facts.manual === 1 || facts.locked === 1 || ["probation", "active", "elite", "degraded"].includes(facts.lifecycle));
+    const next = { monitoringEnabled, fomoMonitoringEnabled: monitoringEnabled && facts.hasFomoIdentity === 1, onchainMonitoringEnabled: monitoringEnabled && facts.hasWallet === 1 };
     const current = database.prepare("SELECT monitoring_enabled AS monitoringEnabled, fomo_monitoring_enabled AS fomoMonitoringEnabled, onchain_monitoring_enabled AS onchainMonitoringEnabled FROM trader_profiles WHERE entity_id = ?").get(entityId) as { monitoringEnabled: number; fomoMonitoringEnabled: number; onchainMonitoringEnabled: number } | undefined;
     if (current && current.monitoringEnabled === Number(next.monitoringEnabled) && current.fomoMonitoringEnabled === Number(next.fomoMonitoringEnabled) && current.onchainMonitoringEnabled === Number(next.onchainMonitoringEnabled)) return;
     database.prepare(`

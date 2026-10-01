@@ -2,6 +2,7 @@ import { decideLifecycleWithReason, type LifecycleDecision, type TraderAbilitySn
 
 import { evaluateTraderAbility, type TraderDiscoveryEvidence } from "./trader-ability-evaluator.js";
 import { classifyTraderStyles } from "./style-classifier.js";
+import type { TraderOpportunityEvaluation } from "./trader-opportunity-evaluator.js";
 
 export interface TraderPerformanceEvaluation {
   readonly snapshot: TraderAbilitySnapshot;
@@ -20,27 +21,50 @@ export function evaluateTraderPerformance(input: {
   readonly window: TraderAbilityWindow;
   readonly preferredHorizon: TraderOutcomeHorizon;
   readonly strategyVersion: string;
+  readonly opportunities?: TraderOpportunityEvaluation;
 }): TraderPerformanceEvaluation {
+  if (input.opportunities && (input.opportunities.asOf !== input.asOf || input.window !== "30d")) {
+    throw new Error("Opportunity snapshots require a matching 30-day evaluation");
+  }
   const evaluation = evaluateTraderAbility(input);
+  const strategyVersion = input.opportunities ? `${input.strategyVersion}:${input.opportunities.strategyVersion}` : input.strategyVersion;
   const since = input.window === "lifetime" ? 0 : input.asOf - Number.parseInt(input.window, 10) * 24 * 60 * 60_000;
   const styleSamples = input.samples.filter(sample => sample.firstBuyAt >= since && sample.firstBuyAt <= input.asOf);
   const styles = deriveStyles(evaluation.metrics, styleSamples);
   const snapshot: TraderAbilitySnapshot = Object.freeze({
-    snapshotId: `${input.entityId}:${input.window}:${input.asOf}:${input.strategyVersion}`,
+    snapshotId: `${input.entityId}:${input.window}:${input.asOf}:${strategyVersion}`,
     entityId: input.entityId,
     window: input.window,
     asOf: input.asOf,
-    strategyVersion: input.strategyVersion,
+    strategyVersion,
     rawQuality: evaluation.score.rawQuality,
     adjustedQuality: evaluation.score.adjustedQuality,
     sampleConfidence: evaluation.score.sampleConfidence,
     coverageConfidence: evaluation.score.coverageConfidence,
-    metrics: Object.freeze({ ...evaluation.metrics }),
+    metrics: Object.freeze({
+      ...evaluation.metrics,
+      ...(input.opportunities ? {
+        opportunityTokens: input.opportunities.metrics.currentTokens,
+        opportunityMeasuredTokens: input.opportunities.metrics.measuredTokens,
+        opportunityHit3xTokens: input.opportunities.metrics.hit3xTokens,
+        opportunityHit5xTokens: input.opportunities.metrics.hit5xTokens,
+        opportunityHit10xTokens: input.opportunities.metrics.hit10xTokens,
+        opportunityObservingTokens: input.opportunities.metrics.observingTokens,
+        opportunityAwaitingDataTokens: input.opportunities.metrics.awaitingDataTokens,
+        opportunityMissedTokens: input.opportunities.metrics.missedTokens,
+        opportunityRangeCoverageRate: input.opportunities.metrics.rangeCoverageRate,
+        repeatedDiscovery: Number(input.opportunities.labels.includes("repeated_discovery")),
+        repeatedHighMultipleDiscovery: Number(input.opportunities.labels.includes("repeated_high_multiple_discovery")),
+      } : {}),
+    }),
     components: evaluation.score.components,
     styles,
     createdAt: input.asOf,
   });
-  const lifecycle = decideLifecycleWithReason({
+  // Opportunity labels must not inherit unapproved promotion weights or return-based demotion gates.
+  const lifecycle = input.opportunities
+    ? Object.freeze({ next: input.currentLifecycle, changed: false, reasons: Object.freeze(["opportunity_labels_evaluated"]) })
+    : decideLifecycleWithReason({
     current: input.currentLifecycle,
     quality: snapshot.adjustedQuality,
     independentHighMultipleCases: evaluation.metrics.independentHighMultipleCases,

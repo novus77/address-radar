@@ -1006,6 +1006,12 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
         CASE e.lifecycle WHEN 'probation' THEN 'observing' ELSE e.lifecycle END AS lifecycleStatus,
         e.manual, e.locked, e.updated_at AS updatedAt,
         p.display_name AS displayName, p.priority, p.notes, p.monitoring_enabled AS monitoringEnabled,
+        (SELECT metrics FROM trader_ability_snapshots s WHERE s.entity_id = e.entity_id AND s.window = '30d' ORDER BY as_of DESC, snapshot_id DESC LIMIT 1) AS opportunityMetrics,
+        (SELECT as_of FROM trader_ability_snapshots s WHERE s.entity_id = e.entity_id AND s.window = '30d' ORDER BY as_of DESC, snapshot_id DESC LIMIT 1) AS opportunityEvaluatedAt,
+        (SELECT json_object('evaluatedAt', evaluated_at, 'reasonCodes', json(reason_codes))
+          FROM trader_repeatable_ability_snapshots s WHERE s.entity_id = e.entity_id
+            AND s.window = '30d' AND s.strategy_version = 'trader-ability-v4-opportunity'
+          ORDER BY evaluated_at DESC, snapshot_id DESC LIMIT 1) AS opportunityRecurrence,
         GROUP_CONCAT(DISTINCT CASE WHEN ea.source != 'manual_wallet' THEN a.handle END) AS handles,
         (SELECT GROUP_CONCAT(w.address, '|') FROM entity_accounts eaw JOIN wallet_identities w ON w.account_id = eaw.account_id WHERE eaw.entity_id = e.entity_id AND w.chain_family = 'solana') AS solanaAddresses,
         (SELECT GROUP_CONCAT(w.address, '|') FROM entity_accounts eaw JOIN wallet_identities w ON w.account_id = eaw.account_id WHERE eaw.entity_id = e.entity_id AND w.chain_family = 'evm') AS evmAddresses,
@@ -1081,6 +1087,15 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
         sample_confidence AS sampleConfidence, coverage_confidence AS coverageConfidence,
         json_extract(metrics, '$.validSamples') AS validSamples,
         json_extract(metrics, '$.hit10xRate') AS hit10xRate,
+        json_extract(metrics, '$.opportunityTokens') AS opportunityTokens,
+        json_extract(metrics, '$.opportunityHit3xTokens') AS opportunityHit3xTokens,
+        json_extract(metrics, '$.opportunityHit5xTokens') AS opportunityHit5xTokens,
+        json_extract(metrics, '$.opportunityHit10xTokens') AS opportunityHit10xTokens,
+        json_extract(metrics, '$.opportunityObservingTokens') AS opportunityObservingTokens,
+        json_extract(metrics, '$.opportunityAwaitingDataTokens') AS opportunityAwaitingDataTokens,
+        json_extract(metrics, '$.opportunityMissedTokens') AS opportunityMissedTokens,
+        json_extract(metrics, '$.repeatedDiscovery') AS repeatedDiscovery,
+        json_extract(metrics, '$.repeatedHighMultipleDiscovery') AS repeatedHighMultipleDiscovery,
         metrics, components, styles, as_of AS asOf
       FROM trader_ability_snapshots ORDER BY as_of DESC LIMIT 500
     `) };

@@ -6,8 +6,11 @@ import type {
   TraderAbilitySnapshot,
   TraderEvent,
 } from "@address-radar/domain";
+import { normalizeAddressRadarTokenAddress } from "@address-radar/domain";
 import { strongestCandidateEvidenceByToken } from "@address-radar/identity";
-import { buildTraderTokenSample, evaluateScheduledTraderOutcomes, evaluateTraderPerformance, scheduleTraderOutcomes } from "@address-radar/scoring";
+import { buildTraderTokenSample, evaluateScheduledTraderOutcomes, evaluateTraderPerformance, scheduleTraderOutcomes, type TraderOpportunityEvaluation } from "@address-radar/scoring";
+
+import { evaluateTraderOpportunityHistory } from "./opportunity-history.js";
 
 export function createTraderPerformanceRuntime(input: {
   readonly repository: AddressRadarRepository;
@@ -47,7 +50,12 @@ export function createTraderPerformanceRuntime(input: {
           const payload = parsePayload(item.discovery.payload);
           return { chain: payload.chain ?? "unknown", tokenAddress: payload.tokenAddress ?? item.discovery.discoveryId, discoveryType: item.discovery.discoveryType, discoveredAt: item.discovery.discoveredAt };
         });
-        const evaluation = evaluateTraderPerformance({ entityId, currentLifecycle: entity.lifecycle, locked: entity.locked, samples, outcomes: samples.flatMap(sample => input.repository.traderTokenOutcomes(sample.sampleId)), discoveries, asOf, window: "30d", preferredHorizon: "24h", strategyVersion: input.strategyVersion });
+        const outcomes = samples.flatMap(sample => input.repository.traderTokenOutcomes(sample.sampleId));
+        const opportunities = evaluateTraderOpportunityHistory({
+          events: availableEvents, samples, outcomes, asOf,
+          readObservations: (chain, address, from, to) => input.repository.marketObservations(chain, address, from, to),
+        });
+        const evaluation = evaluateTraderPerformance({ entityId, currentLifecycle: entity.lifecycle, locked: entity.locked, samples, outcomes, discoveries, opportunities, asOf, window: "30d", preferredHorizon: "24h", strategyVersion: input.strategyVersion });
         const previousAbility = input.repository.latestTraderAbility(entityId, "30d");
         if (!previousAbility || !sameAbilitySnapshot(previousAbility, evaluation.snapshot)) {
           input.repository.saveTraderAbilitySnapshot(evaluation.snapshot);
@@ -76,7 +84,7 @@ function sameAbilitySnapshot(left: TraderAbilitySnapshot, right: TraderAbilitySn
 function groupEvents(events: readonly TraderEvent[]): Map<string, TraderEvent[]> {
   const groups = new Map<string, TraderEvent[]>();
   for (const event of events) {
-    const key = `${event.chain.toLowerCase()}:${event.tokenAddress.toLowerCase()}`;
+    const key = `${event.chain.toLowerCase()}:${normalizeAddressRadarTokenAddress(event.chain, event.tokenAddress)}`;
     groups.set(key, [...(groups.get(key) ?? []), event]);
   }
   return groups;
@@ -107,7 +115,9 @@ export function evaluateRepeatableTraderAbility(input: {
   readonly asOf: number;
   readonly window: RepeatableTraderAbilityWindow;
   readonly previousStage?: RepeatableTraderAbilityStage | null;
+  readonly opportunities?: TraderOpportunityEvaluation;
 }): RepeatableTraderAbilityEvaluation {
+  if (input.opportunities) return evaluateOpportunityRecurrence(input);
   const since = input.asOf - abilityWindowMs(input.window);
   const samples = input.samples.filter(sample => sample.sampleStatus === "included"
     && sample.firstBuyAt >= since
@@ -126,7 +136,7 @@ export function evaluateRepeatableTraderAbility(input: {
   const successfulTokens = new Set(valid.flatMap(outcome => {
     if ((outcome.closeMultiple ?? 0) <= 1) return [];
     const sample = sampleById.get(outcome.sampleId)!;
-    return [`${sample.chain.toLowerCase()}:${sample.tokenAddress.toLowerCase()}`];
+    return [`${sample.chain.toLowerCase()}:${normalizeAddressRadarTokenAddress(sample.chain, sample.tokenAddress)}`];
   }));
   const validTimes = valid.map(outcome => sampleById.get(outcome.sampleId)!.firstBuyAt).sort((left, right) => left - right);
   const gains = valid.map(outcome => Math.max(0, (outcome.closeMultiple ?? 0) - 1));
@@ -168,6 +178,47 @@ export function evaluateRepeatableTraderAbility(input: {
     stage,
     stable,
     metrics,
+    reasonCodes: Object.freeze(reasonCodes),
+  });
+}
+
+function evaluateOpportunityRecurrence(input: {
+  readonly asOf: number;
+  readonly window: RepeatableTraderAbilityWindow;
+  readonly previousStage?: RepeatableTraderAbilityStage | null;
+  readonly opportunities?: TraderOpportunityEvaluation;
+}): RepeatableTraderAbilityEvaluation {
+  const opportunities = input.opportunities!;
+  if (input.window !== "30d" || opportunities.asOf !== input.asOf) throw new Error("Opportunity recurrence requires a matching 30-day evaluation");
+  const current = opportunities.purchases.filter(purchase => purchase.inCurrentWindow && purchase.status !== "excluded");
+  const peaks = new Map<string, number>();
+  for (const purchase of current) {
+    if (purchase.maximumMultiple !== null) peaks.set(purchase.tokenKey, Math.max(peaks.get(purchase.tokenKey) ?? 0, purchase.maximumMultiple));
+  }
+  const gains = [...peaks.values()].map(value => Math.max(0, value - 1));
+  const totalGain = gains.reduce((sum, gain) => sum + gain, 0);
+  const times = current.filter(purchase => purchase.maximumMultiple !== null).map(purchase => purchase.boughtAt);
+  const m = opportunities.metrics;
+  const stable = opportunities.labels.length > 0;
+  const decidedTokens = m.hit3xTokens + m.missedTokens;
+  const reasonCodes = [
+    ...opportunities.labels,
+    ...(m.awaitingDataTokens > 0 ? ["opportunity_data_missing"] : []),
+    ...(m.observingTokens > 0 ? ["opportunity_period_open"] : []),
+    ...(!stable ? [input.previousStage === "stable" ? "awaiting_recent_recurrence" : "opportunity_recurrence_not_yet_confirmed"] : []),
+  ];
+  return Object.freeze({
+    window: "30d",
+    stage: stable ? "stable" : m.currentTokens === 0 ? "discovered" : "candidate",
+    stable,
+    metrics: Object.freeze({
+      totalSamples: m.currentTokens,
+      validSamples: m.measuredTokens,
+      successfulDistinctTokens: m.hit3xTokens,
+      winRate: decidedTokens === 0 ? 0 : m.hit3xTokens / decidedTokens,
+      sampleSpanMs: times.length < 2 ? 0 : Math.max(...times) - Math.min(...times),
+      maximumSingleTokenProfitShare: totalGain <= 0 ? 1 : Math.max(...gains) / totalGain,
+    }),
     reasonCodes: Object.freeze(reasonCodes),
   });
 }

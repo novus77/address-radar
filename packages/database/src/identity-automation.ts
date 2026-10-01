@@ -84,6 +84,21 @@ function ensureInitialWalletBackfillJob(
   return Number(result.changes) === 1;
 }
 
+function ensureRealtimeMonitoringPolicy(
+  database: DatabaseSync,
+  traderId: string,
+  occurredAt: number,
+): boolean {
+  const result = database.prepare(`
+    INSERT INTO trader_monitoring_policy(trader_id, policy, updated_at)
+    VALUES (?, 'realtime', ?)
+    ON CONFLICT(trader_id) DO UPDATE SET
+      policy = 'realtime', updated_at = MAX(updated_at, excluded.updated_at)
+    WHERE trader_monitoring_policy.policy NOT IN ('off', 'realtime')
+  `).run(traderId, occurredAt);
+  return Number(result.changes) > 0;
+}
+
 export function recordResolvedWalletAutomation(
   database: DatabaseSync,
   input: ResolvedWalletAutomationInput,
@@ -108,18 +123,16 @@ export function recordResolvedWalletAutomation(
       payload.occurredAt,
     );
 
-  if (Number(inserted.changes) === 0) return false;
-
-  database
-    .prepare(
-      `INSERT INTO trader_monitoring_policy(trader_id, policy, updated_at)
-       VALUES (?, 'realtime', ?)
-       ON CONFLICT(trader_id) DO UPDATE SET
-         policy = 'realtime',
-         updated_at = excluded.updated_at
-       WHERE trader_monitoring_policy.policy != 'off'`,
-    )
-    .run(payload.traderId, payload.occurredAt);
+  const monitoringChanged = ensureRealtimeMonitoringPolicy(
+    database, payload.traderId, payload.occurredAt,
+  );
+  if (Number(inserted.changes) === 0) {
+    if (monitoringChanged) database.prepare(`
+      UPDATE monitoring_registry_state SET version = version + 1, updated_at = ?
+      WHERE singleton = 1
+    `).run(payload.occurredAt);
+    return false;
+  }
 
   database
     .prepare(
@@ -202,6 +215,8 @@ export function reconcileResolvedWalletAutomationJobs(
   occurredAt: number,
   limit = 250,
 ): number {
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("limit must be a positive safe integer");
+  return withAddressRadarWriteTransaction(database, () => {
   const rows = database.prepare(`
     SELECT wallet.entity_id AS traderId,
       COALESCE(MIN(account.account_id), wallet.entity_id) AS accountId,
@@ -209,29 +224,37 @@ export function reconcileResolvedWalletAutomationJobs(
       wallet.address
     FROM entity_wallet_identities wallet
     LEFT JOIN entity_accounts account ON account.entity_id = wallet.entity_id
+    WHERE NOT EXISTS (
+      SELECT 1 FROM automation_jobs job
+      WHERE job.idempotency_key = 'initial-wallet-backfill:' || wallet.entity_id || ':' ||
+        wallet.chain_family || ':' ||
+        CASE WHEN wallet.chain_family = 'evm' THEN LOWER(TRIM(wallet.address)) ELSE TRIM(wallet.address) END ||
+        ':60d:300:' || ?
+    ) OR NOT EXISTS (
+      SELECT 1 FROM trader_monitoring_policy policy
+      WHERE policy.trader_id = wallet.entity_id AND policy.policy IN ('realtime', 'off')
+    )
     GROUP BY wallet.entity_id, wallet.chain_family, wallet.address
     ORDER BY wallet.last_observed_at, wallet.entity_id, wallet.chain_family, wallet.address
     LIMIT ?
-  `).all(limit) as Array<{
+  `).all(IDENTITY_WALLET_BACKFILL_STRATEGY_VERSION, limit) as Array<{
     traderId: string;
     accountId: string;
     chainFamily: "evm" | "solana";
     address: string;
   }>;
 
-  return withAddressRadarWriteTransaction(database, () => {
     let inserted = 0;
+    let monitoringChanged = false;
     for (const row of rows) {
       const payload = toPayload({ ...row, occurredAt });
       if (ensureInitialWalletBackfillJob(database, payload)) inserted += 1;
-      database.prepare(`
-        INSERT INTO trader_monitoring_policy(trader_id, policy, updated_at)
-        VALUES (?, 'realtime', ?)
-        ON CONFLICT(trader_id) DO UPDATE SET
-          policy = CASE WHEN trader_monitoring_policy.policy = 'off' THEN 'off' ELSE 'realtime' END,
-          updated_at = MAX(trader_monitoring_policy.updated_at, excluded.updated_at)
-      `).run(row.traderId, occurredAt);
+      if (ensureRealtimeMonitoringPolicy(database, row.traderId, occurredAt)) monitoringChanged = true;
     }
+    if (monitoringChanged) database.prepare(`
+      UPDATE monitoring_registry_state SET version = version + 1, updated_at = ?
+      WHERE singleton = 1
+    `).run(occurredAt);
     return inserted;
   });
 }

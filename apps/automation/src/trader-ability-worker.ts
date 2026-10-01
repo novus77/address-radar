@@ -2,15 +2,15 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
 import { withAddressRadarWriteTransaction, type AutomationJobStore } from "@address-radar/database";
-import type { RepeatableTraderAbilityStage, RepeatableTraderAbilityWindow } from "@address-radar/domain";
-import { evaluateRepeatableTraderAbility } from "@address-radar/wallet-analysis";
+import { normalizeAddressRadarTokenAddress, type MarketObservation, type RepeatableTraderAbilityStage, type TraderEvent } from "@address-radar/domain";
+import { evaluateRepeatableTraderAbility, evaluateTraderOpportunityHistory } from "@address-radar/wallet-analysis";
 
 import { detectRepeatedBundleRisk, type BundleTrade } from "./bundle-risk-detector.js";
 import type { AutomationExecutionResult, AutomationHandler } from "./scheduler.js";
 
-const STRATEGY_VERSION = "trader-ability-v3-repeatable";
+const STRATEGY_VERSION = "trader-ability-v4-opportunity";
 const DAY_MS = 24 * 60 * 60_000;
-const WINDOWS = Object.freeze(["24h", "7d", "30d"] as const);
+const WINDOWS = Object.freeze(["30d"] as const);
 const DISPATCH_BATCH_SIZE = 100;
 const ACTIVE_JOB_HIGH_WATER_MARK = 1_000;
 const BACKPRESSURE_DELAY_MS = 5 * 60_000;
@@ -27,6 +27,8 @@ interface SampleRow {
   readonly tokenAddress: string;
   readonly firstBuyAt: number;
   readonly sampleStatus: string;
+  readonly weightedEntryPriceUsd: number | null;
+  readonly totalBuyUsd: number | null;
 }
 
 interface OutcomeRow {
@@ -34,6 +36,9 @@ interface OutcomeRow {
   readonly closeMultiple: number | null;
   readonly coverageStatus: string;
   readonly computedAt: number;
+  readonly mfeMultiple: number | null;
+  readonly observedAt: number | null;
+  readonly source: string | null;
 }
 
 interface WalletPositionPayload {
@@ -118,16 +123,18 @@ async function evaluateTrader(input: {
   if (!exists) return { status: "terminal", diagnostic: "trader entity does not exist" };
   const samples = input.database.prepare(`
     SELECT sample_id AS sampleId, chain, token_address AS tokenAddress,
-      first_buy_at AS firstBuyAt, sample_status AS sampleStatus
+      first_buy_at AS firstBuyAt, sample_status AS sampleStatus,
+      weighted_entry_price_usd AS weightedEntryPriceUsd, total_buy_usd AS totalBuyUsd
     FROM trader_token_samples
     WHERE entity_id = ?
   `).all(input.traderId) as unknown as SampleRow[];
   const outcomes = input.database.prepare(`
     SELECT o.sample_id AS sampleId, o.close_multiple AS closeMultiple,
-      o.coverage_status AS coverageStatus, o.computed_at AS computedAt
+      o.coverage_status AS coverageStatus, o.computed_at AS computedAt,
+      o.mfe_multiple AS mfeMultiple, o.observed_at AS observedAt, o.source
     FROM trader_token_outcomes o
     JOIN trader_token_samples s ON s.sample_id = o.sample_id
-    WHERE s.entity_id = ? AND o.horizon = '24h'
+    WHERE s.entity_id = ?
   `).all(input.traderId) as unknown as OutcomeRow[];
   const walletRows = input.database.prepare(`
     SELECT p.analysis_id AS analysisId, p.token_id AS tokenId, p.payload,
@@ -136,11 +143,12 @@ async function evaluateTrader(input: {
     JOIN wallet_analysis_jobs j ON j.analysis_id = p.analysis_id
     JOIN automation_jobs a ON a.idempotency_key = p.analysis_id
     WHERE a.job_type = 'initial_wallet_backfill'
-      AND a.subject_key = ?
+      AND (a.subject_key = ? OR CASE WHEN json_valid(a.payload)
+        THEN json_extract(a.payload, '$.traderId') END = ?)
       AND j.status IN ('review_required', 'accepted', 'insufficient_data')
     ORDER BY j.updated_at DESC, p.entered_at DESC
-  `).all(input.traderId) as Array<{ analysisId: string; tokenId: string; payload: string; computedAt: number }>;
-  const existingTokens = new Set(samples.map((sample) => `${sample.chain.toLowerCase()}:${sample.tokenAddress.toLowerCase()}`));
+  `).all(input.traderId, input.traderId) as Array<{ analysisId: string; tokenId: string; payload: string; computedAt: number }>;
+  const existingTokens = new Set(samples.map((sample) => `${sample.chain.toLowerCase()}:${normalizeAddressRadarTokenAddress(sample.chain, sample.tokenAddress)}`));
   const walletTokens = new Set<string>();
   for (const row of walletRows) {
     const position = parseWalletPosition(row.payload);
@@ -155,14 +163,36 @@ async function evaluateTrader(input: {
       tokenAddress: identity.tokenAddress,
       firstBuyAt: position.enteredAt,
       sampleStatus: "included",
+      weightedEntryPriceUsd: null,
+      totalBuyUsd: position.investedUsd,
     }));
     outcomes.push(Object.freeze({
       sampleId,
       closeMultiple: (position.realizedValueUsd + position.remainingValueUsd) / position.investedUsd,
       coverageStatus: "complete",
       computedAt: row.computedAt,
+      mfeMultiple: null,
+      observedAt: null,
+      source: null,
     }));
   }
+  const events = input.database.prepare(`
+    SELECT event_id AS eventId, account_id AS accountId, entity_id AS entityId,
+      chain, token_address AS tokenAddress, side, amount_usd AS amountUsd,
+      price_usd AS priceUsd, market_cap_usd AS marketCapUsd, token_age_ms AS tokenAgeMs,
+      occurred_at AS occurredAt, collected_at AS collectedAt, source
+    FROM trader_events WHERE entity_id = ? AND collected_at <= ?
+  `).all(input.traderId, input.evaluatedAt) as unknown as TraderEvent[];
+  const marketStatement = input.database.prepare(`
+    SELECT observed_at AS observedAt, price_usd AS priceUsd, source
+    FROM market_observations
+    WHERE chain = ? AND token_address = ? AND observed_at >= ? AND observed_at <= ?
+    ORDER BY observed_at, source
+  `);
+  const opportunities = evaluateTraderOpportunityHistory({
+    events, samples, outcomes, asOf: input.evaluatedAt,
+    readObservations: (chain, address, from, to) => marketStatement.all(chain, address, from, to) as unknown as MarketObservation[],
+  });
   const riskResult = bundleRisk(input.database, input.evaluatedAt, input.bundleRiskCache);
   const risk = riskResult.traders.get(input.traderId) ?? Object.freeze({
     traderId: input.traderId,
@@ -187,6 +217,7 @@ async function evaluateTrader(input: {
       asOf: input.evaluatedAt,
       window,
       previousStage: window === "30d" ? prior : null,
+      opportunities,
     });
     const reasonCodes = risk.state === "bundle_risk"
       ? [...evaluation.reasonCodes, "bundle_risk"]
@@ -208,6 +239,12 @@ async function evaluateTrader(input: {
       STRATEGY_VERSION,
       input.evaluatedAt,
     );
+  }
+  for (const label of opportunities.labels) {
+    input.database.prepare(`
+      INSERT OR IGNORE INTO trader_tags(entity_id, category, tag, created_at)
+      VALUES (?, 'ability', ?, ?)
+    `).run(input.traderId, `ability.historical_${label}`, input.evaluatedAt);
   }
   if (risk.state === "bundle_risk") {
     input.database.prepare(`
@@ -239,7 +276,7 @@ function splitTokenId(tokenId: string): { readonly chain: string; readonly token
   const separator = tokenId.indexOf(":");
   if (separator <= 0 || separator === tokenId.length - 1) return null;
   const chain = tokenId.slice(0, separator).toLowerCase();
-  const tokenAddress = tokenId.slice(separator + 1).toLowerCase();
+  const tokenAddress = normalizeAddressRadarTokenAddress(chain, tokenId.slice(separator + 1));
   return Object.freeze({ chain, tokenAddress, tokenKey: `${chain}:${tokenAddress}` });
 }
 
@@ -293,7 +330,7 @@ async function dispatch(input: {
     LIMIT ?
   `).all(lastTraderId, availableCapacity) as unknown as Array<{ traderId: string; priority: number }>;
   for (const row of rows) enqueueTraderAbilityEvaluation(input.jobs, row.traderId, input.now, input.now, `daily:${day}`, row.priority);
-  const exhausted = rows.length < DISPATCH_BATCH_SIZE;
+  const exhausted = rows.length < availableCapacity;
   return {
     status: "checkpoint",
     cursor: JSON.stringify({ day, lastTraderId: exhausted ? "\uffff" : rows.at(-1)!.traderId }),

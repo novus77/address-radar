@@ -108,6 +108,30 @@ describe("candidate milestone discovery", () => {
 });
 
 describe("trader performance runtime", () => {
+  it("persists opportunity recurrence from unsold purchases without demoting monitoring lifecycle", async () => {
+    const path = await databasePath();
+    const repository = openAddressRadarRepository(path);
+    const now = 100 * DAY;
+    repository.upsertFomoAccount({ accountId: "u1", handle: "alpha", firstSeenAt: 1, lastSeenAt: 1 });
+    repository.ensureTraderEntity({ entityId: "fomo:u1", lifecycle: "active", manual: false, locked: false, createdAt: 1, updatedAt: 1 });
+    repository.linkAccountToEntity({ accountId: "u1", entityId: "fomo:u1", confidence: "confirmed", source: "test", observedAt: 1 });
+    for (const tokenAddress of ["MintAbC", "Mintabc", "MintC"]) {
+      repository.insertTraderEvent({ eventId: `buy:${tokenAddress}`, accountId: "u1", entityId: "fomo:u1",
+        chain: "solana", tokenAddress, side: "buy", amountUsd: 100, priceUsd: 1, marketCapUsd: 50_000,
+        tokenAgeMs: null, occurredAt: now - 12 * DAY, collectedAt: now - 12 * DAY, source: "fomo_stream" });
+      repository.saveMarketObservation("solana", tokenAddress, { observedAt: now - DAY, priceUsd: 5, source: "test" });
+    }
+    const runtime = createTraderPerformanceRuntime({ repository, now: () => now, strategyVersion: "legacy-v2", dustThresholdUsd: 25, maximumObservationDelayMs: 5_000 });
+    await runtime.runOnce();
+    expect(repository.latestTraderAbility("fomo:u1", "30d")?.metrics).toMatchObject({
+      opportunityTokens: 3, opportunityHit3xTokens: 3, opportunityHit5xTokens: 3,
+      opportunityMissedTokens: 0, repeatedDiscovery: 1, repeatedHighMultipleDiscovery: 1,
+    });
+    expect(repository.traderTokenSamples("fomo:u1")).toHaveLength(3);
+    expect(repository.traderEntity("fomo:u1")?.lifecycle).toBe("active");
+    repository.close();
+  });
+
   it("produces reproducible ability and style snapshots from persisted evidence", async () => {
     const path = await databasePath();
     const repository = openAddressRadarRepository(path);
@@ -131,7 +155,7 @@ describe("trader performance runtime", () => {
     expect(first).not.toBeNull();
     expect(repository.traderTokenSamples("fomo:u1")).toHaveLength(1);
     expect(repository.traderTokenOutcomes(repository.traderTokenSamples("fomo:u1")[0]!.sampleId).length).toBeGreaterThan(0);
-    expect(second).toEqual(expect.objectContaining({ strategyVersion: "trader-ability-v2", styles: expect.objectContaining({ EARLY_LAUNCH: expect.any(Number), HIGH_MULTIPLE: expect.any(Number) }) }));
+    expect(second).toEqual(expect.objectContaining({ strategyVersion: "trader-ability-v2:trader-opportunity-v1", styles: expect.objectContaining({ EARLY_LAUNCH: expect.any(Number), HIGH_MULTIPLE: expect.any(Number) }) }));
     expect(third).toEqual(second);
     repository.close();
   });

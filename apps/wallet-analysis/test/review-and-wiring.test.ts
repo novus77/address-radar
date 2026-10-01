@@ -25,7 +25,7 @@ describe("wallet analysis review", () => {
     expect(review.accept({ analysisId: "analysis-1", accountId: "account-1", handle: "alpha", entityId: "entity-1", reviewedAt: 200 })).toMatchObject({ status: "accepted", entityId: "entity-1" });
     const database = new DatabaseSync(path);
     expect(database.prepare("SELECT status FROM wallet_analysis_jobs WHERE analysis_id = 'analysis-1'").get()).toEqual({ status: "accepted" });
-    expect(database.prepare("SELECT entity_id AS entityId, monitoring_enabled AS enabled FROM trader_profiles WHERE entity_id = 'entity-1'").get()).toEqual({ entityId: "entity-1", enabled: 0 });
+    expect(database.prepare("SELECT entity_id AS entityId, monitoring_enabled AS enabled FROM trader_profiles WHERE entity_id = 'entity-1'").get()).toEqual({ entityId: "entity-1", enabled: 1 });
     expect(database.prepare("SELECT version FROM monitoring_registry_state WHERE singleton = 1").get()).toEqual({ version: 1 });
     database.close();
     repository.close();

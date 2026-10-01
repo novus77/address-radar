@@ -25,3 +25,8 @@ export { evaluateTraderPerformance } from "./trader-performance-evaluation.js";
 export type { TraderPerformanceEvaluation } from "./trader-performance-evaluation.js";
 export { buildTraderTokenSample, traderTokenSampleId } from "./trader-sample-builder.js";
 export type { BuildTraderTokenSampleInput } from "./trader-sample-builder.js";
+export { evaluateTraderOpportunities, OPPORTUNITY_STRATEGY_VERSION, OPPORTUNITY_WINDOW_MS } from "./trader-opportunity-evaluator.js";
+export type {
+  OpportunityCoverage, OpportunityLabel, OpportunityPeakEvidence, OpportunityPurchase,
+  OpportunityStatus, PurchaseOpportunity, TraderOpportunityEvaluation, TraderOpportunityMetrics,
+} from "./trader-opportunity-evaluator.js";

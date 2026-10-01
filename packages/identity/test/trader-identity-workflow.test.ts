@@ -55,14 +55,13 @@ describe("trader identity workflow", () => {
     registry.close();
   });
 
-  it("synchronizes signal eligibility from confirmed identity, ability, and lifecycle", () => {
+  it("enables admitted confirmed identities without waiting for ability evaluation", () => {
     const repository = openAddressRadarRepository(":memory:");
     repository.upsertFomoAccount({ accountId: "account", handle: "Eligible", firstSeenAt: 1, lastSeenAt: 1 });
     repository.upsertTraderEntity({ entityId: "entity", lifecycle: "probation", manual: false, locked: false, createdAt: 1, updatedAt: 1 });
     repository.linkAccountToEntity({ entityId: "entity", accountId: "account", confidence: "confirmed", source: "fomoscan", observedAt: 1 });
+    expect(repository.traderSignalProfile("entity")).toMatchObject({ mapped: true, monitoringEnabled: true, fomoMonitoringEnabled: true });
     repository.saveTraderAbilitySnapshot(ability("entity"));
-
-    expect(repository.traderSignalProfile("entity")).toMatchObject({ mapped: true, monitoringEnabled: false });
     repository.updateTraderLifecycle("entity", "active", 4);
     expect(repository.traderSignalProfile("entity")).toMatchObject({ mapped: true, monitoringEnabled: true, fomoMonitoringEnabled: true });
     repository.updateTraderLifecycle("entity", "suspended", 5);

@@ -29,6 +29,8 @@ export type { HistoricalStagePlanResult } from "./historical-stage-planner.js";
 export type { CandidateDiscoveryResult } from "./candidate-discovery.js";
 export { createTraderPerformanceRuntime, evaluateRepeatableTraderAbility } from "./performance.js";
 export type { RepeatableAbilityOutcome, RepeatableAbilitySample } from "./performance.js";
+export { evaluateTraderOpportunityHistory } from "./opportunity-history.js";
+export type { OpportunityHistoryOutcome, OpportunityHistorySample } from "./opportunity-history.js";
 export { createWalletAnalysisReviewService } from "./review.js";
 export { loadHistoricalBackfillConfig, loadWalletAnalysisConfig } from "./config.js";
 export type { HistoricalBackfillConfig, WalletAnalysisConfig } from "./config.js";

@@ -82,14 +82,48 @@ function latest(database: DatabaseSync, traderId: string) {
 }
 
 describe("trader ability worker", () => {
-  it("separates discovered, candidate, stable, and degraded ability", async () => {
+  it("preserves verified historical recurrence after recent purchases age out", async () => {
+    const { database, worker } = setup();
+    addTrader(database, "historical");
+    addSamples(database, "historical", [5, 5]);
+    await evaluate(worker, "historical");
+    expect(database.prepare("SELECT tag FROM trader_tags WHERE entity_id = 'historical' AND category = 'ability'").all())
+      .toEqual([{ tag: "ability.historical_repeated_high_multiple_discovery" }]);
+    await evaluate(worker, "historical", NOW + 31 * DAY_MS);
+    expect(latest(database, "historical").abilityStage).toBe("discovered");
+    expect(database.prepare("SELECT tag FROM trader_tags WHERE entity_id = 'historical' AND category = 'ability'").all())
+      .toEqual([{ tag: "ability.historical_repeated_high_multiple_discovery" }]);
+    database.close();
+  });
+
+  it("does not finish the daily scan when backpressure shrinks the batch", async () => {
+    const { database } = setup();
+    for (const id of ["scan-a", "scan-b", "scan-c"]) {
+      addTrader(database, id);
+      addSamples(database, id, [3]);
+    }
+    const enqueued: unknown[] = [];
+    const jobs = {
+      activeCount: () => 999,
+      activeJobForSubject: () => null,
+      enqueue: (job: unknown) => enqueued.push(job),
+    };
+    const worker = createTraderAbilityWorker({ database, jobs: jobs as never, now: () => NOW });
+    const result = await worker.execute({ payload: JSON.stringify({ mode: "dispatch" }), cursor: null } as never, new AbortController().signal);
+    expect(result).toMatchObject({ status: "checkpoint", retryAt: NOW });
+    expect(JSON.parse(String((result as { cursor: string }).cursor)).lastTraderId).toBe("scan-b");
+    expect(enqueued).toHaveLength(2);
+    database.close();
+  });
+
+  it("records opportunity stages without demoting an inactive trader as a loss", async () => {
     const { database, worker } = setup();
     addTrader(database, "discovered");
     addTrader(database, "candidate");
     addTrader(database, "stable");
     addTrader(database, "degraded");
     addSamples(database, "candidate", [2, 2, 0.5, 0, 0.8, 1, 0.4]);
-    addSamples(database, "stable", [2, 2, 2, 0.5, 0, 1, 0.8, 0.2]);
+    addSamples(database, "stable", [3, 3, 3, 0.5, 0, 1, 0.8, 0.2]);
     database.prepare(`
       INSERT INTO trader_repeatable_ability_snapshots(
         snapshot_id, entity_id, window, ability_stage, bundle_risk_state,
@@ -113,15 +147,15 @@ describe("trader ability worker", () => {
       successfulDistinctTokens: 3,
       sampleSpanMs: 14 * DAY_MS,
     });
-    expect(latest(database, "degraded")).toMatchObject({ abilityStage: "degraded", validSamples: 0 });
+    expect(latest(database, "degraded")).toMatchObject({ abilityStage: "discovered", validSamples: 0 });
     const snapshotCount = database.prepare(`
       SELECT COUNT(*) AS count FROM trader_repeatable_ability_snapshots WHERE entity_id = 'stable'
     `).get() as { count: number };
-    expect(snapshotCount.count).toBe(3);
+    expect(snapshotCount.count).toBe(1);
     database.close();
   });
 
-  it("includes losses and zero returns while rejecting single-token profit concentration", async () => {
+  it("keeps one exceptional opportunity from establishing distinct-token recurrence", async () => {
     const { database, worker } = setup();
     addTrader(database, "concentrated");
     addSamples(database, "concentrated", [10, 1.2, 1.2, 0.5, 0, 1, 0.8, 0.2]);
@@ -129,11 +163,33 @@ describe("trader ability worker", () => {
     await evaluate(worker, "concentrated");
 
     const snapshot = latest(database, "concentrated");
-    expect(snapshot).toMatchObject({ abilityStage: "candidate", validSamples: 8, successfulDistinctTokens: 3 });
-    expect(snapshot.winRate).toBe(3 / 8);
+    expect(snapshot).toMatchObject({ abilityStage: "candidate", validSamples: 8, successfulDistinctTokens: 1 });
+    expect(snapshot.winRate).toBe(1);
     expect(Number(snapshot.maximumSingleTokenProfitShare)).toBeGreaterThan(0.5);
-    expect(JSON.parse(String(snapshot.reasonCodes))).toContain("single_token_profit_concentration");
+    expect(JSON.parse(String(snapshot.reasonCodes))).toContain("opportunity_recurrence_not_yet_confirmed");
+    database.close();
+  });
+
+  it("recognizes two unsold 5x opportunities without the old sample or span gates", async () => {
+    const { database, worker } = setup();
+    addTrader(database, "unsold");
+    addSamples(database, "unsold", [0.8, 0.8]);
+    database.prepare("UPDATE trader_token_outcomes SET mfe_multiple = 5, captured_multiple = NULL WHERE sample_id LIKE 'unsold:%'").run();
+    await evaluate(worker, "unsold");
+    const snapshot = latest(database, "unsold");
+    expect(snapshot).toMatchObject({ abilityStage: "stable", successfulDistinctTokens: 2, validSamples: 2 });
+    expect(JSON.parse(String(snapshot.reasonCodes))).toContain("repeated_high_multiple_discovery");
+    database.close();
+  });
+
+  it("does not invent opportunity evidence from fixed close values without MFE", async () => {
+    const { database, worker } = setup();
+    addTrader(database, "missing");
+    addSamples(database, "missing", [10, 10, 10]);
+    database.prepare("UPDATE trader_token_outcomes SET mfe_multiple = NULL WHERE sample_id LIKE 'missing:%'").run();
+    await evaluate(worker, "missing");
+    expect(latest(database, "missing")).toMatchObject({ abilityStage: "candidate", validSamples: 0, successfulDistinctTokens: 0 });
+    expect(JSON.parse(String(latest(database, "missing").reasonCodes))).toContain("opportunity_data_missing");
     database.close();
   });
 });
-

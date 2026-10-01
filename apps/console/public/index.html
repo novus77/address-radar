@@ -31,7 +31,7 @@
       <nav class="module-nav" aria-label="控制台模块">
         <button class="active" data-module="traders">地址库</button>
         <button data-module="candidates">候选队列</button>
-        <button data-module="backtests">回测与淘汰</button>
+        <button data-module="backtests">30天能力回测</button>
         <button data-module="aggregations">代币聚合</button>
         <button data-module="outcomes">信号结果</button>
         <button data-module="milestones">历史覆盖与重评估</button>
@@ -63,7 +63,7 @@
         </div>
         <div class="table-shell" id="candidates-grid"></div>
       </section>
-      <section class="module" data-panel="backtests"><header><p class="eyebrow">SURVIVAL</p><h2>回测与淘汰</h2><span>滚动胜率、样本强度与降级记录</span></header><div class="data-grid" id="backtests-grid"></div></section>
+      <section class="module" data-panel="backtests"><header><p class="eyebrow">OPPORTUNITY</p><h2>30天能力回测</h2><span>持续发现高倍机会；待补数据、交易不活跃不自动淘汰</span></header><div class="data-grid" id="backtests-grid"></div></section>
       <section class="module" data-panel="aggregations"><header><p class="eyebrow">CONVERGENCE</p><h2>代币聚合</h2><span>每行一个合约，查看当前证据与距离信号还缺什么</span></header><div class="filter-bar"><label>最低聚合买入金额（USD）<input id="aggregation-minimum" type="number" min="0" step="10" value="100"></label><select id="aggregation-chain"><option value="">全部链</option></select><select id="aggregation-lifecycle"><option value="">全部代币阶段</option><option value="created">已创建</option><option value="launched_0_2h">刚发射 0-2 小时</option><option value="launched_2_12h">发射 2-12 小时</option><option value="launched_12_24h">发射 12-24 小时</option><option value="older_1_7d">老币 1-7 天</option><option value="older_7d_plus">老币 7 天以上</option></select><select id="aggregation-status"><option value="">全部聚合状态</option><option value="observe">正在聚合</option><option value="broadcast">首次信号合格</option><option value="rebroadcast">再次信号合格</option></select></div><div class="filter-summary" id="aggregation-filter-summary"></div><div class="data-grid" id="aggregations-grid"></div></section>
       <section class="module" data-panel="outcomes"><header><p class="eyebrow">SIGNALS</p><h2>信号结果</h2><span>展示本地已合格信号，并单独标明是否已投递</span></header><div class="filter-bar compact"><input id="signal-search" type="search" placeholder="搜索代币或信号"><select id="signal-chain"><option value="">全部链</option></select><select id="signal-action"><option value="">全部类型</option><option value="new">首次播报</option><option value="update">再次播报</option></select></div><div class="data-grid" id="outcomes-grid"></div></section>
       <section class="module" data-panel="milestones">
