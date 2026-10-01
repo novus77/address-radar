@@ -46,6 +46,12 @@ describe("closed-loop operations", () => {
     facts.ensure("recovery-1", "early_trades", "base:0xabc", now - 700);
     facts.satisfy("recovery-1", "early_trades", "base:0xabc", now - 600);
     createWalletCoverageStore(database).upsert({ identityId: "account-1", chain: "base", provider: "blockscout_wallet_base", status: "complete", cursor: "cursor", coverageStartAt: null, coverageEndAt: null, lastSuccessAt: now - 400, updatedAt: now - 400 });
+    database.prepare("INSERT INTO trader_entities(entity_id,lifecycle,manual,locked,created_at,updated_at) VALUES ('trader-2','candidate',0,0,?,?)").run(now - 700, now - 700);
+    const insertAbility = database.prepare(      "INSERT INTO trader_repeatable_ability_snapshots(snapshot_id,entity_id,window,ability_stage,bundle_risk_state,total_samples,valid_samples,successful_distinct_tokens,win_rate,sample_span_ms,maximum_single_token_profit_share,bundle_distinct_token_count,reason_codes,strategy_version,evaluated_at) VALUES (?,?,'30d','discovered','none',0,0,0,0,0,0,0,'[]',?,?)"
+    );
+    insertAbility.run("legacy-ability", "trader-1", "legacy-v1", now - 400);
+    insertAbility.run("current-ability-1", "trader-2", "trader-ability-v4-opportunity", now - 300);
+    insertAbility.run("current-ability-2", "trader-2", "trader-ability-v4-opportunity", now - 200);
     database.close();
 
     const application = createAddressConsoleApplication(databasePath);
@@ -60,6 +66,7 @@ describe("closed-loop operations", () => {
           expect.objectContaining({ stage: "early_trade_recovery", pending: 1, untracked: 1 }),
           expect.objectContaining({ stage: "candidate_evidence", completed15m: 1 }),
           expect.objectContaining({ stage: "candidate_admission", eligible: 1, pending: 1 }),
+          expect.objectContaining({ stage: "ability_evaluation", eligible: 2, completed: 1, pending: 1, producedFacts: 1, completed15m: 1, unit: "trader", strategyVersion: "trader-ability-v4-opportunity", evaluatedTraders1h: 1 }),
         ]),
         outcomes: { total24h: 1, productive24h: 1, productiveRate24h: 1 },
         recoveryClosure: { total: 1, satisfied: 1, rate: 1 },
