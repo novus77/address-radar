@@ -26,6 +26,7 @@ import { verifyRecoveryFactReadiness } from "./recovery-fact-readiness.js";
 import { hasHistoricalPriceCoverage, mergeHistoricalPrices } from "./price-recovery-coverage.js";
 import { milestoneRecoveryGap } from "./milestone-recovery-policy.js";
 import { parseRecoveryHandoff, recoveryHandoffAction } from "./recovery-handoff.js";
+import { retainPartialHistoricalPrices } from "./partial-historical-price-recovery.js";
 
 const HOUR_MS = 60 * 60_000;
 const DAY_MS = 24 * HOUR_MS;
@@ -241,7 +242,10 @@ export function createSourceRecoveryHandlers(input: {
           limit: DEFILLAMA_CALLS_PER_MINUTE,
           retryAt: (Math.floor(budgetAt / 60_000) + 1) * 60_000,
         });
-        const fallback = await input.historicalPriceFallback.chart(job.chain, token.tokenAddress, range, signal);
+        const fallback = await retainPartialHistoricalPrices(
+          input.historicalPriceFallback.chart(job.chain, token.tokenAddress, range, signal),
+          { database: input.database, tokenId: job.subjectKey, now },
+        );
         assertActive?.();
         const fallbackPrices = mergeHistoricalPrices(fallback.prices.map(point => [point.observedAt, point.priceUsd] as const), [], range);
         saveHistoricalPrices(input.database, token.chain, token.tokenAddress, fallbackPrices, fallback.source);

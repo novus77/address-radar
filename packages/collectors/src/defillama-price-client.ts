@@ -48,6 +48,7 @@ export class DefiLlamaPriceError extends Error {
     message: string,
     readonly status: number | null,
     readonly retryable: boolean,
+    readonly partialResult?: HistoricalTokenPriceResult,
   ) {
     super(message);
     this.name = "DefiLlamaPriceError";
@@ -87,9 +88,9 @@ export function createDefiLlamaPriceClient(options: {
       const coinId = `${chainId}:${address}`;
       const startAt = Math.max(0, range.fromAt - HOUR_MS);
       const totalPoints = Math.max(2, Math.ceil((range.toAt - startAt) / HOUR_MS) + 1);
+      const merged = new Map<number, HistoricalTokenPricePoint>();
+      let minimumConfidence: number | null = null;
       try {
-        const merged = new Map<number, HistoricalTokenPricePoint>();
-        let minimumConfidence: number | null = null;
         for (let offset = 0; offset < totalPoints; offset += MAX_HOURLY_POINTS) {
         signal?.throwIfAborted();
         await options.beforeRequest?.(signal);
@@ -132,8 +133,17 @@ export function createDefiLlamaPriceClient(options: {
         }
         return Object.freeze({ source: "defillama_chart" as const, confidence: minimumConfidence, prices: Object.freeze([...merged.values()].sort((left, right) => left.observedAt - right.observedAt)) });
       } catch (error) {
-        if (error instanceof DefiLlamaPriceError) throw error;
-        throw new DefiLlamaPriceError(error instanceof Error ? error.message : "DefiLlama request failed", null, true);
+        const partialResult = merged.size === 0 ? undefined : Object.freeze({
+          source: "defillama_chart" as const,
+          confidence: minimumConfidence,
+          prices: Object.freeze([...merged.values()].sort((left, right) => left.observedAt - right.observedAt)
+            .map(point => Object.freeze({ ...point }))),
+        });
+        if (error instanceof DefiLlamaPriceError) {
+          if (!partialResult) throw error;
+          throw new DefiLlamaPriceError(error.message, error.status, error.retryable, partialResult);
+        }
+        throw new DefiLlamaPriceError(error instanceof Error ? error.message : "DefiLlama request failed", null, true, partialResult);
       }
     },
   });
