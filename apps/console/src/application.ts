@@ -1,3 +1,4 @@
+import { readDataFlowTrace } from "./data-flow-trace.js";
 import { readDataFlowProgress } from "./data-flow-progress.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -105,6 +106,14 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
 
   const read = (pathname: string): ConsoleResult | null => {
     if (pathname === "/api/v2/chains") return { status: 200, body: { items: chainRegistry } };
+    if (pathname.startsWith("/api/v2/operations/data-flow/trace/")) {
+      const match = /^\/api\/v2\/operations\/data-flow\/trace\/(token|trader)\/([^/]+)$/.exec(pathname);
+      if (!match) return { status: 400, body: { error: "invalid_trace_subject" } };
+      let id: string;
+      try { id = decodeURIComponent(match[2]!); } catch { return { status: 400, body: { error: "invalid_trace_subject" } }; }
+      if (!id.trim() || id.length > 512) return { status: 400, body: { error: "invalid_trace_subject" } };
+      return { status: 200, body: readDataFlowTrace(database, { kind: match[1] as "token" | "trader", id }) };
+    }
     if (pathname === "/api/v2/operations/data-flow") {
       return { status: 200, body: readDataFlowProgress(database) };
     }

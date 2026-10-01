@@ -1,3 +1,4 @@
+import { readDataFlowProgress } from "../apps/console/src/data-flow-progress.js";
 import { DatabaseSync } from "node:sqlite";
 
 const databasePath = process.argv.find((value, index) => index > 1 && !value.startsWith("--"))
@@ -28,6 +29,7 @@ const optionalCount = (table: string, sql: string): number | null => tables.has(
 
 const report = {
   auditedAt: Date.now(),
+  dataFlow: readDataFlowProgress(database),
   databasePath,
   deliveryEnabled: process.env.ADDRESS_RADAR_GATEWAY_DELIVERY_ENABLED === "true",
   structure: {
@@ -49,19 +51,20 @@ const report = {
     unresolvedDependencies: optionalCount("token_fact_dependencies", `
       SELECT COUNT(*) AS count
       FROM token_fact_dependencies d
-      JOIN token_fact_status dependency
+      LEFT JOIN token_fact_status dependency
         ON dependency.token_id = d.token_id
        AND dependency.fact_type = d.depends_on_fact_type
-      WHERE dependency.status NOT IN ('available', 'partial', 'degraded')
+      WHERE dependency.status IS NULL OR dependency.status != 'available'
     `),
     unresolvedConflicts: optionalCount("token_fact_conflicts", "SELECT COUNT(*) AS count FROM token_fact_conflicts WHERE status = 'open'"),
   },
   analysis: {
+    strategyVersion: "trader-ability-v4-opportunity",
     completedWalletAnalyses: optionalCount("wallet_analysis_jobs", "SELECT COUNT(*) AS count FROM wallet_analysis_jobs WHERE status IN ('review_required', 'accepted', 'insufficient_data')"),
     walletPositions: optionalCount("wallet_analysis_positions", "SELECT COUNT(*) AS count FROM wallet_analysis_positions"),
     traderSamples: optionalCount("trader_token_samples", "SELECT COUNT(*) AS count FROM trader_token_samples WHERE sample_status = 'included'"),
     completeOutcomes: optionalCount("trader_token_outcomes", "SELECT COUNT(*) AS count FROM trader_token_outcomes WHERE coverage_status = 'complete'"),
-    repeatableAbilities: optionalCount("trader_repeatable_ability_snapshots", "SELECT COUNT(DISTINCT entity_id) AS count FROM trader_repeatable_ability_snapshots WHERE window = '30d'"),
+    repeatableAbilities: optionalCount("trader_repeatable_ability_snapshots", "SELECT COUNT(DISTINCT entity_id) AS count FROM trader_repeatable_ability_snapshots WHERE strategy_version = 'trader-ability-v4-opportunity' AND window = '30d'"),
     stableAbilities: optionalCount("trader_repeatable_ability_snapshots", "SELECT COUNT(DISTINCT entity_id) AS count FROM trader_repeatable_ability_snapshots WHERE window = '30d' AND ability_stage = 'stable'"),
   },
   signal: {
@@ -77,6 +80,7 @@ const hardFailures = [
   ...(report.deliveryEnabled ? ["gateway_delivery_must_remain_disabled"] : []),
 ];
 const readinessWarnings = [
+  "authoritative_cohort_and_source_coverage_unverified",
   ...(report.identity.monitoredWallets === 0 ? ["no_monitored_wallets"] : []),
   ...(report.collection.walletObservations === 0 ? ["no_wallet_observations"] : []),
   ...(report.analysis.walletPositions === 0 ? ["no_wallet_history_positions"] : []),
@@ -87,7 +91,7 @@ const readinessWarnings = [
 ];
 
 console.log(JSON.stringify({
-  status: hardFailures.length ? "structural_failure" : readinessWarnings.length ? "waiting_for_data" : "ready_for_shadow_acceptance",
+  status: hardFailures.length ? "structural_failure" : readinessWarnings.length ? "waiting_for_data" : "baseline_only",
   hardFailures,
   readinessWarnings,
   report,
