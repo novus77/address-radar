@@ -175,7 +175,7 @@ export interface AddressRadarRepository extends TokenAggregationRepository, Runt
   candidateDiscoveriesForEntity(entityId: string): readonly CandidateDiscoveryInput[];
   saveAddressSignalEvidence(chain: string, tokenAddress: string, evidence: AddressSignalEvidence): void;
   addressSignalEvidenceForToken(chain: string, tokenAddress: string, since: number): readonly AddressSignalEvidence[];
-  claimEventProjection(input: EventProjectionKey & { readonly owner: string; readonly now: number; readonly leaseMs: number }): EventProjectionClaimStatus;
+  claimEventProjection(input: EventProjectionKey & { readonly owner: string; readonly now: number; readonly leaseMs: number; readonly executionInput?: TraderEvent }): EventProjectionClaimStatus;
   completeEventProjection(input: EventProjectionKey & { readonly owner: string; readonly resultKey: string; readonly completedAt: number }): boolean;
   failEventProjection(input: EventProjectionKey & { readonly owner: string; readonly error: string; readonly nextAttemptAt: number; readonly failedAt: number }): boolean;
   saveTokenEvaluation(input: Omit<TokenEvaluationRecord, "tokenId">): void;
@@ -245,6 +245,8 @@ const toSignalOutboxRecord = (row: Record<string, unknown>): SignalOutboxRecord 
   deliveredAt: row.delivered_at as number | null,
   createdAt: row.created_at as number,
 });
+
+import { matchesEventProjectionInput, captureEventProjectionExecution, matchesEventProjectionExecution, acknowledgeEventProjectionExecution } from "./event-projection-execution-store.js";
 
 export function openAddressRadarRepository(databasePath: string, options: { readonly database?: ReturnType<typeof openAddressRadarDatabase> } = {}): AddressRadarRepository {
   const database = options.database ?? openAddressRadarDatabase(databasePath);
@@ -1472,6 +1474,7 @@ export function openAddressRadarRepository(databasePath: string, options: { read
       assertTimestamp(input.now, "now");
       if (!Number.isSafeInteger(input.leaseMs) || input.leaseMs <= 0) throw new Error("leaseMs must be a positive safe integer");
       return transaction(() => {
+        if (input.executionInput && !matchesEventProjectionInput(database, input.eventId, input.executionInput)) return "busy" as const;
         database.prepare(`
           INSERT OR IGNORE INTO event_projections(
             event_id, projection_type, source_revision, status, attempt_count,
@@ -1496,7 +1499,10 @@ export function openAddressRadarRepository(databasePath: string, options: { read
           input.now,
           input.now,
         );
-        if (claimed.changes === 1) return "claimed" as const;
+        if (claimed.changes === 1) {
+          captureEventProjectionExecution(database, input);
+          return "claimed" as const;
+        }
         const row = database.prepare(`
           SELECT status FROM event_projections
           WHERE event_id = ? AND projection_type = ? AND source_revision = ?
@@ -1507,21 +1513,19 @@ export function openAddressRadarRepository(databasePath: string, options: { read
 
     completeEventProjection(input) {
       assertTimestamp(input.completedAt, "completedAt");
-      const result = transaction(() => database.prepare(`
-        UPDATE event_projections
-        SET status = 'completed', result_key = ?, completed_at = ?, updated_at = ?,
-          lease_owner = NULL, lease_expires_at = NULL, last_error = NULL
-        WHERE event_id = ? AND projection_type = ? AND source_revision = ?
-          AND status = 'running' AND lease_owner = ?
-      `).run(
-        input.resultKey,
-        input.completedAt,
-        input.completedAt,
-        input.eventId,
-        input.projectionType,
-        input.sourceRevision,
-        input.owner,
-      ));
+      const result = transaction(() => {
+        if (!matchesEventProjectionExecution(database, input)) return { changes: 0 };
+        const updated = database.prepare(`
+          UPDATE event_projections
+          SET status = 'completed', result_key = ?, completed_at = ?, updated_at = ?,
+            lease_owner = NULL, lease_expires_at = NULL, last_error = NULL
+          WHERE event_id = ? AND projection_type = ? AND source_revision = ?
+            AND status = 'running' AND lease_owner = ?
+        `).run(input.resultKey, input.completedAt, input.completedAt, input.eventId,
+          input.projectionType, input.sourceRevision, input.owner);
+        if (updated.changes === 1) acknowledgeEventProjectionExecution(database, input);
+        return updated;
+      });
       return result.changes === 1;
     },
 

@@ -159,3 +159,5 @@ export {
 } from "./consumer-history-range-store.js";
 
 export { initializeExecutionRevisionSchema, EXECUTION_REVISION_SCHEMA_SQL, createExecutionRevisionStore, withExecutionRevisionContext, executionRevisionForDemand } from "./execution-revision-store.js";
+
+export { EVENT_PROJECTION_EXECUTION_SCHEMA_SQL, initializeEventProjectionExecutionSchema } from "./event-projection-execution-store.js";

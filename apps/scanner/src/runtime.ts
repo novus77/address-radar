@@ -258,7 +258,7 @@ export function createScannerRuntime(options: ScannerRuntimeOptions) {
               chain = event.chain.toLowerCase();
               tokenAddress = event.tokenAddress;
               const projectionKey = { eventId: event.eventId, projectionType, sourceRevision: options.config.strategyVersion };
-              const projectionStatus = options.repository.claimEventProjection({ ...projectionKey, owner: projectionOwner, now: options.clock.now(), leaseMs: projectionLeaseMs });
+              const projectionStatus = options.repository.claimEventProjection({ ...projectionKey, executionInput: event, owner: projectionOwner, now: options.clock.now(), leaseMs: projectionLeaseMs });
               if (projectionStatus !== "claimed") continue;
               claimedProjection = projectionKey;
               const resolved = await resolveToken(chain, tokenAddress);

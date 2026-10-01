@@ -101,3 +101,18 @@ The candidate-evidence, event-projection, token-aggregation, and signal-projecti
 ### Deployment controls
 
 Premigrate the four additive tables before switching a release because production runtime migrations are disabled. Take a consistent backup without violating the disk safety floor. Do not rewrite legacy observations in bulk, merge identities, change scoring thresholds, or enable Gateway delivery. Switch only after targeted tests, the complete suite, type checking, build/import checks, boundary checks, and browser regression tests pass. Acceptance must measure actual revision application and downstream proof versions, not only service health or job completion.
+
+
+## Version-bound event projection receipt slice
+
+Production verification found requests marked dispatched even when the replay UPDATE matched no projection row. The producer and derived economic fields were consistent, but completed projections did not acknowledge the execution revision they had consumed. A completed task alone is not evidence of version consumption.
+
+The event projection claimant now captures economic inputs and the applied execution heads under the same SQLite transaction and lease. Completion compares that snapshot with current inputs, requires the existing projection lease owner, and atomically acknowledges matching execution requests. Changed inputs reject stale completion. Filtered outcomes have an explicit receipt distinct from evidence production. Existing pre-rollout leases may finish without creating a retrospective version receipt. Timestamp-only observation refresh is not an economic revision.
+
+A replay UPDATE matching zero rows remains undispatched. Missing scanner projection registration is a visible handoff gap; this slice does not fabricate a projection job, infer a missing strategy version, or acknowledge old completed rows. Candidate, signal, and aggregation version acknowledgments remain separate unfinished gates. No scoring, identity, or amount threshold changes are included.
+
+Deployment requires the additive event_projection_execution_contexts table before switching the release, complete regression validation, a consistent backup, and read-only verification. Do not bulk rewrite old requests or mark them confirmed from status alone.
+
+### Consumed-input attestation
+
+Scanner supplies the actual consumed event when acquiring its projection lease. The repository compares identity, normalized chain/address, side, amount, entry price, market cap, token age and transaction time against the authoritative row inside the claim transaction. A stale input cannot acquire the lease. Collection timestamps are excluded. The captured snapshot records whether the input was verified; legacy callers may complete but cannot acknowledge an execution revision. Completion still requires unchanged execution heads and inputs, and the current lease owner. No scoring or identity-merging rules change.

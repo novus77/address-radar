@@ -49,8 +49,9 @@ export function reconcileExecutionRevisionRequests(input: {
       } else if (type === "event_projection") {
         const running=input.database.prepare(`SELECT 1 FROM event_projections WHERE event_id=? AND status='running' LIMIT 1`).get(subject);
         if (running) { deferred+=group.length; continue; }
-        input.database.prepare(`UPDATE event_projections SET status='pending',next_attempt_at=?,completed_at=NULL,
+        const replay = input.database.prepare(`UPDATE event_projections SET status='pending',next_attempt_at=?,completed_at=NULL,
           last_error='execution_revision_replay',updated_at=? WHERE event_id=? AND status<>'running'`).run(at,at,subject);
+        if (replay.changes === 0) { deferred+=group.length; continue; }
       } else {
         // The normal signal reconciler fingerprints applied execution revisions and owns its leases.
         const request=input.database.prepare("SELECT desired_revision,applied_revision FROM signal_projection_requests WHERE token_id=?").get(String(row.token_id));

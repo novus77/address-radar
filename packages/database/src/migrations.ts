@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { initializeExecutionRevisionSchema } from "./execution-revision-store.js";
+import { initializeEventProjectionExecutionSchema } from "./event-projection-execution-store.js";
 import { decodePersistedRadarSignal } from "@address-radar/signal-engine";
 
 import { initializeAddressRadarSchema } from "./schema.js";
@@ -43,6 +44,7 @@ export function migrateAddressRadarDatabase(
     initializeWalletCoverageSchema(database);
     initializeCandidateEvaluationRequestSchema(database);
     initializeExecutionRevisionSchema(database);
+    initializeEventProjectionExecutionSchema(database);
     ensureColumn(database, "wallet_monitor_observations", "source_block_number", "INTEGER");
     ensureColumn(database, "wallet_monitor_observations", "source_block_hash", "TEXT");
     ensureColumn(database, "wallet_monitor_observations", "orphaned_at", "INTEGER");
