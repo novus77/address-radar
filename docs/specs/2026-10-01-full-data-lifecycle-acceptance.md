@@ -58,3 +58,18 @@ Production release: `/opt/address-radar/releases/fe55741-data-flow-trace`.
 - Read-only market-time audit reported its 1,000-row cap of suspect timestamp mismatches; the report is not exhaustive and no repair was applied.
 - Bounded old-fact revision and affected downstream reevaluation must follow a provenance audit. These rows must not be automatically discarded or counted as trustworthy historical coverage.
 - Execution-basis policy confirmation remains the next blocking checkpoint; the entire four-phase plan is not complete.
+
+### Execution-basis policy confirmation and foundation
+
+The user approved nominal USD valuation for verified USDT/USDC contracts or mints.
+Amounts derived this way are estimates, not historical USD oracle observations.
+Entry prices must be derived from the actual quote and token quantities of the
+same confirmed execution. Current market prices are not execution prices.
+
+The execution-basis foundation nets refunds and repeated asset movements,
+requires verified stablecoin identities, and refuses ambiguous multi-token or
+multi-quote allocation. Failed or unverified executions and transfers without
+swap confirmation cannot produce an estimated basis. Fourteen targeted tests
+cover these boundaries. This foundation is not yet wired into production
+collectors or durable provenance. Task 3 remains in progress; this is not a
+production remediation or an end-to-end acceptance result.
