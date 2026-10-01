@@ -93,3 +93,5 @@ export type {
   WalletAnalysisPhase,
   WorkbenchLifecycle,
 } from "./workbench-v2.js";
+export { satisfiesFactDemand } from "./fact-demand.js";
+export type { ConsumerFactDemand, FactDemandProof, FactDemandPurpose } from "./fact-demand.js";

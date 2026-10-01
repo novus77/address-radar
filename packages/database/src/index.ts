@@ -145,3 +145,5 @@ export type { WalletChainCoverage, WalletCoverageStatus } from "./wallet-coverag
 
 export { createSharedProviderRequestGate } from "./shared-provider-request-gate.js";
 export { resolveObservedMarketSupply } from "./observed-market-supply.js";
+export { createFactDemandStore, initializeFactDemandSchema } from "./fact-demand-store.js";
+export type { PersistedFactDemand } from "./fact-demand-store.js";

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
-import { withAddressRadarWriteTransaction, type AutomationJobStore } from "@address-radar/database";
+import { createFactDemandStore, withAddressRadarWriteTransaction, type AutomationJobStore } from "@address-radar/database";
 import { normalizeAddressRadarTokenAddress, type MarketObservation, type RepeatableTraderAbilityStage, type TraderEvent } from "@address-radar/domain";
 import { evaluateRepeatableTraderAbility, evaluateTraderOpportunityHistory } from "@address-radar/wallet-analysis";
 
@@ -193,6 +193,27 @@ async function evaluateTrader(input: {
     events, samples, outcomes, asOf: input.evaluatedAt,
     readObservations: (chain, address, from, to) => marketStatement.all(chain, address, from, to) as unknown as MarketObservation[],
   });
+  const demands = createFactDemandStore(input.database);
+  withAddressRadarWriteTransaction(input.database, () => {
+    for (const purchase of opportunities.purchases) {
+      if (purchase.status === "excluded") continue;
+      const requiredTo = Math.min(purchase.observationEndAt, input.evaluatedAt);
+      for (const purpose of ["positive_hit", "complete_range"] as const) {
+        const proven = purpose === "positive_hit" ? purchase.status === "hit" : purchase.rangeCovered;
+        demands.record({
+          demandId: stableId("ability-demand", [STRATEGY_VERSION, input.traderId, purchase.purchaseId, purpose]),
+          consumerId: input.traderId, purchaseId: purchase.purchaseId, tokenId: purchase.tokenKey,
+          strategyVersion: STRATEGY_VERSION, purpose,
+          requiredFrom: purchase.boughtAt, requiredTo, evaluatedAt: input.evaluatedAt,
+          reasonCode: proven ? "verified_opportunity" : purchase.reasonCode === "verified_opportunity" ? "market_range_missing" : purchase.reasonCode,
+          proof: proven ? { kind: purpose, from: purchase.boughtAt, to: requiredTo,
+            knownAt: input.evaluatedAt, reference: `${opportunities.strategyVersion}:${purchase.purchaseId}`,
+            ...(purpose === "positive_hit" ? { maximumMultiple: purchase.maximumMultiple! } : {}),
+          } : null,
+        });
+      }
+    }
+  }, { label: "record_ability_fact_demands" });
   const riskResult = bundleRisk(input.database, input.evaluatedAt, input.bundleRiskCache);
   const risk = riskResult.traders.get(input.traderId) ?? Object.freeze({
     traderId: input.traderId,

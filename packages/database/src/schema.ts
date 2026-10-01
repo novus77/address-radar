@@ -1,7 +1,9 @@
 import { WALLET_EXECUTION_BASIS_SCHEMA } from "./wallet-execution-basis-schema.js";
+import { initializeFactDemandSchema } from "./fact-demand-store.js";
 import type { DatabaseSync } from "node:sqlite";
 
 export function initializeAddressRadarSchema(database: DatabaseSync): void {
+  initializeFactDemandSchema(database);
   database.exec(`
     CREATE TABLE IF NOT EXISTS fomo_accounts (
       account_id TEXT PRIMARY KEY,
