@@ -21,6 +21,7 @@ import {
   type RecoveryHandlers,
 } from "./recovery-runtime.js";
 import type { RecoveryPostcondition } from "./recovery-postcondition.js";
+import { verifyRecoveryFactReadiness } from "./recovery-fact-readiness.js";
 import { hasHistoricalPriceCoverage, mergeHistoricalPrices } from "./price-recovery-coverage.js";
 import { milestoneRecoveryGap } from "./milestone-recovery-policy.js";
 import { parseRecoveryHandoff, recoveryHandoffAction } from "./recovery-handoff.js";
@@ -84,14 +85,12 @@ export function createSourceRecoveryHandlers(input: {
     factType,
     factKey: tokenId,
     verify() {
-      const fact = input.facts.fact(tokenId, factType);
-      if (fact?.status === "available" || fact?.status === "partial") {
-        return { status: "satisfied", producedCount: 1 };
-      }
-      if (fact?.status === "terminal_unavailable") {
-        return { status: "terminal", reasonCode: fact.terminalReason ?? "fact_terminal_unavailable" };
-      }
-      return { status: "deferred", reasonCode: `fact_not_ready:${factType}` };
+      const asOf = now();
+      const token = factType === "price_history" ? tokenParts(tokenId, "") : null;
+      return verifyRecoveryFactReadiness({
+        database: input.database, facts: input.facts, factType, tokenId, asOf,
+        ...(token ? { priceRange: historyRange(input.database, tokenId, token.chain, token.tokenAddress, asOf) } : {}),
+      });
     },
   });
 

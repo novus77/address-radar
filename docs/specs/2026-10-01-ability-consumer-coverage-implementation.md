@@ -69,3 +69,7 @@ This follow-up does not supply continuous price coverage or retrofit old proof r
 The source-bounded proof and lower-peak regression tests passed, followed by all 747 unit tests, build, typecheck, built-package imports, repository boundaries and 2 desktop/mobile E2E tests. Typecheck must follow updated workspace declaration builds for the new result property.
 
 The last read-only production preflight reported 2,985,975,808 bytes available, below the 3,000,000,000-byte guard. Journals occupy 415.2 MB and syslog approximately 118 MB. Only approximately 7 MB of eligible obsolete generated artifacts were identified, insufficient for safe release headroom. No log, database, event or backup files were removed. The production release remains `ddc0622-ability-demands`; this follow-up is tested but not deployed pending the user's storage remediation selection.
+
+## Follow-up production checkpoint: 0d33482
+
+After the approved journal cleanup restored deployment headroom, the tested follow-up was deployed to `/opt/address-radar/releases/0d33482-demand-proof`. All six services were active, automatic restarts were zero, and delivery remained disabled. The first read-only snapshot contained no new source-bounded proof; subsequent natural execution produced 1,278 such records. This proves live wiring, not complete-range coverage or newly discovered wallet counts. Older summary-only proofs were not bulk rewritten.
