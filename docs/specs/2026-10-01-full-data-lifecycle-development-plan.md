@@ -335,3 +335,12 @@ Read-only production verification exposed an exhausted daily dispatcher cursor w
   the dispatch acceptance interval. Genuine new candidates/wallets/signals, strict
   market coverage, provider request accounting, and end-to-end revision propagation
   still require implementation or production evidence before completion.
+
+## Production checkpoint: execution proof fence
+
+`4ce4d47-execution-proof-fence` deployed and passed read-only built-function checks
+and six-service checks at 2026-10-01T14:34:36.246215+00:00. Delivery remained disabled. Current distinct
+v4 evaluations reached 671, up from 605 during initial dispatch acceptance;
+candidate evidence stayed at 1439. See the separate production acceptance
+record for the remaining producer/recompute and genuine-output gates. No whole-plan
+completion claim is justified.
