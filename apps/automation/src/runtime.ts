@@ -1,3 +1,4 @@
+import { reconcileConsumerHistoryWakeups } from "./consumer-history-wakeup.js";
 import { reconcileConsumerHistoryRecovery } from "./consumer-history-recovery.js";
 import {
   createAutomationJobStore,
@@ -169,6 +170,7 @@ export function createAutomationRuntime(input: {
         earlyTradeReconciler.runOnce();
         reconcileMilestoneFacts();
         reconcileConsumerHistoryRecovery({ database, ledger: consumerRecoveryLedger, now: () => plannedAt });
+        reconcileConsumerHistoryWakeups({ database, jobs: store, now: () => plannedAt });
         sourceFactReconciler.runOnce();
         signalProjectionReconciler.runOnce();
         const decision = queuePolicy.evaluate(store.metrics(plannedAt, 15 * 60_000));

@@ -148,3 +148,8 @@ export { resolveObservedMarketSupply } from "./observed-market-supply.js";
 export { createFactDemandStore, initializeFactDemandSchema } from "./fact-demand-store.js";
 export type { PersistedFactDemand } from "./fact-demand-store.js";
 export { readConsumerMarketHistoryRange, listUnscheduledConsumerHistoryTokens } from "./consumer-history-recovery.js";
+export { listConsumerHistoryWakeupNeeds } from "./consumer-history-recovery.js";
+export {
+  initializeConsumerHistoryWakeupSchema, consumerHistoryFingerprint,
+  recordConsumerHistoryObservation, recordConsumerHistoryDispatch,
+} from "./consumer-history-wakeup-store.js";

@@ -1,3 +1,4 @@
+import { initializeConsumerHistoryWakeupSchema } from "./consumer-history-wakeup-store.js";
 import type { DatabaseSync } from "node:sqlite";
 import { satisfiesFactDemand, type ConsumerFactDemand } from "@address-radar/domain";
 import { withAddressRadarWriteTransaction } from "./connection.js";
@@ -7,6 +8,7 @@ export interface PersistedFactDemand extends ConsumerFactDemand {
 }
 
 export function initializeFactDemandSchema(database: DatabaseSync): void {
+  initializeConsumerHistoryWakeupSchema(database);
   database.exec(`CREATE TABLE IF NOT EXISTS consumer_fact_demands (
     demand_id TEXT PRIMARY KEY, consumer_id TEXT NOT NULL, purchase_id TEXT NOT NULL,
     token_id TEXT NOT NULL, strategy_version TEXT NOT NULL,

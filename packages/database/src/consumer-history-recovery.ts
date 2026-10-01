@@ -36,3 +36,16 @@ export function listUnscheduledConsumerHistoryTokens(database: DatabaseSync, asO
         || ':' || needs.tokenId)
     ORDER BY oldestEvaluation, tokenId LIMIT ?`).all(asOf, limit) as Array<{ tokenId: string }>;
 }
+
+export function listConsumerHistoryWakeupNeeds(database: DatabaseSync, asOf: number, limit: number) {
+  if (!Number.isSafeInteger(asOf) || asOf < 0) return [];
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 250) throw new Error("Invalid consumer wakeup batch limit");
+  return database.prepare(`WITH needs AS (
+    SELECT consumer_id consumerId, ${tokenKey} tokenId, MIN(required_from) fromAt, MAX(required_to) toAt
+    FROM consumer_fact_demands WHERE ${eligible} GROUP BY consumer_id,${tokenKey}
+  ) SELECT needs.*,receipt.dispatched_fingerprint dispatchedFingerprint
+    FROM needs LEFT JOIN consumer_history_wakeup_receipts receipt
+      ON receipt.consumer_id=needs.consumerId AND receipt.token_id=needs.tokenId
+    ORDER BY COALESCE(receipt.checked_at,-1),needs.consumerId,needs.tokenId LIMIT ?`)
+    .all(asOf,limit) as Array<{ consumerId: string; tokenId: string; fromAt: number; toAt: number; dispatchedFingerprint: string | null }>;
+}
