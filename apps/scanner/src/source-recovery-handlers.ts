@@ -27,6 +27,7 @@ import { hasHistoricalPriceCoverage, mergeHistoricalPrices } from "./price-recov
 import { milestoneRecoveryGap } from "./milestone-recovery-policy.js";
 import { parseRecoveryHandoff, recoveryHandoffAction } from "./recovery-handoff.js";
 import { persistHistoricalPricePage, retainPartialHistoricalPrices } from "./partial-historical-price-recovery.js";
+import { readHistoricalPricePage } from "./historical-price-page-cache.js";
 
 const HOUR_MS = 60 * 60_000;
 const DAY_MS = 24 * HOUR_MS;
@@ -244,7 +245,8 @@ export function createSourceRecoveryHandlers(input: {
         });
         const fallback = await retainPartialHistoricalPrices(
           input.historicalPriceFallback.chart(job.chain, token.tokenAddress, range, signal,
-            page => persistHistoricalPricePage(page, { database: input.database, tokenId: job.subjectKey, now })),
+            page => persistHistoricalPricePage(page, { database: input.database, tokenId: job.subjectKey, now }),
+            pageRange => readHistoricalPricePage(input.database, job.subjectKey, pageRange)),
           { database: input.database, tokenId: job.subjectKey, now },
         );
         assertActive?.();

@@ -41,6 +41,7 @@ export interface HistoricalTokenPriceClient {
     range: { readonly fromAt: number; readonly toAt: number },
     signal?: AbortSignal,
     onPage?: (page: HistoricalTokenPriceResult) => void | Promise<void>,
+    readPage?: (range: { readonly fromAt: number; readonly toAt: number }) => HistoricalTokenPriceResult | null | Promise<HistoricalTokenPriceResult | null>,
   ): Promise<HistoricalTokenPriceResult>;
 }
 
@@ -79,6 +80,7 @@ export function createDefiLlamaPriceClient(options: {
       range: { readonly fromAt: number; readonly toAt: number },
       signal?: AbortSignal,
       onPage?: (page: HistoricalTokenPriceResult) => void | Promise<void>,
+    readPage?: (range: { readonly fromAt: number; readonly toAt: number }) => HistoricalTokenPriceResult | null | Promise<HistoricalTokenPriceResult | null>,
     ) {
       signal?.throwIfAborted();
       const chainId = CHAIN_IDS[chain];
@@ -95,6 +97,24 @@ export function createDefiLlamaPriceClient(options: {
       try {
         for (let offset = 0; offset < totalPoints; offset += MAX_HOURLY_POINTS) {
         signal?.throwIfAborted();
+        const queryStartAt = Math.floor((startAt + offset * HOUR_MS) / 1000) * 1000;
+        const span = Math.min(MAX_HOURLY_POINTS, totalPoints - offset);
+        const pageFromAt = queryStartAt < startAt ? queryStartAt + HOUR_MS : queryStartAt;
+        const pageToAt = Math.min(queryStartAt + (span - 1) * HOUR_MS,
+          queryStartAt + Math.floor((range.toAt - queryStartAt) / HOUR_MS) * HOUR_MS);
+        if (readPage && pageToAt >= pageFromAt) {
+          const cached = await readPage({ fromAt: pageFromAt, toAt: pageToAt });
+          signal?.throwIfAborted();
+          if (cached?.source === "defillama_chart" && cached.confidence !== null &&
+              Number.isFinite(cached.confidence) && cached.confidence >= 0 && cached.confidence <= 1 &&
+              cached.prices.length === (pageToAt - pageFromAt) / HOUR_MS + 1 &&
+              cached.prices.every((point, index) => point.observedAt === pageFromAt + index * HOUR_MS &&
+                Number.isFinite(point.priceUsd) && point.priceUsd > 0)) {
+            minimumConfidence = minimumConfidence === null ? cached.confidence : Math.min(minimumConfidence, cached.confidence);
+            for (const point of cached.prices) merged.set(point.observedAt, Object.freeze({ ...point }));
+            continue;
+          }
+        }
         await options.beforeRequest?.(signal);
         signal?.throwIfAborted();
         const controller = new AbortController();

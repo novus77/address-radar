@@ -300,3 +300,7 @@ Completed the DefiLlama partial-result error contract and scanner recovery-bound
 ## Checkpoint: immediate historical page commits
 
 Added an optional awaited internal chart page callback and scanner per-page transaction integration. Each nonempty validated page commits prices, allowed partial fact metadata, and a page-price audit before the next request. Empty pages do not certify coverage. Duplicate observations and error fallback do not inflate write audits; unique attempt IDs prevent same-clock page collisions. Existing available/conflicted/terminal states and pending consumer demands are preserved. Passed 26 targeted tests, 803 unit tests across 201 files, build, typecheck, package import smoke checks, module boundaries, and two browser tests. No schema change. Page-resume optimization, empty-page exhaustion proof, physical budget attribution, strict extrema coverage, and chain/source capability coverage remain open. Production acceptance must distinguish a page-price event from legacy error-only retention.
+
+### Historical page resume checkpoint
+
+Reuse complete, quality-proven DefiLlama hourly pages before physical request gating. Preserve sparse-page refetch, canonical chain identity, fractional-second bounds, cancellation, existing logical budgets and partial checkpoints. Cache reuse is not new fact production or full extrema certification. See `2026-10-01-historical-page-resume-spac.md`; production acceptance remains required.
