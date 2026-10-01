@@ -33,6 +33,7 @@ export interface SolanaSwapTransaction {
     };
   };
   readonly meta?: {
+    readonly err?: unknown;
     readonly fee?: number;
     readonly preBalances?: readonly number[];
     readonly postBalances?: readonly number[];

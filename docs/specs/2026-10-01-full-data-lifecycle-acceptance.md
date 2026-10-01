@@ -73,3 +73,40 @@ swap confirmation cannot produce an estimated basis. Fourteen targeted tests
 cover these boundaries. This foundation is not yet wired into production
 collectors or durable provenance. Task 3 remains in progress; this is not a
 production remediation or an end-to-end acceptance result.
+
+### Task 3: RPC collector execution basis and durable provenance
+
+Implemented the approved nominal USDT/USDC valuation policy in the Solana and
+EVM block collectors. Valuation requires a confirmed successful execution,
+swap evidence, a single net token asset, and a single supported net quote asset.
+Solana uses wallet-owned balance deltas; EVM uses receipt transfer evidence and
+ERC-20 decimals queried at the execution block. Neither path uses a current
+market price or current market capitalization as a historical execution fact.
+Multiple accounts for the same token are netted into one economic observation.
+Ambiguous allocation and mixed native payments remain unvalued.
+
+Indexed EVM transfer history remains useful for raw wallet activity discovery,
+but its transfer lists alone do not establish a successful swap execution.
+Such observations explicitly carry an unavailable execution basis until receipt
+recovery confirms the execution. Historical receipt recovery and native-asset
+historical USD valuation remain outstanding work, not accepted source coverage.
+
+The additive wallet_monitor_execution_bases table stores execution provenance
+by source and event ID. It does not rewrite or delete existing trading rows.
+Identity-delayed projection retains the basis across process restarts. Late
+basis enrichment reprojects the existing event without creating another trade;
+unchanged replays do not create another basis row or another source event.
+Runtime wallet normalization preserves the optional execution-basis contract.
+
+Targeted regressions reproduce and cover spot-price contamination, failed
+executions, multi-token allocation, same-token multi-account allocation, mixed
+native payments, metadata persistence, delayed identity linking, and idempotent
+late enrichment. The latest full unit suite passed 742 tests. Production
+migration, collector acceptance with live receipt provenance, consumer coverage
+validation, and repair of previously contaminated observations remain pending.
+
+Deployment preflight found approximately 2.99 GB available on the production
+root volume, below the existing 3 GB minimum. No production release switch or
+schema migration was performed. Approval was requested for narrowly scoped
+cleanup of obsolete deployment artifacts, preserving databases, event data,
+backups, and the current and rollback releases. Do not bypass the disk gate.

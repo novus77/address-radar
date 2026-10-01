@@ -1,3 +1,4 @@
+import type { ExecutionBasis } from "./execution-basis.js";
 import type { ChainFamily } from "@address-radar/domain";
 import type { MonitoredWallet } from "@address-radar/identity";
 
@@ -14,6 +15,7 @@ export interface WalletCollectorEvent {
   readonly sourceReference: string;
   readonly sourceBlockNumber?: number;
   readonly sourceBlockHash?: string;
+  readonly executionBasis?: ExecutionBasis;
 }
 
 export interface WalletCollectorPartition {

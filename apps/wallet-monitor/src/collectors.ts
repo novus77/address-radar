@@ -1,3 +1,4 @@
+import { deriveExecutionBasis } from "./execution-basis.js";
 import {
   extractEvmSwapEvidence,
   extractSolanaSwapEvidence,
@@ -140,6 +141,7 @@ export function createEvmBlockWalletCollector(input: {
             break;
           }
           const extracted = await evmSwapEvents({
+            rpc: input.rpc, signal: request.signal,
             chain: input.chain,
             wallet,
             transaction,
@@ -314,28 +316,41 @@ async function solanaSwapEvents(input: {
   readonly market: TokenMarketProvider | undefined;
   readonly occurredAt: number;
 }) {
-  const evidence = extractSolanaSwapEvidence(input.transaction, input.wallet.address);
   const events: WalletCollectorEvent[] = [];
-
+  if (!input.transaction?.meta || input.transaction.meta.err != null) {
+    return { events, hadCandidateDelta: false };
+  }
+  const evidence = extractSolanaSwapEvidence(input.transaction, input.wallet.address);
+  const basis = deriveExecutionBasis({
+    successful: input.transaction.meta.err === null,
+    swapConfirmed: evidence.knownSwapProgram,
+    tokenDeltas: evidence.candidateDeltas.map((delta) => ({ asset: delta.mint, quantity: delta.amount })),
+    quoteDeltas: [...evidence.stableQuoteDeltas.map((delta) => ({
+      asset: delta.mint, quantity: delta.amount, verifiedStablecoin: true,
+      symbol: delta.mint === "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" ? "USDC" : "USDT",
+    })),
+      ...(evidence.nativeDelta !== 0 || evidence.wrappedNativeDeltas.length > 0
+        ? [{ asset: "solana-native", symbol: "SOL", quantity: evidence.nativeDelta, verifiedStablecoin: false }]
+        : []),
+    ],
+  });
+  const tokens = new Map<string, { mint: string; accountIndex: number; amount: number }>();
   for (const delta of evidence.candidateDeltas) {
+    const current = tokens.get(delta.mint);
+    tokens.set(delta.mint, {
+      mint: delta.mint, accountIndex: Math.min(current?.accountIndex ?? delta.accountIndex, delta.accountIndex),
+      amount: (current?.amount ?? 0) + delta.amount,
+    });
+  }
+  for (const delta of tokens.values()) {
     if (!evidence.supportsSwap(delta)) continue;
-    const snapshot = input.market ? await input.market.lookup("solana", delta.mint) : null;
-    const stableQuote = evidence.stableQuoteDeltas.find((quote) => Math.sign(quote.amount) === -Math.sign(delta.amount));
-    const amountUsd = stableQuote ? Math.abs(stableQuote.amount)
-      : snapshot?.priceUsd === null || snapshot?.priceUsd === undefined
-        ? null
-        : Math.abs(delta.amount) * snapshot.priceUsd;
     events.push({
       eventId: `solana:${input.signature}:${delta.accountIndex}`,
-      chain: "solana",
-      walletAddress: input.wallet.address,
-      tokenAddress: delta.mint,
+      chain: "solana", walletAddress: input.wallet.address, tokenAddress: delta.mint,
       side: delta.amount > 0 ? "buy" : "sell",
-      amountUsd,
-      priceUsd: snapshot?.priceUsd ?? null,
-      marketCapUsd: snapshot?.marketCapUsd ?? null,
-      occurredAt: input.occurredAt,
-      sourceReference: `solana:${input.signature}`,
+      amountUsd: basis.amountUsd, priceUsd: basis.priceUsd, marketCapUsd: null,
+      occurredAt: input.occurredAt, sourceReference: `solana:${input.signature}`,
+      executionBasis: basis,
     });
   }
   return { events, hadCandidateDelta: evidence.candidateDeltas.length > 0 };
@@ -343,6 +358,8 @@ async function solanaSwapEvents(input: {
 
 async function evmSwapEvents(input: {
   readonly chain: EvmChain;
+  readonly rpc: WalletRpcClient;
+  readonly signal: AbortSignal;
   readonly wallet: MonitoredWallet;
   readonly transaction: EvmSwapTransaction;
   readonly receipt: EvmReceipt;
@@ -351,6 +368,7 @@ async function evmSwapEvents(input: {
   readonly blockNumber: number;
   readonly blockHash: string;
 }) {
+  if (input.receipt.status === "0x0") return { events: [], hadCandidateTransfer: false };
   const quotes = EVM_QUOTES[input.chain] ?? new Set<string>();
   const evidence = extractEvmSwapEvidence({
     wallet: input.wallet.address,
@@ -358,19 +376,62 @@ async function evmSwapEvents(input: {
     logs: input.receipt.logs ?? [],
     quoteTokens: quotes,
   });
+  const stableAssets: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+    eth: { "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "USDC", "0xdac17f958d2ee523a2206206994597c13d831ec7": "USDT" },
+    base: { "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "USDC" },
+    bsc: { "0x55d398326f99059ff775485246999027b3197955": "USDT" },
+  };
+  const decimals = new Map<string, number | null>();
+  const quantity = async (asset: string, amount: bigint): Promise<number> => {
+    if (input.receipt.status !== "0x1") return NaN;
+    if (!decimals.has(asset)) {
+      try {
+        const response = await input.rpc.request(input.chain, "eth_call", [
+          { to: asset, data: "0x313ce567" }, `0x${input.blockNumber.toString(16)}`,
+        ], input.signal, "history");
+        const value = typeof response === "string" && /^0x[0-9a-f]+$/i.test(response) ? Number(BigInt(response)) : NaN;
+        decimals.set(asset, Number.isSafeInteger(value) && value >= 0 && value <= 36 ? value : null);
+      } catch (error) {
+        if (input.signal.aborted) throw error;
+        decimals.set(asset, null);
+      }
+    }
+    const precision = decimals.get(asset);
+    return precision === null || precision === undefined ? NaN : Number(amount) / 10 ** precision;
+  };
+  const tokenDeltas = await Promise.all(evidence.candidates.map(async (candidate) => ({
+    asset: candidate.token,
+    quantity: await quantity(candidate.token, candidate.amount) * (candidate.incoming ? 1 : -1),
+  })));
+  const quoteDeltas = await Promise.all(evidence.quoteTransfers.map(async (quote) => ({
+    asset: quote.token, symbol: stableAssets[input.chain]?.[quote.token] ?? "unsupported",
+    verifiedStablecoin: Boolean(stableAssets[input.chain]?.[quote.token]),
+    quantity: await quantity(quote.token, quote.amount) * (quote.incoming ? 1 : -1),
+  })));
+  if (hexBigInt(input.transaction.value) !== 0n) quoteDeltas.push({
+    asset: "native", symbol: "unsupported", verifiedStablecoin: false, quantity: NaN,
+  });
+  const basis = deriveExecutionBasis({ successful: input.receipt.status === "0x1", swapConfirmed: evidence.candidates.some(candidate => evidence.supportsSwap(candidate)), tokenDeltas, quoteDeltas });
   const events: WalletCollectorEvent[] = [];
+  const candidates = new Map<string, typeof evidence.candidates[number]>();
   for (const candidate of evidence.candidates) {
     if (!evidence.supportsSwap(candidate)) continue;
-    const snapshot = input.market ? await input.market.lookup(input.chain, candidate.token) : null;
+    const net = tokenDeltas.filter(delta => delta.asset === candidate.token).reduce((sum, delta) => sum + delta.quantity, 0);
+    if (Number.isFinite(net) && net === 0) continue;
+    if (!candidates.has(candidate.token)) candidates.set(candidate.token, { ...candidate, incoming: Number.isFinite(net) ? net > 0 : candidate.incoming });
+  }
+  for (const candidate of candidates.values()) {
+    if (!evidence.supportsSwap(candidate)) continue;
     events.push({
       eventId: `${input.chain}:${input.transaction.hash}:${candidate.index}`,
       chain: input.chain,
       walletAddress: input.wallet.address,
       tokenAddress: candidate.token,
       side: candidate.incoming ? "buy" : "sell",
-      amountUsd: null,
-      priceUsd: snapshot?.priceUsd ?? null,
-      marketCapUsd: snapshot?.marketCapUsd ?? null,
+      amountUsd: basis.amountUsd,
+      priceUsd: basis.priceUsd,
+      marketCapUsd: null,
+      executionBasis: basis,
       occurredAt: input.occurredAt,
       sourceReference: `${input.chain}:${input.transaction.hash}`,
       sourceBlockNumber: input.blockNumber,
@@ -460,6 +521,7 @@ interface EvmBlock {
   readonly transactions?: readonly EvmSwapTransaction[];
 }
 interface EvmReceipt {
+  readonly status?: string;
   readonly blockHash?: string;
   readonly logs?: readonly EvmSwapLog[];
 }

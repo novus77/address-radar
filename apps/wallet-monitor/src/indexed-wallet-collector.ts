@@ -271,9 +271,10 @@ async function toWalletEvents(input: {
         walletAddress: input.walletAddress,
         tokenAddress: normalize(tokenAddress),
         side,
-        amountUsd: stableAmountUsd,
-        priceUsd: snapshot?.priceUsd ?? null,
-        marketCapUsd: snapshot?.marketCapUsd ?? null,
+        amountUsd: null,
+        executionBasis: { status: "unavailable" as const, reason: "execution_not_confirmed", tokenAddress: null, tokenQuantity: null, amountUsd: null, priceUsd: null },
+        priceUsd: null,
+        marketCapUsd: null,
         occurredAt,
         sourceReference: `${input.endpoint}/tx/${transactionHash}`,
       }));

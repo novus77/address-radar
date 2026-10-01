@@ -31,6 +31,7 @@ export function extractEvmSwapEvidence(input: {
   readonly quoteTokens: ReadonlySet<string>;
 }): {
   readonly candidates: readonly EvmWalletTransfer[];
+  readonly quoteTransfers: readonly EvmWalletTransfer[];
   readonly supportsSwap: (candidate: EvmWalletTransfer) => boolean;
 } {
   const wallet = input.wallet.toLowerCase();
@@ -60,6 +61,7 @@ export function extractEvmSwapEvidence(input: {
 
   return Object.freeze({
     candidates: Object.freeze(candidates),
+    quoteTransfers: Object.freeze(quotes),
     supportsSwap(candidate) {
       const linkedQuote = quotes.some((quote) => {
         if (quote.incoming === candidate.incoming) return false;

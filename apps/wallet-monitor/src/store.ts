@@ -9,6 +9,7 @@ import type { WalletChainCoverage } from "@address-radar/database";
 import { sourceObservationForTraderEvent } from "@address-radar/collectors";
 import type { TraderEvent } from "@address-radar/domain";
 
+import type { ExecutionBasis } from "./execution-basis.js";
 import type { NormalizedWalletObservation } from "./contracts.js";
 
 export interface WalletMonitorProviderStatus {
@@ -52,7 +53,11 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
 
   const projectPendingObservations = (projectedAt: number): number => {
     const rows = database.prepare(`
-      SELECT * FROM wallet_monitor_observations
+      SELECT wallet_monitor_observations.*,
+        (SELECT basis_json FROM wallet_monitor_execution_bases AS basis
+          WHERE basis.source = wallet_monitor_observations.source
+            AND basis.event_id = wallet_monitor_observations.event_id) AS execution_basis_json
+      FROM wallet_monitor_observations
       WHERE orphaned_at IS NULL AND projected_at IS NULL
       ORDER BY occurred_at, source, event_id
       LIMIT 500
@@ -70,6 +75,7 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
         walletAddress: row.wallet_address,
         sourceReference: row.source_reference,
         walletMonitorSource: row.source,
+        ...(row.execution_basis_json === null ? {} : { executionBasis: JSON.parse(row.execution_basis_json) as ExecutionBasis }),
         ...(row.source_block_number === null ? {} : { sourceBlockNumber: row.source_block_number }),
         ...(row.source_block_hash === null ? {} : { sourceBlockHash: row.source_block_hash }),
       }));
@@ -162,6 +168,19 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
             observation.sourceBlockNumber ?? null,
             observation.sourceBlockHash ?? null,
           ).changes);
+          if (observation.executionBasis) {
+            const changed = database.prepare(`
+              INSERT INTO wallet_monitor_execution_bases(source, event_id, basis_json, updated_at)
+              VALUES (?, ?, ?, ?)
+              ON CONFLICT(source, event_id) DO UPDATE SET
+                basis_json = excluded.basis_json, updated_at = excluded.updated_at
+              WHERE wallet_monitor_execution_bases.basis_json <> excluded.basis_json
+            `).run(source, observation.eventId, JSON.stringify(observation.executionBasis), updatedAt).changes;
+            if (changed) database.prepare(`
+              UPDATE wallet_monitor_observations SET projected_at = NULL
+              WHERE source = ? AND event_id = ?
+            `).run(source, observation.eventId);
+          }
         }
         database.prepare(`
           INSERT INTO wallet_monitor_checkpoints (source, partition_key, checkpoint, updated_at)
@@ -274,7 +293,11 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
     },
     observations() {
       return database.prepare(`
-        SELECT * FROM wallet_monitor_observations WHERE orphaned_at IS NULL ORDER BY occurred_at, event_id
+        SELECT wallet_monitor_observations.*,
+        (SELECT basis_json FROM wallet_monitor_execution_bases AS basis
+          WHERE basis.source = wallet_monitor_observations.source
+            AND basis.event_id = wallet_monitor_observations.event_id) AS execution_basis_json
+      FROM wallet_monitor_observations WHERE orphaned_at IS NULL ORDER BY occurred_at, event_id
       `).all().map((row) => {
         const value = row as Record<string, unknown>;
         return {
@@ -292,6 +315,7 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
           marketCapUsd: value.market_cap_usd === null ? null : Number(value.market_cap_usd),
           occurredAt: Number(value.occurred_at),
           collectedAt: Number(value.collected_at),
+          ...(value.execution_basis_json === null ? {} : { executionBasis: JSON.parse(String(value.execution_basis_json)) as ExecutionBasis }),
           sourceReference: String(value.source_reference),
           ...(value.source_block_number === null ? {} : { sourceBlockNumber: Number(value.source_block_number) }),
           ...(value.source_block_hash === null ? {} : { sourceBlockHash: String(value.source_block_hash) }),
@@ -340,4 +364,5 @@ type WalletMonitorObservationRow = {
   source_reference: string;
   source_block_number: number | null;
   source_block_hash: string | null;
+  execution_basis_json: string | null;
 };
