@@ -14,7 +14,7 @@ export interface AddressSignalEvidence {
   readonly lifecycleStage?: TokenLifecycleStage;
   readonly traderTags?: readonly string[];
   readonly dedupeKey?: string;
-  readonly traderLifecycle?: "active" | "elite" | "degraded";
+  readonly traderLifecycle?: "probation" | "active" | "elite" | "degraded";
   readonly independenceKey?: string;
   readonly bundleRisk?: "suspected" | "strong" | "confirmed";
 }

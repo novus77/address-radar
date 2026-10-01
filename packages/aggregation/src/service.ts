@@ -30,10 +30,10 @@ export function createTokenAggregationService<TCandidate>(input: {
       const eligible = evidence.flatMap(item => {
         const profile = input.repository.traderSignalProfile(item.entityId);
         const sourceEnabled = item.source === "onchain" ? profile?.onchainMonitoringEnabled : profile?.fomoMonitoringEnabled;
-        if (!profile?.mapped || !profile.monitoringEnabled || !sourceEnabled || !["active", "elite", "degraded"].includes(profile.lifecycle)) return [];
+        if (!profile?.mapped || !profile.monitoringEnabled || !sourceEnabled || !["probation", "active", "elite", "degraded"].includes(profile.lifecycle)) return [];
         const baseContribution = profile.signalContribution ?? item.contribution;
         const traderTags = [...new Set([...(item.traderTags ?? []), ...(profile.abilityTags ?? [])])];
-        return [{ ...item, contribution: baseContribution * (profile.lifecycle === "degraded" ? DEGRADED_TRADER_DISCOUNT : 1), traderTags, traderLifecycle: profile.lifecycle as "active" | "elite" | "degraded" }];
+        return [{ ...item, contribution: baseContribution * (profile.lifecycle === "degraded" ? DEGRADED_TRADER_DISCOUNT : 1), traderTags, traderLifecycle: profile.lifecycle as "probation" | "active" | "elite" | "degraded" }];
       });
       const temporalPairs = detectTemporalBundlePairs(eligible);
       input.repository.recordWalletBundlePairs?.(chain, tokenAddress, temporalPairs);
