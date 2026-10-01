@@ -140,3 +140,32 @@ runs the narrow migration and verifies the resulting table. Full verification:
 744 unit tests, type checks, build, package imports, boundaries, and two browser
 end-to-end tests passed. Initialization ordering reduces the observed startup
 race; it does not prove that every possible SQLite contention is eliminated.
+
+### Verified release: f3226d6-execution-migration
+
+The follow-up release was deployed using the explicit execution-basis migration
+command. All six services were active with NRestarts=0 at the acceptance
+checkpoint. The resulting table columns were verified. Every service retained
+ADDRESS_RADAR_GATEWAY_DELIVERY_ENABLED=false. Available root disk space was
+3,058,356,224 bytes at the final disk checkpoint.
+
+Production collector persistence produced 105 provenance-bearing observations:
+18 nominal stablecoin estimates, 85 awaiting swap confirmation, and two lacking
+supported quote valuation. The 18 estimates comprised eight buys and ten sells;
+all 18 were projected and all passed the amount/token-quantity/entry-price
+consistency check. None carried current market capitalization as historical
+execution capitalization. Source-ledger enrichment also contained 105
+execution-basis records. The sampled five-minute journal window had zero
+missing execution-basis table errors and zero SQLite lock messages.
+
+A separate read-only replay fetched two genuine historical Solana transactions
+from RPC. One remained unvalued without a supported historical quote. The other
+correctly derived amountUsd=300 and priceUsd=0.00018074194980316943 from its
+stablecoin spend and token receipt. The replay persisted nothing and delivered
+no signals. This verifies a genuine execution sample, not a simulated trade.
+
+Unrecognized swap evidence and missing native-asset historical valuation remain
+coverage limitations. These observations must not be silently counted as fully
+valued trades, successful early-buyer recovery, or complete candidate coverage.
+Consumer-specific range coverage, historical repair, and the remaining phases
+of the development plan are not accepted as completed by this checkpoint.
