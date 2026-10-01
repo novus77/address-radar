@@ -43,6 +43,7 @@ export interface PurchaseOpportunity {
   readonly inCurrentWindow: boolean;
   readonly rangeCovered: boolean;
   readonly maximumMultiple: number | null;
+  readonly maximumEvidence: OpportunityPeakEvidence | null;
   readonly status: OpportunityStatus;
   readonly reasonCode: string;
 }
@@ -127,6 +128,7 @@ export function evaluateTraderOpportunities(input: {
 }
 
 function evaluatePurchase(purchase: OpportunityPurchase, asOf: number): PurchaseOpportunity {
+  let maximumEvidence: OpportunityPeakEvidence | null = null;
   const end = purchase.boughtAt + OPPORTUNITY_WINDOW_MS;
   const observedUntil = Math.min(end, asOf);
   const base = {
@@ -138,7 +140,7 @@ function evaluatePurchase(purchase: OpportunityPurchase, asOf: number): Purchase
     inCurrentWindow: purchase.boughtAt >= asOf - OPPORTUNITY_WINDOW_MS && purchase.boughtAt <= asOf,
   };
   const result = (status: OpportunityStatus, reasonCode: string, maximumMultiple: number | null = null, rangeCovered = false): PurchaseOpportunity =>
-    Object.freeze({ ...base, status, reasonCode, maximumMultiple, rangeCovered });
+    Object.freeze({ ...base, status, reasonCode, maximumMultiple, maximumEvidence, rangeCovered });
   if (!purchase.purchaseId.trim() || !purchase.chain.trim() || !purchase.tokenAddress.trim()
     || !validTime(purchase.boughtAt) || !validTime(end) || purchase.boughtAt > asOf
     || !validTime(purchase.collectedAt ?? purchase.boughtAt) || (purchase.collectedAt ?? purchase.boughtAt) > asOf) {
@@ -151,14 +153,17 @@ function evaluatePurchase(purchase: OpportunityPurchase, asOf: number): Purchase
   if (purchase.entryPriceUsd === null || !Number.isFinite(purchase.entryPriceUsd) || purchase.entryPriceUsd <= 0) {
     return result("awaiting_data", "entry_price_missing");
   }
-  const multiples = purchase.observations.flatMap(observation => {
+  const evidenceCandidates: OpportunityPeakEvidence[] = purchase.observations.flatMap(observation => {
     if (!validTime(observation.observedAt) || observation.observedAt < purchase.boughtAt
       || observation.observedAt > observedUntil || !observation.source.trim()
       || !validTime(observation.collectedAt ?? observation.observedAt)
       || (observation.collectedAt ?? observation.observedAt) > asOf
       || !Number.isFinite(observation.priceUsd) || observation.priceUsd <= 0) return [];
     const multiple = observation.priceUsd / purchase.entryPriceUsd!;
-    return Number.isFinite(multiple) ? [multiple] : [];
+    return Number.isFinite(multiple) ? [{
+      from: purchase.boughtAt, to: observation.observedAt, maximumMultiple: multiple,
+      source: observation.source, computedAt: observation.collectedAt ?? asOf,
+    }] : [];
   });
   for (const evidence of purchase.peakEvidence ?? []) {
     if (validTime(evidence.from) && validTime(evidence.to) && validTime(evidence.computedAt)
@@ -166,10 +171,13 @@ function evaluatePurchase(purchase: OpportunityPurchase, asOf: number): Purchase
       && evidence.to <= observedUntil && evidence.computedAt >= evidence.to
       && evidence.computedAt <= asOf && evidence.source.trim()
       && Number.isFinite(evidence.maximumMultiple) && evidence.maximumMultiple > 0) {
-      multiples.push(evidence.maximumMultiple);
+      evidenceCandidates.push(evidence);
     }
   }
-  const maximumMultiple = multiples.length === 0 ? null : multiples.reduce((max, multiple) => Math.max(max, multiple), 0);
+  for (const evidence of evidenceCandidates) {
+    if (!maximumEvidence || evidence.maximumMultiple > maximumEvidence.maximumMultiple) maximumEvidence = evidence;
+  }
+  const maximumMultiple = maximumEvidence?.maximumMultiple ?? null;
   const rangeCovered = coversRange(purchase.coverage ?? [], purchase.boughtAt, observedUntil, asOf);
   if ((maximumMultiple ?? 0) >= 3) return result("hit", "verified_opportunity", maximumMultiple, rangeCovered);
   if (maximumMultiple === null || !rangeCovered) return result("awaiting_data", "market_range_missing", maximumMultiple);

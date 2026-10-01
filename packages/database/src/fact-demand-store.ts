@@ -37,11 +37,15 @@ export function createFactDemandStore(database: DatabaseSync) {
         if (current && ["consumerId", "purchaseId", "tokenId", "strategyVersion", "purpose", "requiredFrom"].some(key =>
           current[key as keyof ConsumerFactDemand] !== input[key as keyof ConsumerFactDemand])) throw new Error("Fact demand identity conflict");
         if (current && input.evaluatedAt < current.evaluatedAt) return current;
-        const proof = satisfiesFactDemand(input) ? input.proof
-          : current && satisfiesFactDemand(input, current.proof) ? current.proof : null;
+        const incomingSatisfied = satisfiesFactDemand(input);
+        const currentSatisfied = current !== null && satisfiesFactDemand(input, current.proof);
+        const preserveStronger = currentSatisfied && input.purpose === "positive_hit"
+          && (!incomingSatisfied || current!.proof!.maximumMultiple! >= input.proof!.maximumMultiple!);
+        const proof = preserveStronger ? current!.proof
+          : incomingSatisfied ? input.proof : currentSatisfied ? current!.proof : null;
         const value: PersistedFactDemand = Object.freeze({ ...input, proof,
           status: proof ? "satisfied" : "pending",
-          reasonCode: proof && !satisfiesFactDemand(input) ? current!.reasonCode : input.reasonCode,
+          reasonCode: proof && (preserveStronger || !incomingSatisfied) ? current!.reasonCode : input.reasonCode,
         });
         database.prepare(`INSERT INTO consumer_fact_demands(demand_id,consumer_id,purchase_id,token_id,strategy_version,purpose,
           required_from,required_to,evaluated_at,status,reason_code,payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)

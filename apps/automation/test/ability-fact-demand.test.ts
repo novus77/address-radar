@@ -19,6 +19,9 @@ describe("live ability coverage demands", () => {
       { purpose: "complete_range", status: "pending", tokenId: "solana:MintAbC", requiredFrom: 100, requiredTo: 300 },
       { purpose: "positive_hit", status: "satisfied", tokenId: "solana:MintAbC", requiredFrom: 100, requiredTo: 300 },
     ]);
+    const proof = JSON.parse((db.prepare("SELECT payload FROM consumer_fact_demands WHERE purpose='positive_hit'").get() as { payload: string }).payload).proof;
+    expect(proof).toMatchObject({ from: 100, to: 200, knownAt: 300, maximumMultiple: 5 });
+    expect(proof.reference).toContain("test");
     db.close();
   });
 });

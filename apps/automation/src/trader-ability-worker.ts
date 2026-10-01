@@ -199,15 +199,21 @@ async function evaluateTrader(input: {
       if (purchase.status === "excluded") continue;
       const requiredTo = Math.min(purchase.observationEndAt, input.evaluatedAt);
       for (const purpose of ["positive_hit", "complete_range"] as const) {
-        const proven = purpose === "positive_hit" ? purchase.status === "hit" : purchase.rangeCovered;
+        const evidence = purchase.maximumEvidence;
+        const proven = purpose === "positive_hit" ? purchase.status === "hit" && evidence !== null : purchase.rangeCovered;
         demands.record({
           demandId: stableId("ability-demand", [STRATEGY_VERSION, input.traderId, purchase.purchaseId, purpose]),
           consumerId: input.traderId, purchaseId: purchase.purchaseId, tokenId: purchase.tokenKey,
           strategyVersion: STRATEGY_VERSION, purpose,
           requiredFrom: purchase.boughtAt, requiredTo, evaluatedAt: input.evaluatedAt,
           reasonCode: proven ? "verified_opportunity" : purchase.reasonCode === "verified_opportunity" ? "market_range_missing" : purchase.reasonCode,
-          proof: proven ? { kind: purpose, from: purchase.boughtAt, to: requiredTo,
-            knownAt: input.evaluatedAt, reference: `${opportunities.strategyVersion}:${purchase.purchaseId}`,
+          proof: proven ? { kind: purpose,
+            from: purpose === "positive_hit" ? evidence!.from : purchase.boughtAt,
+            to: purpose === "positive_hit" ? evidence!.to : requiredTo,
+            knownAt: purpose === "positive_hit" ? evidence!.computedAt : input.evaluatedAt,
+            reference: purpose === "positive_hit"
+              ? `${evidence!.source}:${purchase.tokenKey}:${evidence!.from}:${evidence!.to}`
+              : `${opportunities.strategyVersion}:${purchase.purchaseId}`,
             ...(purpose === "positive_hit" ? { maximumMultiple: purchase.maximumMultiple! } : {}),
           } : null,
         });

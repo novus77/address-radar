@@ -19,6 +19,9 @@ describe("consumer fact demands", () => {
     expect(store.get("positive")?.status).toBe("satisfied");
     store.record({ ...base, purpose: "positive_hit", evaluatedAt: 31, reasonCode: "market_range_missing", proof: null });
     expect(store.get("positive")?.status).toBe("satisfied");
+    store.record({ ...base, purpose: "positive_hit", evaluatedAt: 32, reasonCode: "verified_opportunity",
+      proof: { kind: "positive_hit", from: 10, to: 20, knownAt: 25, reference: "buy:lower-peak", maximumMultiple: 3 } });
+    expect(store.get("positive")?.proof?.maximumMultiple).toBe(5);
     db.close();
   });
 

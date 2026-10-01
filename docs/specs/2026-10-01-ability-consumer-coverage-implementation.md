@@ -55,3 +55,17 @@ Do not mark the Phase 1 gate complete until these dependencies and the frozen-de
 - These are per-purchase demands, not new wallets or a complete cohort denominator.
 - No historical business-row rewrite or full-runtime migration was run.
 - The production disk margin is thin; future releases must keep the existing guard.
+
+## Follow-up: source-bounded positive proof
+
+The scorer now retains the actual maximum observation/MFE source and interval. The worker records that interval rather than the entire requested range. For legacy price points without acquisition time, proof verification is conservatively timestamped at the current evaluation; the historical observation time is not invented as an acquisition time.
+
+A later lower peak cannot overwrite a stronger compatible satisfied positive proof. Extended complete-range demands still become pending when the old proof no longer covers the requested interval.
+
+This follow-up does not supply continuous price coverage or retrofit old proof rows. Its production switch is blocked if free disk is below the existing 3 GB guard. Current/rollback releases, business facts, event data and backups must remain intact.
+
+## Follow-up validation and deployment hold
+
+The source-bounded proof and lower-peak regression tests passed, followed by all 747 unit tests, build, typecheck, built-package imports, repository boundaries and 2 desktop/mobile E2E tests. Typecheck must follow updated workspace declaration builds for the new result property.
+
+The last read-only production preflight reported 2,985,975,808 bytes available, below the 3,000,000,000-byte guard. Journals occupy 415.2 MB and syslog approximately 118 MB. Only approximately 7 MB of eligible obsolete generated artifacts were identified, insufficient for safe release headroom. No log, database, event or backup files were removed. The production release remains `ddc0622-ability-demands`; this follow-up is tested but not deployed pending the user's storage remediation selection.
