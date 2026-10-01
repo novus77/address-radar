@@ -304,3 +304,7 @@ Added an optional awaited internal chart page callback and scanner per-page tran
 ### Historical page resume checkpoint
 
 Reuse complete, quality-proven DefiLlama hourly pages before physical request gating. Preserve sparse-page refetch, canonical chain identity, fractional-second bounds, cancellation, existing logical budgets and partial checkpoints. Cache reuse is not new fact production or full extrema certification. See `2026-10-01-historical-page-resume-spac.md`; production acceptance remains required.
+
+### SELECT-only diagnostic queue accounting checkpoint
+
+Align data-flow due task rows with actual pending/retry-scheduled execution eligibility. Report source waits, source blocks, running work and future retries separately; missing schemas remain unavailable rather than zero. This diagnostic increment does not certify recovery closure or alter the scheduler. See `2026-10-01-data-flow-queue-accounting-spac.md`.

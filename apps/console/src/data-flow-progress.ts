@@ -45,10 +45,13 @@ export function readDataFlowProgress(database: DatabaseSync, asOf = Date.now()) 
   const queueAvailable = hasTable("automation_jobs");
   const queue = queueAvailable ? readRows(`
     SELECT job_type AS jobType, status, COUNT(*) AS tasks,
-      SUM(CASE WHEN status IN ('pending','retryable','waiting_source') AND next_attempt_at<=?
+      SUM(CASE WHEN status IN ('pending','retry_scheduled') AND next_attempt_at<=?
         THEN 1 ELSE 0 END) AS dueTasks
     FROM automation_jobs GROUP BY job_type,status ORDER BY job_type,status
   `, asOf) : [];
+  const runnable = queue.reduce((sum, row) => sum + Number(row.dueTasks), 0);
+  const tasksIn = (...statuses: string[]) => queue.filter(row => statuses.includes(String(row.status)))
+    .reduce((sum, row) => sum + Number(row.tasks), 0);
   const factsAvailable = hasTable("token_fact_status");
   const facts = factsAvailable ? readRows(`
     SELECT fact_type AS factType,status,precision,COUNT(*) AS tokenFactRecords
@@ -67,7 +70,14 @@ export function readDataFlowProgress(database: DatabaseSync, asOf = Date.now()) 
     },
     sources: { available: sourceAvailable, unit: "source_event_row", rows: sources },
     walletMonitoring: { available: walletAvailable, unit: "source_event_row", rows: wallets },
-    queue: { available: queueAvailable, unit: "task", rows: queue },
+    queue: {
+      available: queueAvailable, unit: "task", rows: queue,
+      runnable: queueAvailable ? runnable : null,
+      scheduled: queueAvailable ? tasksIn("pending", "retry_scheduled") - runnable : null,
+      running: queueAvailable ? tasksIn("running") : null,
+      waitingSource: queueAvailable ? tasksIn("waiting_source") : null,
+      blockedSource: queueAvailable ? tasksIn("blocked_source") : null,
+    },
     facts: { available: factsAvailable, unit: "token_fact_record", rows: facts },
     limitations: [
       "Local inventory is not an exhaustive external cohort.",
