@@ -110,3 +110,33 @@ root volume, below the existing 3 GB minimum. No production release switch or
 schema migration was performed. Approval was requested for narrowly scoped
 cleanup of obsolete deployment artifacts, preserving databases, event data,
 backups, and the current and rollback releases. Do not bypass the disk gate.
+
+### Production migration and startup follow-up
+
+Limited cleanup removed only generated JavaScript, declarations, and source maps
+from older, non-current, non-rollback releases, reclaiming 74,383,360 bytes.
+Sources, dependency installations, databases, events, backups, the active release,
+and its immediate rollback release were preserved. Audit:
+`/var/log/address-radar/artifact-cleanup-702e237.log`.
+
+Release `702e237-execution-basis` was switched into production. Acceptance found
+that runtime migrations were explicitly disabled, so startup did not create the
+new table. It also caught one wallet-analysis startup failure caused by WAL
+configuration occurring before the connection's busy handler was installed.
+Neither failure is counted as successful acceptance.
+
+An explicit additive transaction created the execution-basis table with services
+stopped, and services were restarted sequentially. Wallet observation row counts
+before and after that transaction were both 120,766. No legacy bulk migration was
+run. Read-only checks then found a real unavailable-basis observation and its
+source-ledger enrichment, proving collection-to-provenance persistence. No live
+estimated execution sample was present at that checkpoint; live estimated-price
+acceptance remains pending, rather than inferred from service health.
+
+The follow-up adds a dedicated, idempotent migration command that only creates
+execution-basis storage, reuses the same SQL in schema initialization, installs
+the busy handler before WAL setup, and adds a deployment script that explicitly
+runs the narrow migration and verifies the resulting table. Full verification:
+744 unit tests, type checks, build, package imports, boundaries, and two browser
+end-to-end tests passed. Initialization ordering reduces the observed startup
+race; it does not prove that every possible SQLite contention is eliminated.

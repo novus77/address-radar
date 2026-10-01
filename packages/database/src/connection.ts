@@ -84,6 +84,8 @@ export function withAddressRadarWriteTransaction<T>(
 }
 
 export function configureAddressRadarDatabase(database: DatabaseSync): DatabaseSync {
+  // WAL setup can contend before the connection has a busy handler.
+  database.exec(`PRAGMA busy_timeout = ${ADDRESS_RADAR_BUSY_TIMEOUT_MS};`);
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = NORMAL;

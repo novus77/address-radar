@@ -1,3 +1,4 @@
+import { WALLET_EXECUTION_BASIS_SCHEMA } from "./wallet-execution-basis-schema.js";
 import type { DatabaseSync } from "node:sqlite";
 
 export function initializeAddressRadarSchema(database: DatabaseSync): void {
@@ -678,14 +679,7 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       projected_at INTEGER,
       PRIMARY KEY (source, event_id)
     );
-    CREATE TABLE IF NOT EXISTS wallet_monitor_execution_bases (
-      source TEXT NOT NULL,
-      event_id TEXT NOT NULL,
-      basis_json TEXT NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (source, event_id),
-      FOREIGN KEY (source, event_id) REFERENCES wallet_monitor_observations(source, event_id)
-    );
+    ${WALLET_EXECUTION_BASIS_SCHEMA}
     CREATE TABLE IF NOT EXISTS wallet_monitor_provider_status (
       source TEXT PRIMARY KEY,
       status TEXT NOT NULL,
