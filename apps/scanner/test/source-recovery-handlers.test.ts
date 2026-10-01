@@ -1,3 +1,4 @@
+import { createFactDemandStore } from "@address-radar/database";
 import { DatabaseSync } from "node:sqlite";
 
 import {
@@ -375,4 +376,31 @@ describe("source recovery handlers", () => {
     expect(ledger.recoveryJob("recovery:market_history:base:0xabc")).toMatchObject({ status: "pending", attemptCount: 0, lastError: null, nextAttemptAt: NOW });
     database.close();
   });
+  it("uses consumer demand ranges for wallet samples without canonical buys", async () => {
+    const database = new DatabaseSync(":memory:");
+    migrateAddressRadarDatabase(database);
+    const demands = createFactDemandStore(database);
+    demands.record({ demandId: "wallet-only", consumerId: "wallet-trader", purchaseId: "wallet-buy",
+      tokenId: "base:0xabc", strategyVersion: "trader-ability-v4-opportunity", purpose: "complete_range",
+      requiredFrom: 1000, requiredTo: 5000, evaluatedAt: NOW, reasonCode: "market_range_missing", proof: null });
+    const ledger = createSourceLedgerStore(database);
+    ledger.enqueueRecoveryJob({ jobId: "recovery:market_history:base:0xabc", jobType: "market_history",
+      chain: "base", subjectKey: "base:0xabc", priority: 25, cursor: null, nextAttemptAt: 0, createdAt: 1 });
+    const handlers = createSourceRecoveryHandlers({ database, ledger, jobs: createAutomationJobStore(database),
+      history: createCandidateHistoryStore(database), facts: createTokenFactStore(database),
+      marketProvider: { async lookup() { return null; } },
+      historicalMarketProvider: {
+        async topPool() { return { network: "base", poolAddress: "pool", tokenAddress: "0xabc", tokenSide: "base", tokenPriceUsd: 2, reserveUsd: 1000, marketCapUsd: null, fdvUsd: null, createdAt: 0 }; },
+        async ohlcv() { return [{ timestamp: 1000, open: 1, high: 2, low: 1, close: 1.5, volumeUsd: 100 }]; },
+        async trades() { return []; },
+      },
+      fomoProducer: { async enqueue() { throw new Error("not used"); } }, now: () => NOW });
+    const runtime = createRecoveryRuntime({ ledger, handlers, clock: { now: () => NOW } });
+    await expect(runtime.runOnce()).resolves.toMatchObject({ outcome: "completed" });
+    expect(database.prepare("SELECT observed_at observedAt,price_usd priceUsd FROM market_observations").all())
+      .toEqual([{ observedAt: 1000, priceUsd: 1.5 }]);
+    expect(demands.get("wallet-only")).toMatchObject({ status: "pending" });
+    database.close();
+  });
+
 });

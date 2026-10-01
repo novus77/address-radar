@@ -1,0 +1,38 @@
+import type { DatabaseSync } from "node:sqlite";
+
+const WINDOW_MS = 30 * 24 * 60 * 60_000;
+const tokenKey = `CASE WHEN token_id LIKE 'solana:%' THEN token_id ELSE LOWER(token_id) END`;
+const eligible = `status = 'pending' AND reason_code = 'market_range_missing'
+  AND purpose IN ('positive_hit', 'complete_range')
+  AND typeof(required_from) = 'integer' AND typeof(required_to) = 'integer'
+  AND typeof(evaluated_at) = 'integer'
+  AND required_from >= 0 AND required_to > required_from
+  AND required_to - required_from <= ${WINDOW_MS}
+  AND required_to <= evaluated_at AND evaluated_at <= ?
+  AND substr(token_id, 1, instr(token_id, ':') - 1)
+    IN ('solana', 'eth', 'bsc', 'base', 'robinhood')
+  AND length(substr(token_id, instr(token_id, ':') + 1)) > 0`;
+
+export function readConsumerMarketHistoryRange(database: DatabaseSync, tokenId: string, asOf: number) {
+  if (!Number.isSafeInteger(asOf) || asOf < 0) return null;
+  const normalized = tokenId.startsWith("solana:") ? tokenId : tokenId.toLowerCase();
+  const row = database.prepare(`SELECT MIN(required_from) fromAt, MAX(required_to) toAt
+    FROM consumer_fact_demands WHERE ${eligible} AND ${tokenKey} = ?`)
+    .get(asOf, normalized) as { fromAt: number | null; toAt: number | null };
+  if (row.fromAt === null || row.toAt === null) return null;
+  return Object.freeze({ fromAt: row.fromAt, toAt: row.toAt });
+}
+
+export function listUnscheduledConsumerHistoryTokens(database: DatabaseSync, asOf: number, limit: number) {
+  if (!Number.isSafeInteger(asOf) || asOf < 0) return [];
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 250) throw new Error("Invalid consumer recovery batch limit");
+  return database.prepare(`WITH needs AS (
+    SELECT ${tokenKey} tokenId, MIN(evaluated_at) oldestEvaluation
+    FROM consumer_fact_demands WHERE ${eligible} GROUP BY ${tokenKey}
+  ) SELECT tokenId FROM needs
+    WHERE NOT EXISTS (SELECT 1 FROM recovery_jobs job
+      WHERE job.job_id = 'recovery:' ||
+        CASE WHEN needs.tokenId LIKE 'robinhood:%' THEN 'fomo_token_history' ELSE 'market_history' END
+        || ':' || needs.tokenId)
+    ORDER BY oldestEvaluation, tokenId LIMIT ?`).all(asOf, limit) as Array<{ tokenId: string }>;
+}

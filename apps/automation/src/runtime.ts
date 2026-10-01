@@ -1,3 +1,4 @@
+import { reconcileConsumerHistoryRecovery } from "./consumer-history-recovery.js";
 import {
   createAutomationJobStore,
   createAutomationOutcomeStore,
@@ -80,6 +81,7 @@ export function createAutomationRuntime(input: {
   const now = input.now ?? Date.now;
   const facts = createTokenFactStore(database);
   const earlyTradeReconciler = createEarlyTradeReconciler({ database, jobs: store, facts, now });
+  const consumerRecoveryLedger = createSourceLedgerStore(database);
   const sourceFactReconciler = createSourceFactRevisionReconciler({ database, jobs: store, now });
   const reconcileMilestoneFacts = () => reconcileMilestoneEarlyTradeFacts({
     database,
@@ -166,6 +168,7 @@ export function createAutomationRuntime(input: {
         reconcileResolvedWalletAutomationJobs(database, plannedAt);
         earlyTradeReconciler.runOnce();
         reconcileMilestoneFacts();
+        reconcileConsumerHistoryRecovery({ database, ledger: consumerRecoveryLedger, now: () => plannedAt });
         sourceFactReconciler.runOnce();
         signalProjectionReconciler.runOnce();
         const decision = queuePolicy.evaluate(store.metrics(plannedAt, 15 * 60_000));
