@@ -31,3 +31,15 @@ Regression cases cover approved wallet-only and explicit FOMO mappings, non-manu
 Targeted tests: 10 passed. Full suite: 706 passed, zero failures. Type checking, build, package import smoke, boundary checks, and desktop/mobile end-to-end tests passed before commit.
 
 Production acceptance must separately verify eligible profile growth, unchanged trust metadata, no suspended/off participation, service stability, continued collection, and actual downstream projection. Profile growth alone does not establish that a new qualifying market signal exists. Upstream missing milestone/price/early-trade facts remain separate blockers.
+
+## Production checkpoint: 2026-10-01 11:37 Asia/Shanghai
+
+Release `f5ff094-manual-trust` was deployed with bounded, audited reconciliation of 108 eligible identities. Signal-enabled profiles increased from 1 to 108: 108 on-chain and 107 explicit FOMO profiles. Identity metadata fingerprints remained unchanged. Suspended/off participation violations and destructive business operations were zero. No duplicate wallet jobs or outbox items were created.
+
+All six services were active with zero restarts. Gateway delivery was confirmed false in all six running processes. The initial post-deployment log sample contained no SQLite lock matches. Disk available was approximately 3.12 decimal GB.
+
+Between the two short acceptance checks, pending signal projections decreased from 456 to 429. There were 28 produced projection outcomes after repair; these are evaluation/projection records, not new user broadcasts. Opportunity snapshots increased from 65 to 78. The initial check recorded one wallet observation collected after repair; no additional wallet observations were recorded in the short follow-up interval.
+
+This checkpoint passes the identity eligibility repair and demonstrates downstream reevaluation consumption. It does **not** establish complete business closure: no fresh legacy-manual buy evidence was observed in the short interval, ready signals remained eight, and candidate evidence still had 1,477 source-blocked tasks. A real qualifying purchase and continued upstream fact recovery remain required for full-chain acceptance.
+
+The production audit at `/var/lib/address-radar/manual-trust-f5ff094-reconciliation.json` preserves pre-repair profile values for field-level rollback. The previous production release and verified pre-deployment database archive remain available; no historical transaction or token data was deleted.
