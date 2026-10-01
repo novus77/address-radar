@@ -183,14 +183,16 @@ export function createSourceRecoveryHandlers(input: {
         saveFact("price_history", job.subjectKey, "available", "derived", "market_observations", observedAt, local[0]![0], local.at(-1)![0]);
         return { reEvaluate: { kind: "token" as const, key: job.subjectKey }, postcondition: factPostcondition("price_history", job.subjectKey) };
       }
-      const usageWindow = String(Math.floor(observedAt / 60_000));
-      const consumeGecko = (): void => consumeBudget({
-        provider: "geckoterminal",
-        usageWindow,
-        units: 1,
-        limit: GECKO_TERMINAL_CALLS_PER_MINUTE,
-        retryAt: (Math.floor(observedAt / 60_000) + 1) * 60_000,
-      });
+      const consumeGecko = (): void => {
+        const budgetAt = now();
+        consumeBudget({
+          provider: "geckoterminal",
+          usageWindow: String(Math.floor(budgetAt / 60_000)),
+          units: 1,
+          limit: GECKO_TERMINAL_CALLS_PER_MINUTE,
+          retryAt: (Math.floor(budgetAt / 60_000) + 1) * 60_000,
+        });
+      };
       const candles = new Map<number, number>();
       let source = "geckoterminal_ohlcv";
       let primaryError: unknown = null;
@@ -231,12 +233,13 @@ export function createSourceRecoveryHandlers(input: {
       saveHistoricalPrices(input.database, token.chain, token.tokenAddress, primaryPrices, source);
       let ordered = mergeHistoricalPrices(local, primaryPrices, range);
       if (!hasEntryCoverage(ordered, range) && input.historicalPriceFallback) {
+        const budgetAt = now();
         consumeBudget({
           provider: "defillama",
-          usageWindow,
+          usageWindow: String(Math.floor(budgetAt / 60_000)),
           units: 1,
           limit: DEFILLAMA_CALLS_PER_MINUTE,
-          retryAt: (Math.floor(observedAt / 60_000) + 1) * 60_000,
+          retryAt: (Math.floor(budgetAt / 60_000) + 1) * 60_000,
         });
         const fallback = await input.historicalPriceFallback.chart(job.chain, token.tokenAddress, range, signal);
         assertActive?.();

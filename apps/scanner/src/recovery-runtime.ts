@@ -142,9 +142,7 @@ export function createRecoveryRuntime(input: {
             if (request.provider === "dune" && job.jobType !== "historical_research") {
               throw new TerminalRecoveryError("dune_scope_violation");
             }
-            const used = input.ledger.budgetUsage(request.provider, request.usageWindow);
-            if (used + request.units > request.limit) throw new ProviderBudgetExhaustedError(request.provider, request.retryAt);
-            input.ledger.addBudgetUsage(request.provider, request.usageWindow, request.units, input.clock.now());
+            if (!input.ledger.tryConsumeBudget(request.provider, request.usageWindow, request.units, request.limit, input.clock.now())) throw new ProviderBudgetExhaustedError(request.provider, request.retryAt);
           },
         });
         const deadline = new Promise<never>((_, reject) => {

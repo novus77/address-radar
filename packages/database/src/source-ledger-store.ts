@@ -125,6 +125,7 @@ export interface SourceLedgerStore {
   saveSourceHealth(health: SourceHealthRecord): void;
   sourceHealth(source: SourceId, chain: DiscoveryChain): SourceHealthRecord | null;
   addBudgetUsage(provider: string, usageWindow: string, units: number, updatedAt: number): void;
+  tryConsumeBudget(provider: string, usageWindow: string, units: number, limit: number, updatedAt: number): boolean;
   budgetUsage(provider: string, usageWindow: string): number;
   enqueueRecoveryJob(job: {
     readonly jobId: string;
@@ -525,6 +526,23 @@ export function createSourceLedgerStore(database: DatabaseSync): SourceLedgerSto
           units_used = provider_budget_usage.units_used + excluded.units_used,
           updated_at = excluded.updated_at
       `).run(provider, usageWindow, units, updatedAt);
+    },
+    tryConsumeBudget(provider, usageWindow, units, limit, updatedAt) {
+      if (!provider.trim() || !usageWindow.trim() || !Number.isFinite(units) || units < 0
+        || !Number.isFinite(limit) || limit < 0 || !Number.isSafeInteger(updatedAt) || updatedAt < 0) {
+        throw new Error("Invalid provider budget reservation");
+      }
+      if (units > limit) return false;
+      return transaction(() => {
+        const result = database.prepare(`INSERT INTO provider_budget_usage(provider, usage_window, units_used, updated_at)
+          VALUES (?, ?, ?, ?) ON CONFLICT(provider, usage_window) DO UPDATE SET
+            units_used = provider_budget_usage.units_used + excluded.units_used,
+            updated_at = excluded.updated_at
+          WHERE provider_budget_usage.units_used >= 0
+            AND provider_budget_usage.units_used <= ? - excluded.units_used`)
+          .run(provider, usageWindow, units, updatedAt, limit);
+        return result.changes > 0;
+      });
     },
     budgetUsage(provider, usageWindow) {
       const row = database.prepare("SELECT units_used AS unitsUsed FROM provider_budget_usage WHERE provider = ? AND usage_window = ?").get(provider, usageWindow) as { unitsUsed: number } | undefined;
