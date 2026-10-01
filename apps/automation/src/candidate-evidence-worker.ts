@@ -480,8 +480,10 @@ async function evaluateToken(input: {
     SELECT milestone_id AS milestoneId, market_cap_usd AS marketCapUsd, crossed_at AS crossedAt
     FROM token_milestone_crossings
     WHERE token_id = ?
+    AND precision != 'unavailable' AND typeof(crossed_at) = 'integer'
+    AND crossed_at BETWEEN 0 AND ? AND market_cap_usd > 0 AND length(trim(source)) > 0
     ORDER BY market_cap_usd, crossed_at
-  `).all(token.tokenId) as unknown as MilestoneRow[];
+  `).all(token.tokenId, input.decisionAt) as unknown as MilestoneRow[];
   if (milestones.length === 0) {
     const historyStore = createCandidateHistoryStore(input.database);
     for (const milestone of CANDIDATE_MILESTONES) {
@@ -495,6 +497,7 @@ async function evaluateToken(input: {
             OR (LOWER(?) <> 'solana' AND LOWER(token_address) = LOWER(?))
           )
           AND market_cap_usd >= ?
+          AND typeof(occurred_at) = 'integer' AND occurred_at BETWEEN 0 AND ?
         ORDER BY occurred_at, event_id
         LIMIT 1
       `).get(
@@ -504,6 +507,7 @@ async function evaluateToken(input: {
         token.chain,
         token.tokenAddress,
         marketCapUsd,
+        input.decisionAt,
       ) as { eventId: string; crossedAt: number } | undefined;
       if (!observed) continue;
       historyStore.saveMilestoneCrossing({
@@ -521,8 +525,10 @@ async function evaluateToken(input: {
       SELECT milestone_id AS milestoneId, market_cap_usd AS marketCapUsd, crossed_at AS crossedAt
       FROM token_milestone_crossings
       WHERE token_id = ?
+      AND precision != 'unavailable' AND typeof(crossed_at) = 'integer'
+      AND crossed_at BETWEEN 0 AND ? AND market_cap_usd > 0 AND length(trim(source)) > 0
       ORDER BY market_cap_usd, crossed_at
-    `).all(token.tokenId) as unknown as MilestoneRow[];
+    `).all(token.tokenId, input.decisionAt) as unknown as MilestoneRow[];
   }
   if (milestones.length === 0) {
     const recoveryJobIds = input.recovery?.plan({

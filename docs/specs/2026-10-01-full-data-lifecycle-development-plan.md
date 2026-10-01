@@ -308,3 +308,7 @@ Reuse complete, quality-proven DefiLlama hourly pages before physical request ga
 ### SELECT-only diagnostic queue accounting checkpoint
 
 Align data-flow due task rows with actual pending/retry-scheduled execution eligibility. Report source waits, source blocks, running work and future retries separately; missing schemas remain unavailable rather than zero. This diagnostic increment does not certify recovery closure or alter the scheduler. See `2026-10-01-data-flow-queue-accounting-spac.md`.
+
+### Price-fact to milestone prerequisite handoff checkpoint
+
+Use retained, known price-history facts alongside snapshot inventory to enter bounded milestone repair. Align candidate/reconciler crossing presence with recovery-postcondition source/time validity; future trade-event market caps cannot create current crossings. Preserve retry timing, terminal decisions, source priorities and scoring. Prices never manufacture supply, market-cap facts or candidate admission. See `2026-10-01-price-milestone-handoff-spac.md`.
