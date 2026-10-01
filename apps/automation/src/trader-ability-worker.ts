@@ -408,7 +408,7 @@ export function enqueueTraderAbilityDispatcher(jobs: AutomationJobStore, now: nu
   });
 }
 
-export function createTraderAbilityWorker(input: {
+function createUnfencedTraderAbilityWorker(input: {
   readonly database: DatabaseSync;
   readonly jobs?: AutomationJobStore;
   readonly now?: () => number;
@@ -460,4 +460,16 @@ export function createTraderAbilityWorker(input: {
       });
     },
   };
+}
+
+import { executeAuditedAbilityRevision } from "./execution-revision-consumers.js";
+
+export function createTraderAbilityWorker(input: Parameters<typeof createUnfencedTraderAbilityWorker>[0]): AutomationHandler {
+  const worker = createUnfencedTraderAbilityWorker(input);
+  return Object.freeze({ ...worker, execute(job: Parameters<AutomationHandler["execute"]>[0], signal: AbortSignal) {
+    const payload = parsePayload(job.payload);
+    if (payload.mode === "dispatch" || !payload.traderId) return worker.execute(job, signal);
+    return executeAuditedAbilityRevision({ database: input.database, traderId: payload.traderId, now: input.now ?? Date.now,
+      execute: () => worker.execute(job, signal) });
+  } });
 }

@@ -1,5 +1,6 @@
 import {
   createWalletCoverageStore,
+  createExecutionRevisionStore,
   createSourceLedgerStore,
   openAddressRadarDatabase,
   openAddressRadarRepository,
@@ -44,7 +45,8 @@ export interface WalletMonitorStore {
 
 export function openWalletMonitorStore(databasePath: string): WalletMonitorStore {
   const database = openAddressRadarDatabase(databasePath);
-  const eventRepository = openAddressRadarRepository(databasePath);
+  const eventRepository = openAddressRadarRepository(databasePath, { database });
+  const revisions = createExecutionRevisionStore(database);
   const sourceLedger = createSourceLedgerStore(database);
   const walletCoverage = createWalletCoverageStore(database);
 
@@ -59,6 +61,8 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
             AND basis.event_id = wallet_monitor_observations.event_id) AS execution_basis_json
       FROM wallet_monitor_observations
       WHERE orphaned_at IS NULL AND projected_at IS NULL
+        AND NOT EXISTS(SELECT 1 FROM trader_execution_heads h WHERE h.source=wallet_monitor_observations.source
+          AND h.event_id=wallet_monitor_observations.event_id AND h.projection_state='review_required')
       ORDER BY occurred_at, source, event_id
       LIMIT 500
     `).all() as WalletMonitorObservationRow[];
@@ -71,6 +75,8 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
     for (const row of rows) {
       if (!hasIdentity.get(row.account_id, row.entity_id)) continue;
       const event = toTraderEvent(row);
+      const completed = transaction(() => {
+      if (!revisions.matches(event, row.source, row.execution_basis_json)) return false;
       const sourceWrite = sourceLedger.saveObservation(sourceObservationForTraderEvent(event, "rpc", {
         walletAddress: row.wallet_address,
         sourceReference: row.source_reference,
@@ -79,13 +85,12 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
         ...(row.source_block_number === null ? {} : { sourceBlockNumber: row.source_block_number }),
         ...(row.source_block_hash === null ? {} : { sourceBlockHash: row.source_block_hash }),
       }));
-      if (sourceWrite.status === "conflict") continue;
+      if (sourceWrite.status === "conflict") return false;
       eventRepository.insertTraderEvent(event);
-      database.prepare(`
-        UPDATE wallet_monitor_observations SET projected_at = ?
-        WHERE source = ? AND event_id = ? AND orphaned_at IS NULL
-      `).run(projectedAt, row.source, row.event_id);
-      projected += 1;
+      const applied = revisions.apply(event, row.source, row.execution_basis_json, projectedAt);
+      return applied === "applied" || applied === "legacy";
+      });
+      if (completed) projected += 1;
     }
     return projected;
   };
@@ -131,7 +136,8 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
             source_reference = excluded.source_reference,
             source_block_number = excluded.source_block_number,
             source_block_hash = excluded.source_block_hash,
-            orphaned_at = NULL
+            orphaned_at = NULL,
+            projected_at = NULL
           WHERE wallet_monitor_observations.chain_family IS NOT excluded.chain_family
             OR wallet_monitor_observations.chain IS NOT excluded.chain
             OR wallet_monitor_observations.wallet_address IS NOT excluded.wallet_address
@@ -148,7 +154,9 @@ export function openWalletMonitorStore(databasePath: string): WalletMonitorStore
             OR wallet_monitor_observations.source_block_hash IS NOT excluded.source_block_hash
             OR wallet_monitor_observations.orphaned_at IS NOT NULL
         `);
-        for (const observation of observations) {
+        for (const incoming of observations) {
+          const observation = revisions.stage(source, incoming, updatedAt);
+          if (!observation) continue;
           inserted += Number(insert.run(
             source,
             observation.eventId,

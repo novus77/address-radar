@@ -1,3 +1,4 @@
+import { executionRevisionForDemand } from "./execution-revision-store.js";
 import { initializeConsumerHistoryRecoverySchema } from "./consumer-history-range-store.js";
 import { initializeConsumerHistoryWakeupSchema } from "./consumer-history-wakeup-store.js";
 import type { DatabaseSync } from "node:sqlite";
@@ -32,6 +33,15 @@ export function createFactDemandStore(database: DatabaseSync) {
   return Object.freeze({
     get,
     record(input: ConsumerFactDemand): PersistedFactDemand {
+      const auditedRevision = executionRevisionForDemand(input.consumerId, input.purchaseId);
+      if (auditedRevision !== null) {
+        if ((input.executionRevision !== undefined && input.executionRevision !== auditedRevision)
+          || (input.proof?.executionRevision !== undefined && input.proof.executionRevision !== auditedRevision)) {
+          throw new Error("Execution revision context conflict");
+        }
+        input = { ...input, executionRevision: auditedRevision,
+          proof: input.proof ? { ...input.proof, executionRevision: auditedRevision } : null };
+      }
       const executionRevision = input.executionRevision ?? 0;
       if (!Number.isSafeInteger(executionRevision) || executionRevision < 0) {
         throw new Error("Execution revision must be a non-negative safe integer");

@@ -115,6 +115,8 @@ export function createSignalProjectionReconciler(input: {
         SELECT e.chain, e.token_address AS tokenAddress,
           e.chain || ':' || e.token_address AS tokenId,
           COUNT(DISTINCT e.event_id) AS evidenceCount,
+          SUM(COALESCE((SELECT SUM(h.revision) FROM trader_execution_heads h
+            WHERE h.event_id=e.event_id AND h.projection_state='applied'),0)) AS executionRevisionTotal,
           MAX(e.occurred_at) AS evidenceAt,
           MAX(COALESCE((
             SELECT MAX(a.as_of) FROM trader_ability_snapshots a
@@ -138,6 +140,7 @@ export function createSignalProjectionReconciler(input: {
         tokenAddress: string;
         tokenId: string;
         evidenceCount: number;
+        executionRevisionTotal: number;
         evidenceAt: number;
         abilityAt: number;
         admissionAt: number;
@@ -159,7 +162,8 @@ export function createSignalProjectionReconciler(input: {
       `);
       let changed = 0;
       for (const row of rows) {
-        const fingerprint = [row.evidenceCount, row.evidenceAt, row.abilityAt, row.admissionAt, row.entityAt].join(":");
+        const fingerprint = [row.evidenceCount, row.evidenceAt, row.abilityAt, row.admissionAt, row.entityAt,
+          ...(row.executionRevisionTotal > 0 ? [`execution:${row.executionRevisionTotal}`] : [])].join(":");
         changed += Number(upsert.run(row.tokenId, row.chain, row.tokenAddress, fingerprint, at).changes);
       }
       const exhausted = rows.length < SCAN_BATCH_SIZE;

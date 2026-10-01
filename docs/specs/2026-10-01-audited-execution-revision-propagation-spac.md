@@ -86,3 +86,18 @@ This slice only supplies the consumer-side fence. Producers still must derive th
 revision from audited real execution records and propagate it through requests and
 proofs. It does not manufacture a revision from a market quote, replay old data, alter
 admission thresholds, or claim that the full revision handoff is wired up.
+
+
+## Audited execution producer and ability-consumer implementation boundary
+
+This slice uses a borrowed repository connection so the wallet observation, source ledger, canonical projection, execution audit, and durable revision requests share one SQLite transaction. A repository only closes a connection it owns. Original source payloads are retained; derived economic fields may change only after the wallet event and real execution basis match. Older observations, identity changes, basis downgrades, malformed bases, and conflicting FOMO counterparts are rejected or quarantined.
+
+Four additive tables hold execution heads, immutable revision history, deduplicated conflicts, and consumer requests. The applier establishes a missing head only after matching the persisted wallet event. Replaying unchanged economics does not increment a revision. Ordinary duplicate trader-event inserts cannot overwrite entry-price history.
+
+Ability evaluation runs against an audited execution-version snapshot and records that version on fact demands and proofs. Its successful recomputation acknowledgment is distinct from a positive opportunity proof, complete historical coverage, or stable candidate admission. Pending consumer work respects existing task quotas and active-job deduplication. Applied execution versions enter the signal fingerprint without invalidating all legacy tokens.
+
+The candidate-evidence, event-projection, token-aggregation, and signal-projection acknowledgments remain explicit pending gates in this slice. Dispatching a request is not proof that the consumer used the revised execution basis. Candidate evaluation must first consume the corrected transaction entry and a bounded post-entry history range. Reorganization invalidation, bounded legacy repair, full per-consumer acknowledgments, and end-to-end production coverage remain later work. Do not report this slice as completion of the full lifecycle plan.
+
+### Deployment controls
+
+Premigrate the four additive tables before switching a release because production runtime migrations are disabled. Take a consistent backup without violating the disk safety floor. Do not rewrite legacy observations in bulk, merge identities, change scoring thresholds, or enable Gateway delivery. Switch only after targeted tests, the complete suite, type checking, build/import checks, boundary checks, and browser regression tests pass. Acceptance must measure actual revision application and downstream proof versions, not only service health or job completion.

@@ -157,3 +157,5 @@ export { listConsumerHistoryRangeRechecks } from "./consumer-history-recovery.js
 export {
   initializeConsumerHistoryRecoverySchema,hasConsumerHistoryRequestCoverage,reconsiderConsumerHistoryRecovery,
 } from "./consumer-history-range-store.js";
+
+export { initializeExecutionRevisionSchema, EXECUTION_REVISION_SCHEMA_SQL, createExecutionRevisionStore, withExecutionRevisionContext, executionRevisionForDemand } from "./execution-revision-store.js";

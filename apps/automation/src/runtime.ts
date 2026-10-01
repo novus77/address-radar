@@ -1,3 +1,4 @@
+import { reconcileExecutionRevisionRequests } from "./execution-revision-consumers.js";
 import { reconcileConsumerHistoryRanges } from "./consumer-history-ranges.js";
 import { reconcileConsumerHistoryWakeups } from "./consumer-history-wakeup.js";
 import { reconcileConsumerHistoryRecovery } from "./consumer-history-recovery.js";
@@ -175,6 +176,7 @@ export function createAutomationRuntime(input: {
         reconcileConsumerHistoryWakeups({ database, jobs: store, now: () => plannedAt });
         sourceFactReconciler.runOnce();
         signalProjectionReconciler.runOnce();
+        reconcileExecutionRevisionRequests({ database, jobs: store, now: () => plannedAt });
         const decision = queuePolicy.evaluate(store.metrics(plannedAt, 15 * 60_000));
         if (decision.admitHistorical) {
           planner.seed(plannedAt);

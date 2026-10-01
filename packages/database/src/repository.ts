@@ -246,8 +246,9 @@ const toSignalOutboxRecord = (row: Record<string, unknown>): SignalOutboxRecord 
   createdAt: row.created_at as number,
 });
 
-export function openAddressRadarRepository(databasePath: string): AddressRadarRepository {
-  const database = openAddressRadarDatabase(databasePath);
+export function openAddressRadarRepository(databasePath: string, options: { readonly database?: ReturnType<typeof openAddressRadarDatabase> } = {}): AddressRadarRepository {
+  const database = options.database ?? openAddressRadarDatabase(databasePath);
+  const ownsDatabase = options.database === undefined;
   migrateAddressRadarDatabase(database);
 
   const transaction = <T>(operation: () => T): T => {
@@ -751,7 +752,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
           occurred_at, collected_at, source
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(event.eventId, event.accountId, event.entityId, event.chain, event.tokenAddress, event.side, event.amountUsd, event.priceUsd, event.marketCapUsd, event.tokenAgeMs, event.occurredAt, event.collectedAt, event.source);
-      if (event.priceUsd !== null && event.priceUsd > 0) {
+      if (result.changes === 1 && event.priceUsd !== null && event.priceUsd > 0) {
         database.prepare(`
           INSERT INTO market_observations(chain, token_address, observed_at, price_usd, source)
           VALUES (?, ?, ?, ?, ?)
@@ -2210,7 +2211,7 @@ export function openAddressRadarRepository(databasePath: string): AddressRadarRe
     },
 
     close() {
-      database.close();
+      if (ownsDatabase) database.close();
     },
   };
   return Object.freeze(repository);
