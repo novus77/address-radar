@@ -45,3 +45,13 @@ Run targeted database and actual-worker tests, then the complete unit suite, typ
 5. Expose demand gaps and denominators in read-only diagnostics and the console.
 
 Do not mark the Phase 1 gate complete until these dependencies and the frozen-denominator work are verified.
+
+## Verified checkpoint: ddc0622
+
+- 747 unit tests, typecheck, build, built-package imports, boundaries, and 2 desktop/mobile E2E tests passed.
+- Production release: `/opt/address-radar/releases/ddc0622-ability-demands`.
+- Six services active with zero restarts; delivery disabled in every process.
+- Additive schema verified; first snapshot had no demands, subsequent natural worker execution produced 8,467 pending complete-range demands, 3,482 satisfied positive-hit demands and 4,985 pending positive-hit demands.
+- These are per-purchase demands, not new wallets or a complete cohort denominator.
+- No historical business-row rewrite or full-runtime migration was run.
+- The production disk margin is thin; future releases must keep the existing guard.
