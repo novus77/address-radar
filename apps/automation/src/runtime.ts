@@ -1,3 +1,4 @@
+import { reconcileConsumerHistoryRanges } from "./consumer-history-ranges.js";
 import { reconcileConsumerHistoryWakeups } from "./consumer-history-wakeup.js";
 import { reconcileConsumerHistoryRecovery } from "./consumer-history-recovery.js";
 import {
@@ -170,6 +171,7 @@ export function createAutomationRuntime(input: {
         earlyTradeReconciler.runOnce();
         reconcileMilestoneFacts();
         reconcileConsumerHistoryRecovery({ database, ledger: consumerRecoveryLedger, now: () => plannedAt });
+        reconcileConsumerHistoryRanges({ database, now: () => plannedAt });
         reconcileConsumerHistoryWakeups({ database, jobs: store, now: () => plannedAt });
         sourceFactReconciler.runOnce();
         signalProjectionReconciler.runOnce();

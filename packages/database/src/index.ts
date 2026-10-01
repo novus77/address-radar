@@ -153,3 +153,7 @@ export {
   initializeConsumerHistoryWakeupSchema, consumerHistoryFingerprint,
   recordConsumerHistoryObservation, recordConsumerHistoryDispatch,
 } from "./consumer-history-wakeup-store.js";
+export { listConsumerHistoryRangeRechecks } from "./consumer-history-recovery.js";
+export {
+  initializeConsumerHistoryRecoverySchema,hasConsumerHistoryRequestCoverage,reconsiderConsumerHistoryRecovery,
+} from "./consumer-history-range-store.js";

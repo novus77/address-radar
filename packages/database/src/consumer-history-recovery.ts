@@ -49,3 +49,19 @@ export function listConsumerHistoryWakeupNeeds(database: DatabaseSync, asOf: num
     ORDER BY COALESCE(receipt.checked_at,-1),needs.consumerId,needs.tokenId LIMIT ?`)
     .all(asOf,limit) as Array<{ consumerId: string; tokenId: string; fromAt: number; toAt: number; dispatchedFingerprint: string | null }>;
 }
+
+export function listConsumerHistoryRangeRechecks(database: DatabaseSync, asOf: number, limit: number) {
+  if (!Number.isSafeInteger(asOf) || asOf < 0) return [];
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 250) throw new Error("Invalid consumer range batch limit");
+  return database.prepare(`WITH needs AS (
+    SELECT ${tokenKey} tokenId,MIN(required_from) fromAt,MAX(required_to) toAt
+    FROM consumer_fact_demands WHERE ${eligible} GROUP BY ${tokenKey}
+  ) SELECT needs.*,job.job_id jobId,job.status,job.updated_at updatedAt FROM needs
+    JOIN recovery_jobs job ON job.job_id='recovery:'||
+      CASE WHEN needs.tokenId LIKE 'robinhood:%' THEN 'fomo_token_history' ELSE 'market_history' END||':'||needs.tokenId
+    LEFT JOIN consumer_history_recovery_requests receipt ON receipt.job_id=job.job_id
+    WHERE (job.status='completed' OR job.status='dead_letter' AND job.last_error='historical_market_range_unavailable')
+      AND (receipt.next_check_at IS NULL OR receipt.next_check_at<=?)
+    ORDER BY COALESCE(receipt.checked_at,-1),job.updated_at,needs.tokenId LIMIT ?`)
+    .all(asOf,asOf,limit) as Array<{ tokenId: string; fromAt: number; toAt: number; jobId: string; status: string; updatedAt: number }>;
+}
