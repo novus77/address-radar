@@ -10,19 +10,25 @@ export function createFomoBrowserCollector(input: { readonly endpoint: string; r
   input.inbox.startSession(sessionId,Date.now());
   const collector=createFomoLiveCollector({targets:()=>input.registry.fomoAccounts!(),inbox:input.inbox});
   const observer=createFomoCdpObserver({endpoint:input.endpoint,onActivity:body=>{collector.receive(body);}});
+  let lastConnectionError: "cdp_unavailable" | "cdp_not_attached" | null = null;
+  let consecutiveConnectionFailures = 0;
   return Object.freeze({
     name:collector.name,
     async collect() {
+      let connected = false;
       try {
-        const connected=await observer.refresh()>0;
-        input.inbox.connection(sessionId,connected,Date.now());collector.setConnected(connected);
-      } catch(error) {
-        input.inbox.connection(sessionId,false,Date.now());collector.setConnected(false);throw error;
+        connected = await observer.refresh() > 0;
+        lastConnectionError = connected ? null : "cdp_not_attached";
+      } catch {
+        lastConnectionError = "cdp_unavailable";
       }
+      consecutiveConnectionFailures = connected ? 0 : consecutiveConnectionFailures + 1;
+      input.inbox.connection(sessionId,connected,Date.now());
+      collector.setConnected(connected);
       return collector.collect();
     },
 
-    diagnostics:collector.diagnostics,
+    diagnostics: () => Object.freeze({ ...collector.diagnostics(), lastConnectionError, consecutiveConnectionFailures }),
     close() {observer.close();input.inbox.endSession(sessionId,Date.now());},
   });
 }
