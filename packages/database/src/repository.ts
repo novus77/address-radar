@@ -1,3 +1,4 @@
+import { TRUSTED_ACCOUNT_WALLET_SQL, TRUSTED_FOMO_ACCOUNT_SQL } from "./identity-trust.js";
 import { randomUUID } from "node:crypto";
 
 import {
@@ -269,7 +270,7 @@ export function openAddressRadarRepository(databasePath: string, options: { read
   };
 
   const trustedCanonicalWalletSql = "(ew.confidence = 'confirmed' OR (ew.confidence = 'high' AND ew.source = 'legacy:fomolens_manual'))";
-  const trustedAccountWalletSql = "((ea.confidence = 'confirmed' AND w.confidence = 'confirmed') OR (ea.confidence IN ('high', 'confirmed') AND w.confidence = 'high' AND w.source = 'fomolens_manual'))";
+  const trustedAccountWalletSql = TRUSTED_ACCOUNT_WALLET_SQL;
   const trustedMappingSql = `(EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id AND ea.confidence = 'confirmed')
     OR EXISTS(SELECT 1 FROM entity_accounts ea JOIN wallet_identities w ON w.account_id = ea.account_id
       WHERE ea.entity_id = e.entity_id AND ${trustedAccountWalletSql})
@@ -279,9 +280,7 @@ export function openAddressRadarRepository(databasePath: string, options: { read
     const facts = database.prepare(`
       SELECT e.lifecycle, e.manual, e.locked,
         EXISTS(SELECT 1 FROM entity_accounts ea WHERE ea.entity_id = e.entity_id
-          AND ea.source != 'manual_wallet' AND (ea.confidence = 'confirmed' OR EXISTS(
-            SELECT 1 FROM wallet_identities w WHERE w.account_id = ea.account_id AND ${trustedAccountWalletSql}
-          ))) AS hasFomoIdentity,
+          AND ${TRUSTED_FOMO_ACCOUNT_SQL}) AS hasFomoIdentity,
         EXISTS(SELECT 1 FROM trader_monitoring_policy mp WHERE mp.trader_id = e.entity_id
           AND mp.policy = 'off') AS monitoringOff,
         ${trustedMappingSql} AS mapped,

@@ -20,9 +20,9 @@ A monitoring target is not a platform follow, a successful subscription, or proo
 
 ## Phase 1: Eligibility and target registry
 
-Expose FOMO account targets independently of wallet targets. Include an account only when its profile enables monitoring and FOMO monitoring, its trader lifecycle is probation/active/elite/degraded, its account exists, its association is confirmed, monitoring is not explicitly off, and there is no other trader association claiming that account.
+Expose FOMO account targets independently of wallet targets. Include an account only when its profile enables monitoring and FOMO monitoring, its trader lifecycle is probation/active/elite/degraded, its account exists, its association satisfies the existing shared FOMO trust predicate, monitoring is not explicitly off, and there is no other trader association claiming that account.
 
-Conservatively exclude ambiguous ownership; never pick an arbitrary owner or merge entities. Existing wallet-backed legacy FOMO eligibility remains unchanged in aggregation; expanding the new registry to legacy associations requires explicit trust evidence and tests. Return account ID, handle, entity ID and lifecycle. The registry method is an additive optional interface for compatibility with existing custom adapters.
+Conservatively exclude ambiguous ownership; never pick an arbitrary owner or merge entities. Use the same shared predicate as profile synchronization: a confirmed non-wallet-only account association, or an existing association supported by approved legacy manual wallet evidence. An ordinary high-confidence association alone is insufficient. Confidence rows are not upgraded. Regression tests compare registry eligibility with existing profile eligibility. Return account ID, handle, entity ID and lifecycle. The registry method is an additive optional interface for compatibility with existing custom adapters.
 
 ## Phase 2: Browser ownership and subscriptions
 

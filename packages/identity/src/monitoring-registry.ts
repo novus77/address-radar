@@ -1,6 +1,7 @@
 import type { ChainFamily, TraderLifecycle } from "@address-radar/domain";
 import {
   drainResolvedWalletAutomationOutbox,
+  TRUSTED_FOMO_ACCOUNT_SQL,
   migrateAddressRadarDatabase,
   openAddressRadarDatabase,
 } from "@address-radar/database";
@@ -86,7 +87,7 @@ export function openMonitoringRegistry(databasePath: string): MonitoringRegistry
         JOIN entity_accounts ea ON ea.account_id = a.account_id
         JOIN trader_entities e ON e.entity_id = ea.entity_id
         JOIN trader_profiles p ON p.entity_id = e.entity_id
-        WHERE ea.confidence = 'confirmed' AND ea.source != 'manual_wallet'
+        WHERE ${TRUSTED_FOMO_ACCOUNT_SQL}
           AND p.monitoring_enabled = 1 AND p.fomo_monitoring_enabled = 1
           AND e.lifecycle IN ('probation', 'active', 'elite', 'degraded')
           AND NOT EXISTS (

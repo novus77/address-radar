@@ -163,3 +163,4 @@ export { initializeExecutionRevisionSchema, EXECUTION_REVISION_SCHEMA_SQL, creat
 export { EVENT_PROJECTION_EXECUTION_SCHEMA_SQL, initializeEventProjectionExecutionSchema } from "./event-projection-execution-store.js";
 
 export { CANDIDATE_EXECUTION_AUDIT_SCHEMA_SQL } from "./candidate-history-store.js";
+export { TRUSTED_FOMO_ACCOUNT_SQL } from "./identity-trust.js";
