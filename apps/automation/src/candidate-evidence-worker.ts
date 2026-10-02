@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
 import {
+  withAddressRadarWriteTransaction,
   createCandidateHistoryStore,
   createCandidateEvaluationRequestStore,
   createSqliteAddressRadarWritePort,
@@ -18,6 +19,8 @@ import {
 import type { AutomationExecutionResult, AutomationHandler } from "./scheduler.js";
 import type { CandidateSourceRecoveryPlanner } from "./candidate-source-recovery.js";
 import { enqueueTraderAbilityEvaluation } from "./trader-ability-worker.js";
+
+import { candidateExecutionInputs, candidateExecutionBasisValid, candidateExecutionPrices, acknowledgeCandidateExecution } from "./candidate-execution-receipts.js";
 
 const STRATEGY_VERSION = "candidate-evidence-v1";
 const REQUEST_STRATEGY_VERSION = "candidate-evidence-v2";
@@ -180,12 +183,17 @@ function evaluateAndProjectAdmission(input: {
     evidenceType: item.evidenceType as CandidateEvidenceType,
     evidenceAt: item.evidenceAt,
   })), input.decisionAt);
-  const evidenceFingerprint = evidence.map(item => [item.evidenceId, item.evidenceType, item.sourceEventIds]).sort();
+const evidenceFingerprint = evidence.map(item => [item.evidenceId, item.evidenceType, item.sourceEventIds,
+  item.cumulativeBuyUsd, item.weightedEntryMarketCapUsd, item.theoreticalOpportunity]).sort();
+const executionFingerprint = input.database.prepare(`SELECT source,event_id,revision,fingerprint
+  FROM trader_execution_heads WHERE entity_id=? AND projection_state='applied' AND revision>0
+  ORDER BY source,event_id`).all(input.traderId);
   const snapshotId = stableId("candidate-snapshot", [
     STRATEGY_VERSION,
     input.traderId,
     Math.floor(input.decisionAt / DAY_MS),
     evidenceFingerprint,
+    executionFingerprint,
   ]);
   historyStore.saveAdmissionSnapshot({
     snapshotId,
@@ -450,14 +458,16 @@ async function dispatchChanges(input: {
   };
 }
 
-async function evaluateToken(input: {
+function evaluateToken(input: {
   readonly database: DatabaseSync;
   readonly jobs?: AutomationJobStore;
   readonly recovery?: CandidateSourceRecoveryPlanner;
   readonly payload: CandidateEvidencePayload;
   readonly evaluatedAt: number;
   readonly decisionAt: number;
-}): Promise<AutomationExecutionResult> {
+  readonly executionPrices?: ReadonlyMap<string, number>;
+  readonly executionInputs?: ReturnType<typeof candidateExecutionInputs>;
+}): AutomationExecutionResult {
   const token = resolveToken(input.database, input.payload);
   if (!token) {
     const tokenId = input.payload.tokenId ?? `${input.payload.chain ?? "unknown"}:${input.payload.tokenAddress ?? "unknown"}`;
@@ -611,7 +621,11 @@ async function evaluateToken(input: {
   }
 
   let persisted = 0;
+  let deferredTraders = 0;
   for (const [traderId, traderEvents] of eventsByTrader) {
+    let incompletePriceCoverage = false;
+    const auditedInputs = input.executionInputs?.filter(event => event.traderId === traderId && event.side === "buy") ?? [];
+    const evidenceId = stableId("candidate-evidence", [STRATEGY_VERSION, traderId, token.tokenId]);
     let strongest: {
       readonly milestone: MilestoneRow;
       readonly evidenceType: CandidateEvidenceType;
@@ -626,13 +640,13 @@ async function evaluateToken(input: {
       const eligible = traderEvents.filter(event => event.occurredAt <= milestone.crossedAt && (event.amountUsd ?? 0) > 0);
       const cumulativeBuyUsd = eligible.reduce((sum, event) => sum + (event.amountUsd ?? 0), 0);
       if (cumulativeBuyUsd < MINIMUM_CUMULATIVE_BUY_USD) continue;
-      const priced = eligible.map(event => ({ event, price: priceAtOrBefore(prices, event.occurredAt) }))
+      const priced = eligible.map(event => ({ event, price: input.executionPrices?.get(event.canonicalEventId) ?? priceAtOrBefore(prices, event.occurredAt) }))
         .filter((value): value is { event: BuyEventRow; price: number } => value.price !== null && value.price > 0);
-      if (priced.length !== eligible.length) continue;
+      if (priced.length !== eligible.length) { incompletePriceCoverage = true; continue; }
       const weightedEntryPrice = priced.reduce((sum, value) => sum + value.price * (value.event.amountUsd ?? 0), 0) / cumulativeBuyUsd;
       const crossingPrice = priceAtOrBefore(prices, milestone.crossedAt);
       const peakPrice = Math.max(...prices.filter(price => price.observedAt >= priced[0]!.event.occurredAt).map(price => price.priceUsd));
-      if (!crossingPrice || !Number.isFinite(peakPrice) || peakPrice <= 0 || weightedEntryPrice <= 0) continue;
+      if (!crossingPrice || !Number.isFinite(peakPrice) || peakPrice <= 0 || weightedEntryPrice <= 0) { incompletePriceCoverage = true; continue; }
       const opportunityMultiple = peakPrice / weightedEntryPrice;
       const tier = strongestSatisfiedTier(milestone.marketCapUsd, opportunityMultiple);
       if (!tier) continue;
@@ -648,9 +662,15 @@ async function evaluateToken(input: {
       if (!strongest || candidate.rank > strongest.rank) strongest = candidate;
     }
 
+    if (incompletePriceCoverage) {
+      deferredTraders += 1;
+      continue;
+    }
+
     if (strongest) {
+      if (auditedInputs.length > 0) historyStore.archiveExecutionEvidence(evidenceId, "execution_recomputed", JSON.stringify(auditedInputs), input.decisionAt, false);
       const writeResult = writePort.saveCandidateEvidence({
-        evidenceId: stableId("candidate-evidence", [STRATEGY_VERSION, traderId, token.tokenId]),
+        evidenceId,
         traderId,
         tokenId: token.tokenId,
         milestoneId: strongest.milestone.milestoneId,
@@ -666,6 +686,8 @@ async function evaluateToken(input: {
         strategyVersion: STRATEGY_VERSION,
       });
       if (writeResult !== "unchanged") persisted += 1;
+    } else if (auditedInputs.length > 0 && !incompletePriceCoverage) {
+      historyStore.archiveExecutionEvidence(evidenceId, "execution_below_threshold", JSON.stringify(auditedInputs), input.decisionAt, true);
     }
 
     evaluateAndProjectAdmission({
@@ -676,9 +698,35 @@ async function evaluateToken(input: {
     });
   }
 
+if (deferredTraders > 0) {
+  const recoveryJobIds = input.recovery?.plan({
+    reasonCode: "missing_market_history",
+    tokenId: token.tokenId,
+    chain: token.chain,
+    tokenAddress: token.tokenAddress,
+  }).recoveryJobIds ?? [];
   return {
-    status: "completed",
-    diagnostic: `candidate evidence persisted for ${persisted}/${eventsByTrader.size} traders`,
+    status: "waiting_source",
+    retryAt: input.decisionAt + SOURCE_RETRY_MS,
+    diagnostic: `candidate price coverage incomplete for ${deferredTraders}/${eventsByTrader.size} traders`,
+    sourceBlock: {
+      reasonCode: "missing_market_history",
+      context: { tokenId: token.tokenId, evaluatedAt: input.evaluatedAt, deferredTraderCount: deferredTraders },
+      recoveryJobIds,
+    },
+    outcome: {
+      status: "deferred",
+      reasonCode: "missing_market_history",
+      inputCount: eventsByTrader.size,
+      producedCount: persisted,
+      deferredCount: deferredTraders,
+    },
+  };
+}
+
+return {
+  status: "completed",
+  diagnostic: `candidate evidence persisted for ${persisted}/${eventsByTrader.size} traders`,
     outcome: persisted > 0
       ? {
           status: "produced",
@@ -729,19 +777,28 @@ export function createCandidateEvidenceWorker(input: {
         if (!input.jobs) return { status: "terminal", diagnostic: "candidate evidence dispatcher requires a job store" };
         return dispatchChanges({ database: input.database, jobs: input.jobs, cursor: job.cursor, now: now() });
       }
-      const result = await evaluateToken({
-        database: input.database,
-        ...(input.jobs ? { jobs: input.jobs } : {}),
-        ...(input.recovery ? { recovery: input.recovery } : {}),
-        payload,
-        evaluatedAt,
-        decisionAt: now(),
+      return withAddressRadarWriteTransaction(input.database, () => {
+        const token = resolveToken(input.database, payload);
+        const executionInputs = token ? candidateExecutionInputs(input.database, token.tokenId, payload.traderId) : [];
+        if (!candidateExecutionBasisValid(executionInputs)) {
+          return { status: "retryable" as const, diagnostic: "candidate_execution_basis_unavailable",
+            outcome: { status: "deferred" as const, reasonCode: "candidate_execution_basis_unavailable", inputCount: executionInputs.length, producedCount: 0, deferredCount: executionInputs.length } };
+        }
+        const result = evaluateToken({
+          database: input.database,
+          ...(input.jobs ? { jobs: input.jobs } : {}),
+          ...(input.recovery ? { recovery: input.recovery } : {}),
+          payload, evaluatedAt, decisionAt: now(), executionPrices: candidateExecutionPrices(executionInputs), executionInputs,
+        });
+        if (token && result.status === "completed" && (result.outcome?.status === "produced" || result.outcome?.status === "no_output")) {
+          acknowledgeCandidateExecution(input.database, executionInputs, token.tokenId, result.outcome.status, now());
+        }
+        if (input.jobs && payload.requestKey && payload.targetRevision && (result.status === "completed" || result.status === "terminal")) {
+          const completed = requests.complete(payload.requestKey, job.jobId, payload.targetRevision, result.outcome?.status ?? result.status, now());
+          if (completed.needsFollowUp) enqueueRequestedRevision(input.jobs, requests, completed, now());
+        }
+        return result;
       });
-      if (input.jobs && payload.requestKey && payload.targetRevision && (result.status === "completed" || result.status === "terminal")) {
-        const completed = requests.complete(payload.requestKey, job.jobId, payload.targetRevision, result.outcome?.status ?? result.status, now());
-        if (completed.needsFollowUp) enqueueRequestedRevision(input.jobs, requests, completed, now());
-      }
-      return result;
     },
   };
 }

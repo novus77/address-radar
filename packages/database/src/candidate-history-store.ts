@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
 import type {
@@ -8,6 +9,21 @@ import type {
 } from "@address-radar/domain";
 
 import { withAddressRadarWriteTransaction } from "./connection.js";
+
+export const CANDIDATE_EXECUTION_AUDIT_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS candidate_evidence_execution_audits (
+  audit_id TEXT PRIMARY KEY,
+  evidence_id TEXT NOT NULL,
+  trader_id TEXT NOT NULL,
+  token_id TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  evidence_snapshot TEXT NOT NULL,
+  execution_snapshot TEXT NOT NULL,
+  recorded_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS candidate_execution_audits_evidence
+  ON candidate_evidence_execution_audits(evidence_id, recorded_at);
+`;
 
 export type CandidateEvidenceWriteResult = "inserted" | "updated" | "unchanged";
 
@@ -27,6 +43,7 @@ const parseJson = (value: unknown): unknown => {
 };
 
 export function initializeCandidateHistorySchema(database: DatabaseSync): void {
+  database.exec(CANDIDATE_EXECUTION_AUDIT_SCHEMA_SQL);
   database.exec(`
     CREATE TABLE IF NOT EXISTS historical_tokens (
       token_id TEXT PRIMARY KEY,
@@ -245,6 +262,22 @@ export function createCandidateHistoryStore(database: DatabaseSync) {
         strategyVersion: row.strategy_version as string,
       })));
     },
+
+archiveExecutionEvidence(evidenceId: string, reason: "execution_recomputed" | "execution_below_threshold",
+  executionSnapshot: string, recordedAt: number, retire: boolean): boolean {
+  return withAddressRadarWriteTransaction(database, () => {
+    const row = database.prepare("SELECT * FROM candidate_evidence_v3 WHERE evidence_id=?").get(evidenceId);
+    if (!row) return false;
+    const evidenceSnapshot = JSON.stringify(row);
+    const auditId = createHash("sha256").update(JSON.stringify([evidenceId,reason,evidenceSnapshot,executionSnapshot])).digest("hex");
+    database.prepare(`INSERT OR IGNORE INTO candidate_evidence_execution_audits
+      (audit_id,evidence_id,trader_id,token_id,reason,evidence_snapshot,execution_snapshot,recorded_at)
+      VALUES(?,?,?,?,?,?,?,?)`).run(auditId,evidenceId,String(row.trader_id),String(row.token_id),reason,
+        evidenceSnapshot,executionSnapshot,recordedAt);
+    if (retire) database.prepare("DELETE FROM candidate_evidence_v3 WHERE evidence_id=?").run(evidenceId);
+    return true;
+  });
+},
 
     saveEvidence(evidence: CandidateEvidenceV3): CandidateEvidenceWriteResult {
       const existing = database.prepare(`

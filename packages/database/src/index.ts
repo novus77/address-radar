@@ -161,3 +161,5 @@ export {
 export { initializeExecutionRevisionSchema, EXECUTION_REVISION_SCHEMA_SQL, createExecutionRevisionStore, withExecutionRevisionContext, executionRevisionForDemand } from "./execution-revision-store.js";
 
 export { EVENT_PROJECTION_EXECUTION_SCHEMA_SQL, initializeEventProjectionExecutionSchema } from "./event-projection-execution-store.js";
+
+export { CANDIDATE_EXECUTION_AUDIT_SCHEMA_SQL } from "./candidate-history-store.js";

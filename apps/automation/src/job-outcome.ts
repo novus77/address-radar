@@ -14,6 +14,7 @@ export type AutomationOutcomeReasonCode =
   | "provider_unavailable"
   | "manual_resolution_required"
   | "checkpoint_pending"
+  | "candidate_execution_basis_unavailable"
   | "retryable_failure"
   | "terminal_failure";
 

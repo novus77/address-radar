@@ -322,5 +322,100 @@ describe("candidate evidence worker", () => {
       },
     });
     database.close();
-  });
+  });function addAuditedExecution(database: DatabaseSync, amountUsd: number, priceUsd: number) {
+  addTrader(database, "audited");
+  addFomoIdentity(database, "audited", "audit-account", "audit-handle");
+  addToken({ database, tokenId: "solana:audit-token", milestoneMarketCapUsd: 300_000, crossingPrice: 5 });
+  addBuy({ database, eventId: "canonical-audit", traderId: "audited", tokenId: "solana:audit-token", amountUsd });
+  database.prepare(`INSERT INTO trader_events(event_id,account_id,entity_id,chain,token_address,side,amount_usd,
+    price_usd,market_cap_usd,token_age_ms,occurred_at,collected_at,source)
+    VALUES('audit-event','audit-account','audited','solana','audit-token','buy',?,?,NULL,NULL,100,150,'onchain_wallet')`).run(amountUsd,priceUsd);
+database.prepare(`INSERT INTO raw_trader_observations(observation_id,event_id,entity_id,source_family,
+  chain,token_address,side,amount_usd,occurred_at,payload,recorded_at)
+  VALUES('observation:onchain:audit-event','audit-event','audited','onchain','solana','audit-token','buy',?,100,'{}',150)`)
+  .run(amountUsd);
+  database.prepare(`INSERT INTO canonical_trader_event_observations(canonical_event_id,observation_id)
+    VALUES('canonical-audit','observation:onchain:audit-event')`).run();
+  database.prepare(`INSERT INTO trader_execution_heads(source,event_id,entity_id,chain,token_address,revision,fingerprint,last_observed_at,projection_state)
+    VALUES('solana','audit-event','audited','solana','audit-token',1,'audit-1',150,'applied')`).run();
+  database.prepare(`INSERT INTO execution_revision_requests(source,event_id,consumer_type,subject_key,entity_id,token_id,desired_revision,requested_at)
+    VALUES('solana','audit-event','candidate_evidence','solana:audit-token','audited','solana:audit-token',1,150)`).run();
+}
+
+it("uses the audited entry price rather than a stale historical quote and records no-output", async () => {
+  const { database, history, worker } = setup();
+  try {
+    addAuditedExecution(database,60,2);
+    await expect(evaluate(worker,"solana:audit-token")).resolves.toMatchObject({ status: "completed", outcome: { status: "no_output" } });
+    expect(history.evidenceForTrader("audited")).toHaveLength(0);
+    expect(database.prepare("SELECT applied_revision,last_outcome FROM execution_revision_requests").get()).toEqual({ applied_revision: 1,last_outcome: "candidate_no_output" });
+  } finally { database.close(); }
+});
+
+it("acknowledges produced evidence and leaves newer requested revisions pending", async () => {
+  const { database, worker } = setup();
+  try {
+    addAuditedExecution(database,60,1);
+    database.prepare("UPDATE execution_revision_requests SET desired_revision=2").run();
+    await expect(evaluate(worker,"solana:audit-token")).resolves.toMatchObject({ status: "completed", outcome: { status: "produced" } });
+    expect(database.prepare("SELECT applied_revision FROM execution_revision_requests").get()).toEqual({ applied_revision: 0 });
+    database.prepare("UPDATE execution_revision_requests SET desired_revision=1").run();
+    await evaluate(worker,"solana:audit-token");
+    expect(database.prepare("SELECT applied_revision,last_outcome FROM execution_revision_requests").get()).toEqual({ applied_revision: 1,last_outcome: "candidate_no_output" });
+  } finally { database.close(); }
+});
+
+it("does not acknowledge a deferred evaluation or mismatched canonical execution", async () => {
+  const { database, worker } = setup();
+  try {
+    addAuditedExecution(database,60,1);
+    database.prepare("DELETE FROM token_milestone_crossings").run();
+    await expect(evaluate(worker,"solana:audit-token")).resolves.toMatchObject({ status: "waiting_source" });
+    expect(database.prepare("SELECT applied_revision FROM execution_revision_requests").get()).toEqual({ applied_revision: 0 });
+    database.prepare("UPDATE canonical_trader_events SET amount_usd=90").run();
+    await expect(evaluate(worker,"solana:audit-token")).resolves.toMatchObject({ status: "retryable" });
+    expect(database.prepare("SELECT applied_revision FROM execution_revision_requests").get()).toEqual({ applied_revision: 0 });
+  } finally { database.close(); }
+});
+
+it("retires below-threshold evidence with an audit and restores admission after a later valid revision", async () => {
+  const { database, history, worker } = setup();
+  try {
+    addAuditedExecution(database,60,1);
+    await evaluate(worker,"solana:audit-token");
+    expect(history.latestAdmissionSnapshot("audited")?.currentAdmission).toBe(true);
+    database.prepare("UPDATE trader_execution_heads SET revision=2,fingerprint='audit-2'").run();
+    database.prepare("UPDATE trader_events SET price_usd=2 WHERE event_id='audit-event'").run();
+    database.prepare("UPDATE execution_revision_requests SET desired_revision=2").run();
+    await evaluate(worker,"solana:audit-token");
+    expect(history.evidenceForTrader("audited")).toHaveLength(0);
+    expect(history.latestAdmissionSnapshot("audited")?.currentAdmission).toBe(false);
+    expect(database.prepare("SELECT reason FROM candidate_evidence_execution_audits WHERE reason='execution_below_threshold'").get())
+      .toEqual({ reason: "execution_below_threshold" });
+    expect(database.prepare("SELECT count(*) AS n FROM raw_trader_observations").get()).toEqual({ n: 1 });
+    expect(database.prepare("SELECT applied_revision FROM execution_revision_requests").get()).toEqual({ applied_revision: 2 });
+    database.prepare("UPDATE trader_execution_heads SET revision=3,fingerprint='audit-3'").run();
+    database.prepare("UPDATE trader_events SET price_usd=1 WHERE event_id='audit-event'").run();
+    database.prepare("UPDATE execution_revision_requests SET desired_revision=3").run();
+    await evaluate(worker,"solana:audit-token");
+    expect(history.latestAdmissionSnapshot("audited")?.currentAdmission).toBe(true);
+  } finally { database.close(); }
+});
+
+it("preserves old evidence when prices are incomplete rather than treating missing data as failure", async () => {
+  const { database, history, worker } = setup();
+  try {
+    addAuditedExecution(database,60,1);
+    await evaluate(worker,"solana:audit-token");
+    addBuy({ database, eventId: "unpriced-buy",traderId: "audited",tokenId: "solana:audit-token",amountUsd: 60 });
+database.prepare("DELETE FROM market_observations WHERE observed_at=100").run();
+database.prepare("UPDATE trader_execution_heads SET revision=2,fingerprint='audit-2'").run();
+database.prepare("UPDATE execution_revision_requests SET desired_revision=2").run();
+await expect(evaluate(worker,"solana:audit-token")).resolves.toMatchObject({ outcome: { status: "deferred" } });
+expect(database.prepare("SELECT applied_revision FROM execution_revision_requests").get()).toEqual({ applied_revision: 1 });
+    expect(history.evidenceForTrader("audited")).toHaveLength(1);
+    expect(database.prepare("SELECT count(*) AS n FROM candidate_evidence_execution_audits WHERE reason='execution_below_threshold'").get()).toEqual({ n: 0 });
+  } finally { database.close(); }
+});
+
 });
