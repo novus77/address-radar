@@ -13,6 +13,7 @@
     "@address-radar/aggregation": "workspace:*",
     "@address-radar/database": "workspace:*",
     "@address-radar/domain": "workspace:*",
-    "@address-radar/identity": "workspace:*"
+    "@address-radar/identity": "workspace:*",
+    "@address-radar/scoring": "workspace:*"
   }
 }

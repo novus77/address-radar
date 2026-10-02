@@ -1,3 +1,4 @@
+import { readMilestoneAssessments } from "./milestone-assessments.js";
 import { readCurrentOpportunityAbilityProgress } from "./current-opportunity-ability-progress.js";
 import { readDataFlowTrace } from "./data-flow-trace.js";
 import { readDataFlowProgress } from "./data-flow-progress.js";
@@ -638,6 +639,7 @@ export const createAddressConsoleApplication = (databasePath = ":memory:"): Addr
         updatedAt: Date.now(),
       } };
     }
+    if (pathname === "/api/v2/discovery/milestone-assessments") return { status: 200, body: readMilestoneAssessments(database) };
     if (pathname === "/api/v2/discovery/fact-coverage") {
       const now = Date.now();
       const factCounts = rows(`

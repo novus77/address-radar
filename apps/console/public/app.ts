@@ -20,6 +20,7 @@ const state = {
   fomoVerificationQuality: {},
   projectionQuality: {},
   factCoverage: {},
+  milestoneAssessments: {},
   traderFunnel: {},
   recoveryJobs: [],
   automationOverview: {},
@@ -61,10 +62,10 @@ const candidateStatusLabel = value => ({ current_admitted: "当前已准入", aw
 const candidateReasonLabel = value => ({ strong_evidence_in_30d: "30天内命中一条强证据", two_early_tokens_in_30d: "30天内命中两个不同早期代币", only_one_early_token: "30天内仅有一个早期代币", evidence_outside_30d_window: "证据已超出30天窗口", candidate_evidence_missing: "尚未形成候选证据" })[value] || value;
 const sourceStateLabel = value => ({ healthy: "运行正常", degraded: "推进变慢", rate_limited: "等待限流恢复", stale: "数据陈旧", unavailable: "当前不可用", misconfigured: "配置不完整" })[value] || value;
 const recoveryStatusLabel = value => ({ pending: "等待执行", running: "正在执行", failed: "等待重试", completed: "已经完成", dead_letter: "需要人工处理" })[value] || value;
-const automationStatusLabel = value => ({ pending: "等待执行", leased: "已领取", running: "正在执行", waiting_source: "旧版等待数据", blocked_source: "缺少前置数据", retryable: "等待重试", completed: "已经完成", terminal: "需要人工处理", cancelled: "已取消", queued: "已排队", verification_pending: "等待 Fomo 验证", evidence_pending: "等待候选证据", quarantined: "已隔离" })[value] || value;
+const automationStatusLabel = value => ({ pending: "等待执行", leased: "已领取", running: "正在执行", waiting_source: "等待前置数据", blocked_source: "缺少前置数据", retryable: "等待重试", completed: "已经完成", terminal: "需要人工处理", cancelled: "已取消", queued: "已排队", verification_pending: "等待 Fomo 验证", evidence_pending: "等待候选证据", quarantined: "已隔离" })[value] || value;
 const closedLoopStageLabel = value => ({ token_discovery: "代币发现", market_history: "市场历史", milestone_confirmation: "里程碑确认", early_trade_recovery: "早期交易回补", identity_resolution: "身份解析", candidate_evidence: "候选证据", ability_evaluation: "能力评估", candidate_admission: "候选准入", wallet_monitoring: "钱包监控", token_aggregation: "代币聚合", signal_readiness: "信号就绪" })[value] || value;
 const sourceBlockReasonLabel = value => ({ missing_token_identity: "缺少代币身份", missing_market_history: "缺少历史价格", missing_milestone: "缺少市值里程碑", missing_early_trades: "缺少里程碑前买入", missing_wallet_mapping: "缺少钱包身份映射", insufficient_coverage: "历史覆盖不足" })[value] || value;
-const factStatusLabel = value => ({ missing: "尚未采集", queued: "等待采集", collecting: "采集中", partial: "部分可用", available: "已经可用", stale: "需要刷新", terminal_unavailable: "确认不可获得" })[value] || value;
+const factStatusLabel = value => ({ missing: "尚未采集", queued: "等待采集", collecting: "采集中", partial: "部分可用", available: "已经可用", stale: "需要刷新", terminal_unavailable: "当前数据源无法覆盖" })[value] || value;
 const factTypeLabel = value => ({ token_identity: "代币身份", fomo_presence: "Fomo 存在性", market_identity: "交易市场", price_history: "历史价格", supply_history: "供应量历史", milestone_crossings: "市值里程碑", early_trades: "早期交易", trader_attribution: "交易员归因", candidate_evidence: "候选证据", ability_outcomes: "能力结果" })[value] || value;
 
 const traderLabels = trader => {
@@ -311,6 +312,7 @@ const renderMilestones = () => {
 };
 
 const renderSourceOperations = () => {
+  renderMilestoneAssessments();
   const funnelCards = (target, items) => { $(target).innerHTML = items.map(([label, value]) => `<article><span>${escapeHtml(label)}</span><strong>${text(value, 0)}</strong></article>`).join(""); };
   funnelCards("#token-funnel-summary", [["原始代币", state.tokenFunnel.raw], ["身份已解析", state.tokenFunnel.identityResolved], ["市场已补全", state.tokenFunnel.marketResolved], ["Fomo 已确认", state.tokenFunnel.fomoConfirmed], ["里程碑命中", state.tokenFunnel.milestoneObserved], ["早期买家证据", state.tokenFunnel.candidateEvidence], ["进入聚合", state.tokenFunnel.aggregation], ["本地信号合格", state.tokenFunnel.qualifiedSignal]]);
   const fomoQuality = state.fomoVerificationQuality || {};
@@ -462,12 +464,13 @@ const load = async () => {
   });
 
   await loadStage("数据源状态", async () => {
-    const [sourceHealth, sourceCursors, fomoVerificationQuality, projectionQuality, recoveryJobs] = await Promise.all([apiV2("sources/health"), apiV2("sources/cursors"), apiV2("fomo-verification/quality"), apiV2("projections/quality"), apiV2("recovery/jobs")]);
+    const [sourceHealth, sourceCursors, fomoVerificationQuality, projectionQuality, recoveryJobs, milestoneAssessments] = await Promise.all([apiV2("sources/health"), apiV2("sources/cursors"), apiV2("fomo-verification/quality"), apiV2("projections/quality"), apiV2("recovery/jobs"), apiV2("discovery/milestone-assessments")]);
     state.sourceHealth = sourceHealth.items;
     state.sourceCursors = sourceCursors.items;
     state.fomoVerificationQuality = fomoVerificationQuality;
     state.projectionQuality = projectionQuality;
     state.recoveryJobs = recoveryJobs.items;
+    state.milestoneAssessments = milestoneAssessments;
     renderSourceOperations();
   });
 
@@ -706,3 +709,12 @@ $("#recovery-jobs-grid").addEventListener("click", async event => {
 });
 
 void load();
+
+function renderMilestoneAssessments() {
+  const assessment = state.milestoneAssessments || {};
+  const items = assessment.items || [];
+  const labels = { milestone_confirmed: "里程碑已确认", historical_missing: "历史数据待补齐", waiting_confirmation: "等待实时确认", source_unavailable: "当前来源无法覆盖", unverified: "依据不足" };
+  $("#milestone-state-diagnostic").textContent = assessment.diagnosticZh || "等待首次状态核对";
+  $("#milestone-state-summary").innerHTML = Object.entries(labels).map(([key, label]) => `<article><span>${escapeHtml(label)}</span><strong>${text(assessment.counts?.[key], 0)}</strong></article>`).join("");
+  $("#milestone-state-grid").innerHTML = items.length ? `<table class="operator-table"><thead><tr><th>链 / 合约</th><th>里程碑状态</th><th>最近观测</th><th>历史证明</th><th>判断依据</th></tr></thead><tbody>${items.map(item => `<tr><td><strong>${escapeHtml(item.chain)}</strong><small>${escapeHtml(item.tokenId)}</small></td><td>${escapeHtml(item.stateLabel)}</td><td>${item.observedMarketCapUsd == null ? "--" : `${Number(item.observedMarketCapUsd).toLocaleString()} USD`}<small>${time(item.observedAt)}</small></td><td>${item.verifiedMilestoneUsd == null ? "尚无有效证明" : `${Number(item.verifiedMilestoneUsd).toLocaleString()} USD`}<small>${time(item.verifiedCrossedAt)}</small></td><td>${escapeHtml(item.diagnosticZh)}${item.reasonCode ? `<details><summary>技术原因</summary><small>${escapeHtml(item.reasonCode)}</small></details>` : ""}</td></tr>`).join("")}</tbody></table>` : empty("尚无可核对的代币。");
+}
