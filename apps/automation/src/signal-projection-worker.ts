@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 
 import {
   openAddressRadarRepository,
+  withAddressRadarWriteTransaction,
   type AutomationJobStore,
   type AddressRadarRepository,
 } from "@address-radar/database";
@@ -10,6 +11,7 @@ import type { AutomationJob } from "@address-radar/domain";
 import { createTokenSignalService } from "@address-radar/signal-engine";
 
 import type { AutomationExecutionResult, AutomationHandler } from "./scheduler.js";
+import { initializeSignalExecutionReceiptSchema, captureSignalExecutionInputs, acknowledgeSignalExecutionInputs } from "./signal-execution-receipts.js";
 
 const SCAN_ID = "signal-projection-v1";
 const SCAN_BATCH_SIZE = 1_000;
@@ -34,6 +36,7 @@ interface ProjectionPayload {
 }
 
 function initialize(database: DatabaseSync): void {
+  initializeSignalExecutionReceiptSchema(database);
   database.exec(`
     CREATE TABLE IF NOT EXISTS signal_projection_requests (
       token_id TEXT PRIMARY KEY,
@@ -129,7 +132,10 @@ export function createSignalProjectionReconciler(input: {
           MAX(COALESCE((
             SELECT t.updated_at FROM trader_entities t
             WHERE t.entity_id = e.entity_id
-          ), 0)) AS entityAt
+          ), 0)) AS entityAt,
+          MAX(COALESCE((SELECT MAX(p.completed_at) FROM event_projections p
+            WHERE p.event_id=e.event_id AND p.projection_type='address_signal_evidence_v1'
+              AND p.status='completed'),0)) AS projectionAt
         FROM address_signal_evidence e
         WHERE e.chain || ':' || e.token_address > ?
         GROUP BY e.chain, e.token_address
@@ -145,6 +151,7 @@ export function createSignalProjectionReconciler(input: {
         abilityAt: number;
         admissionAt: number;
         entityAt: number;
+        projectionAt: number;
       }>;
       const upsert = input.database.prepare(`
         INSERT INTO signal_projection_requests(
@@ -163,6 +170,7 @@ export function createSignalProjectionReconciler(input: {
       let changed = 0;
       for (const row of rows) {
         const fingerprint = [row.evidenceCount, row.evidenceAt, row.abilityAt, row.admissionAt, row.entityAt,
+          ...(row.projectionAt > 0 ? [`projection:${row.projectionAt}`] : []),
           ...(row.executionRevisionTotal > 0 ? [`execution:${row.executionRevisionTotal}`] : [])].join(":");
         changed += Number(upsert.run(row.tokenId, row.chain, row.tokenAddress, fingerprint, at).changes);
       }
@@ -213,12 +221,27 @@ export function createSignalProjectionWorker(input: {
         payload.tokenAddress,
         at - PROJECTION_WINDOW_MS,
       );
+      const eligible = evidence.filter(item => {
+        const profile = input.repository.traderSignalProfile(item.entityId);
+        const sourceEnabled = item.source === "onchain" ? profile?.onchainMonitoringEnabled : profile?.fomoMonitoringEnabled;
+        return profile?.mapped && profile.monitoringEnabled && sourceEnabled
+          && ["probation", "active", "elite", "degraded"].includes(profile.lifecycle);
+      });
+      const captured = captureSignalExecutionInputs(input.database, payload.tokenId, eligible);
+      if (captured.waiting > 0) return { status: "waiting_source", retryAt: at + 5 * 60_000, diagnostic: "signal execution projection prerequisites unavailable" };
       const result = service.evaluate(payload.chain, payload.tokenAddress, evidence);
-      input.database.prepare(`
-        UPDATE signal_projection_requests
-        SET applied_revision = MAX(applied_revision, ?), applied_at = ?, last_error = NULL
-        WHERE token_id = ?
-      `).run(payload.revision, at, payload.tokenId);
+      if (result.decision.missingConditions.includes("token_lifecycle")) {
+        return { status: "waiting_source", retryAt: at + 5 * 60_000, diagnostic: "signal token lifecycle unavailable" };
+      }
+      withAddressRadarWriteTransaction(input.database, () => {
+        input.database.prepare(`
+          UPDATE signal_projection_requests
+          SET applied_revision = MAX(applied_revision, ?), applied_at = ?, last_error = NULL
+          WHERE token_id = ?
+        `).run(payload.revision, at, payload.tokenId);
+        acknowledgeSignalExecutionInputs(input.database, { tokenId: payload.tokenId, projectionRevision: payload.revision,
+          inputs: captured.inputs, evidence: eligible, action: result.decision.action, completedAt: at });
+      });
       return {
         status: "completed",
         diagnostic: `signal projection ${result.decision.action} with ${evidence.length} evidence rows`,
