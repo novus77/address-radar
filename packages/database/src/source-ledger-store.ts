@@ -582,13 +582,18 @@ export function createSourceLedgerStore(database: DatabaseSync): SourceLedgerSto
           WITH attempts AS (
             SELECT job_type, MAX(updated_at) AS last_attempt_at
             FROM recovery_jobs WHERE attempt_count > 0 GROUP BY job_type
+          ), chain_attempts AS (
+            SELECT job_type, chain, MAX(updated_at) AS last_attempt_at
+            FROM recovery_jobs WHERE attempt_count > 0 GROUP BY job_type, chain
           ), due AS (
             SELECT *, MIN(next_attempt_at) OVER (PARTITION BY job_type) AS type_due_at
             FROM recovery_jobs WHERE status IN ('pending', 'failed') AND next_attempt_at <= ?
           )
           SELECT ready.* FROM due ready
           LEFT JOIN attempts ON attempts.job_type = ready.job_type
+          LEFT JOIN chain_attempts ON chain_attempts.job_type = ready.job_type AND chain_attempts.chain = ready.chain
           ORDER BY COALESCE(attempts.last_attempt_at, -1), ready.type_due_at,
+            COALESCE(chain_attempts.last_attempt_at, -1),
             ready.priority, ready.next_attempt_at, ready.created_at, ready.job_id LIMIT 1
         `).get(now) as Record<string, unknown> | undefined;
         if (!row) return null;

@@ -204,3 +204,35 @@ describe("source ledger store", () => {
   expect(store.claimRecoveryJob(201, 1000)?.jobId).toBe("other");
   database.close();
  });
+
+it("rotates ready chains within one recovery type despite a dominant chain backlog", () => {
+  const database = openAddressRadarDatabase(databasePath());
+  try {
+    migrateAddressRadarDatabase(database);
+    const store = createSourceLedgerStore(database);
+    for (let index = 0; index < 20; index += 1) {
+      store.enqueueRecoveryJob({ jobId: `solana:${index}`, jobType: "historical_research", chain: "solana", subjectKey: `solana:token:${index}`, priority: 1, cursor: null, nextAttemptAt: 1, createdAt: 1 });
+    }
+    for (const chain of ["base", "bsc", "eth", "robinhood"] as const) {
+      store.enqueueRecoveryJob({ jobId: chain, jobType: "historical_research", chain, subjectKey: `${chain}:token`, priority: 60, cursor: null, nextAttemptAt: 100, createdAt: 100 });
+    }
+    const selected = [];
+    for (let turn = 0; turn < 5; turn += 1) selected.push(store.claimRecoveryJob(200 + turn, 1_000)!.chain);
+    expect(selected[0]).toBe("solana");
+    expect(new Set(selected)).toEqual(new Set(["solana", "base", "bsc", "eth", "robinhood"]));
+  } finally { database.close(); }
+});
+
+it("does not bypass a chain retry deadline to improve fairness", () => {
+  const database = openAddressRadarDatabase(databasePath());
+  try {
+    migrateAddressRadarDatabase(database);
+    const store = createSourceLedgerStore(database);
+    for (const [chain, nextAttemptAt] of [["solana", 1], ["base", 500]] as const) {
+      store.enqueueRecoveryJob({ jobId: chain, jobType: "market_history", chain, subjectKey: `${chain}:token`, priority: 25, cursor: null, nextAttemptAt, createdAt: 1 });
+    }
+    expect(store.claimRecoveryJob(200, 1_000)?.chain).toBe("solana");
+    expect(store.claimRecoveryJob(201, 1_000)).toBeNull();
+    expect(store.claimRecoveryJob(500, 1_000)?.chain).toBe("base");
+  } finally { database.close(); }
+});
