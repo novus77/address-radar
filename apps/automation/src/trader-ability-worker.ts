@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { ABILITY_RECOVERY_RESERVED_CAPACITY, DEFAULT_QUEUE_TYPE_POLICIES } from "./queue-policy.js";
 import type { DatabaseSync } from "node:sqlite";
 
 import { createFactDemandStore, withAddressRadarWriteTransaction, type AutomationJobStore } from "@address-radar/database";
@@ -12,7 +13,8 @@ const STRATEGY_VERSION = "trader-ability-v4-opportunity";
 const DAY_MS = 24 * 60 * 60_000;
 const WINDOWS = Object.freeze(["30d"] as const);
 const DISPATCH_BATCH_SIZE = 100;
-const ACTIVE_JOB_HIGH_WATER_MARK = 1_000;
+const ACTIVE_JOB_HIGH_WATER_MARK = DEFAULT_QUEUE_TYPE_POLICIES.ability_evaluation!.highWaterMark
+  - ABILITY_RECOVERY_RESERVED_CAPACITY;
 const BACKPRESSURE_DELAY_MS = 5 * 60_000;
 
 interface AbilityPayload {

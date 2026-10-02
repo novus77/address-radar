@@ -7,6 +7,8 @@ export interface QueueTypePolicy {
   readonly workload: "live" | "historical";
 }
 
+export const ABILITY_RECOVERY_RESERVED_CAPACITY = 100;
+
 export const DEFAULT_QUEUE_TYPE_POLICIES = Object.freeze<Readonly<Record<string, QueueTypePolicy>>>({
   candidate_evidence: Object.freeze({ highWaterMark: 2_000, concurrencyLimit: 2, retryBudget: 8, workload: "live" }),
   ability_evaluation: Object.freeze({ highWaterMark: 1_000, concurrencyLimit: 2, retryBudget: 6, workload: "live" }),

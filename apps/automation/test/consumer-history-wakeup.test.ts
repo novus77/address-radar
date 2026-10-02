@@ -35,6 +35,33 @@ describe("consumer history semantic wakeups", () => {
     database.prepare("UPDATE automation_jobs SET status='completed' WHERE job_id='active-a'").run();
     expect(run()).toMatchObject({ dispatched: 1 });
   });
+  it("retains wakeup obligations while the ability queue is at capacity", () => {
+    const { database, run, price, jobs } = fixture();
+    for (let i = 0; i < 1000; i++) jobs.enqueue({
+      jobId: `capacity-${i}`, idempotencyKey: `capacity-${i}`,
+      lane: "trader_backfill", jobType: "ability_evaluation", subjectKey: `other-${i}`,
+      priority: 76, cursor: null, nextAttemptAt: 1, payload: "{}", createdAt: 1,
+    });
+    price(5);
+    expect(run()).toMatchObject({ dispatched: 0, deferred: 2 });
+    expect(jobs.activeCount("ability_evaluation")).toBe(1000);
+    database.prepare("UPDATE automation_jobs SET status='completed' WHERE job_id='capacity-0'").run();
+    expect(run()).toMatchObject({ dispatched: 1, deferred: 1 });
+    database.prepare("UPDATE automation_jobs SET status='completed' WHERE job_type='ability_evaluation'").run();
+    expect(run()).toMatchObject({ dispatched: 1 });
+    expect(run()).toMatchObject({ dispatched: 0 });
+  });
+  it("does not acknowledge a new history fingerprint against a retryable job", () => {
+    const { database, run, price, jobs } = fixture();
+    jobs.enqueue({ jobId: "retry-a", idempotencyKey: "retry-a", lane: "trader_backfill",
+      jobType: "ability_evaluation", subjectKey: "a", priority: 76, cursor: null,
+      nextAttemptAt: 1, payload: "{}", createdAt: 1 });
+    database.prepare("UPDATE automation_jobs SET status='retryable' WHERE job_id='retry-a'").run();
+    price(5);
+    expect(run()).toMatchObject({ dispatched: 1, deferred: 1 });
+    database.prepare("UPDATE automation_jobs SET status='completed' WHERE job_id='retry-a'").run();
+    expect(run()).toMatchObject({ dispatched: 1 });
+  });
   it("does not wake on missing, future, out-of-range or invalid price facts", () => {
     const { run, price } = fixture();
     price(0); price(5,6000); price(3,999); price(-1,3000);

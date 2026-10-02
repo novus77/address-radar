@@ -104,7 +104,7 @@ describe("trader ability worker", () => {
     }
     const enqueued: unknown[] = [];
     const jobs = {
-      activeCount: () => 999,
+      activeCount: () => 899,
       activeJobForSubject: () => null,
       enqueue: (job: unknown) => enqueued.push(job),
     };

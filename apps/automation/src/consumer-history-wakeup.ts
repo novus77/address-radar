@@ -4,6 +4,7 @@ import {
   recordConsumerHistoryObservation, withAddressRadarWriteTransaction, type AutomationJobStore,
 } from "@address-radar/database";
 import { enqueueTraderAbilityEvaluation } from "./trader-ability-worker.js";
+import { DEFAULT_QUEUE_TYPE_POLICIES } from "./queue-policy.js";
 
 export function reconcileConsumerHistoryWakeups(input: {
   readonly database: DatabaseSync;
@@ -20,10 +21,12 @@ export function reconcileConsumerHistoryWakeups(input: {
     withAddressRadarWriteTransaction(input.database, () => {
       recordConsumerHistoryObservation(input.database,row.consumerId,row.tokenId,fingerprint,at);
       if (fingerprint === null || fingerprint === row.dispatchedFingerprint) return;
-      const active = input.database.prepare(`SELECT 1 FROM automation_jobs WHERE job_type='ability_evaluation'
-        AND subject_key=? AND status IN ('pending','running','retry_scheduled','waiting_source','blocked_source') LIMIT 1`)
-        .get(row.consumerId);
-      if (active) { deferred += 1; return; }
+      const active = input.jobs.activeJobForSubject("ability_evaluation", row.consumerId);
+      const highWaterMark = DEFAULT_QUEUE_TYPE_POLICIES.ability_evaluation!.highWaterMark;
+      if (active || input.jobs.activeCount("ability_evaluation") >= highWaterMark) {
+        deferred += 1;
+        return;
+      }
       enqueueTraderAbilityEvaluation(input.jobs,row.consumerId,at,at,`consumer-history:${row.tokenId}:${fingerprint}`);
       recordConsumerHistoryDispatch(input.database,row.consumerId,row.tokenId,fingerprint,at);
       dispatched += 1;
