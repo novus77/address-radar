@@ -10,3 +10,7 @@ export { FomoTokenLookupConsumer, FomoTokenLookupProducer } from "./token-lookup
 export type { FomoTokenLookupLease, FomoTokenLookupRequest, FomoTokenLookupResult } from "./token-lookup-queue.js";
 export { FomoTokenLookupResultConsumer, FomoTokenLookupResultProducer, parseFomoLookupResult } from "./lookup-result-journal.js";
 export type { FomoTokenLookupResultLease } from "./lookup-result-journal.js";
+export { normalizeFomoLiveActivity } from "./live-activity.js";
+export type { FomoLiveActivity } from "./live-activity.js";
+export { selectFomoTargetActivity } from "./live-target-filter.js";
+export type { FomoActivityTarget } from "./live-target-filter.js";

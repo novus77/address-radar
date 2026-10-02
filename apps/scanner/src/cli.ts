@@ -1,3 +1,4 @@
+import { createFomoBrowserCollector } from "./fomo-browser-collector.js";
 import { addressRadarTokenId } from "@address-radar/domain";
 import {
   createCandidateHistoryStore,
@@ -48,7 +49,11 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
   });
   if (config.recoveryEnabled) reconcileCandidateSourceRecovery({ database: historyDatabase, ledger: sourceLedger });
   const lifecycleResolver = createTokenLifecycleResolver({});
+  const browserCollector = env.ADDRESS_RADAR_FOMO_BROWSER_ENABLED === "true"
+    ? createFomoBrowserCollector({ endpoint: env.ADDRESS_RADAR_FOMO_BROWSER_CDP_ENDPOINT ?? "http://127.0.0.1:9222", registry: monitoringRegistry })
+    : null;
   const collectors = Object.freeze([
+    ...(browserCollector ? [browserCollector] : []),
     ...createConfiguredCollectors({ config, repository, monitoringRegistry }),
     ...(config.projectionReplayEnabled ? [createProjectionReplayCollector({
       repository,
@@ -178,6 +183,7 @@ export async function main(env: Readonly<Record<string, string | undefined>> = p
     await deliveryPolling?.stop();
     await polling.stop();
     await runtime.close();
+    browserCollector?.close();
     repository.close();
     monitoringRegistry.close();
     historyDatabase.close();
