@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import * as databaseExports from "@address-radar/database";
 import { createTraderAbilityWorker, enqueueTraderAbilityEvaluation } from "../src/trader-ability-worker.js";
 
+import { reconcileExecutionRevisionRequests } from "../src/execution-revision-consumers.js";
+
 const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 function setup() {
@@ -47,6 +49,46 @@ describe("audited execution consumer context", () => {
       expect(JSON.parse(proof.payload)).toMatchObject({ executionRevision: 1, status: "satisfied", proof: { executionRevision: 1 } });
       const request = db.prepare("SELECT desired_revision,applied_revision FROM execution_revision_requests WHERE consumer_type='ability_evaluation'").get();
       expect(request).toEqual({ desired_revision: 1, applied_revision: 1 });
+    } finally { db.close(); }
+  });
+});
+
+function requestRevision(db: DatabaseSync, eventId: string, consumer: string, subject: string, requestedAt: number): void {
+  db.prepare(`INSERT INTO execution_revision_requests(
+    source,event_id,consumer_type,subject_key,entity_id,token_id,desired_revision,requested_at
+  ) VALUES('solana',?,?,?,?, 'solana:TokenCase',1,?)`)
+    .run(eventId,consumer,subject,'entity',requestedAt);
+}
+
+describe("execution revision dispatch fairness", () => {
+  it("dispatches candidate revisions behind an older blocked consumer backlog", () => {
+    const { db } = setup();
+    try {
+      const jobs = databaseExports.createAutomationJobStore(db);
+      for (let i=0;i<100;i++) requestRevision(db,`blocked-${i}`,"signal_projection",`solana:blocked-${i}`,1);
+      requestRevision(db,"sig:1","candidate_evidence","solana:TokenCase",2);
+      const result = reconcileExecutionRevisionRequests({ database: db,jobs,now: () => 1_000,limit: 100 });
+      expect(result.examined).toBe(100);
+      expect(result.dispatched).toBe(1);
+      expect(jobs.activeJobForSubject("candidate_evidence","solana:TokenCase")).not.toBeNull();
+      expect(db.prepare("SELECT dispatched_revision,applied_revision FROM execution_revision_requests WHERE consumer_type='candidate_evidence'").get())
+        .toEqual({ dispatched_revision: 1,applied_revision: 0 });
+    } finally { db.close(); }
+  });
+
+  it("skips active ability subjects without starving later subjects or duplicate dispatching", () => {
+    const { db } = setup();
+    try {
+      const jobs = databaseExports.createAutomationJobStore(db);
+      enqueueTraderAbilityEvaluation(jobs,"entity",1_000,1_000,"existing");
+      for (let i=0;i<100;i++) requestRevision(db,`active-${i}`,"ability_evaluation","entity",1);
+      requestRevision(db,"free-event","ability_evaluation","free-trader",2);
+      const result = reconcileExecutionRevisionRequests({ database: db,jobs,now: () => 1_000,limit: 100 });
+      expect(result).toEqual({ examined: 1,dispatched: 1,deferred: 0 });
+      expect(jobs.activeJobForSubject("ability_evaluation","free-trader")).not.toBeNull();
+      expect(reconcileExecutionRevisionRequests({ database: db,jobs,now: () => 1_001,limit: 100 }))
+        .toEqual({ examined: 0,dispatched: 0,deferred: 0 });
+      expect(db.prepare("SELECT sum(applied_revision) n FROM execution_revision_requests").get()).toEqual({ n: 0 });
     } finally { db.close(); }
   });
 });

@@ -32,9 +32,24 @@ export function reconcileExecutionRevisionRequests(input: {
 }) {
   const at = (input.now ?? Date.now)();
   return withAddressRadarWriteTransaction(input.database, () => {
-    const rows = input.database.prepare(`SELECT consumer_type,subject_key,token_id,entity_id,source,event_id,desired_revision
-      FROM execution_revision_requests WHERE desired_revision>applied_revision AND desired_revision>dispatched_revision
-      ORDER BY requested_at,source,event_id,consumer_type LIMIT ?`).all(input.limit ?? 100) as Array<{ consumer_type: string; subject_key: string; token_id: string; entity_id: string; source: string; event_id: string; desired_revision: number }>;
+    // Blocked consumers must not occupy the entire oldest-first dispatch window.
+    const rows = input.database.prepare(`WITH eligible AS (
+      SELECT r.* FROM execution_revision_requests r
+      WHERE r.desired_revision>r.applied_revision AND r.desired_revision>r.dispatched_revision
+        AND (r.consumer_type<>'ability_evaluation' OR NOT EXISTS (
+          SELECT 1 FROM automation_jobs j WHERE j.job_type='ability_evaluation'
+            AND j.subject_key=r.subject_key AND j.status IN (
+              'pending','leased','running','waiting_source','blocked_source','retryable'
+            )
+        ))
+    ), ranked AS (
+      SELECT *,ROW_NUMBER() OVER (
+        PARTITION BY consumer_type ORDER BY requested_at,source,event_id
+      ) AS consumer_position FROM eligible
+    )
+    SELECT consumer_type,subject_key,token_id,entity_id,source,event_id,desired_revision
+    FROM ranked ORDER BY consumer_position,requested_at,source,event_id,consumer_type
+    LIMIT ?`).all(input.limit ?? 100) as Array<{ consumer_type: string; subject_key: string; token_id: string; entity_id: string; source: string; event_id: string; desired_revision: number }>;
     const groups = new Map<string,typeof rows>();
     for (const row of rows) { const key=JSON.stringify([row.consumer_type,row.subject_key]); const group=groups.get(key) ?? []; group.push(row); groups.set(key,group); }
     let dispatched=0; let deferred=0;
