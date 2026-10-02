@@ -378,9 +378,8 @@ export function enqueueTraderAbilityEvaluation(
   sourceKey: string,
   priority = 76,
 ): void {
-  if (jobs.activeJobForSubject("ability_evaluation", traderId)) return;
   const idempotencyKey = `ability-evaluation:${traderId}:${sourceKey}:${STRATEGY_VERSION}`;
-  jobs.enqueue({
+  const input = {
     jobId: stableId("ability-evaluation", [idempotencyKey]),
     idempotencyKey,
     lane: "trader_backfill",
@@ -391,7 +390,14 @@ export function enqueueTraderAbilityEvaluation(
     nextAttemptAt: now,
     payload: JSON.stringify({ traderId, evaluatedAt }),
     createdAt: now,
-  });
+  } as const;
+  if (jobs.enqueueBounded) {
+    const ordinary = /^(daily:|candidate:|wallet-analysis:)/.test(sourceKey);
+    jobs.enqueueBounded(input, ordinary ? ACTIVE_JOB_HIGH_WATER_MARK + 1
+      : DEFAULT_QUEUE_TYPE_POLICIES.ability_evaluation!.highWaterMark, now);
+    return;
+  }
+  if (!jobs.activeJobForSubject("ability_evaluation", traderId)) jobs.enqueue(input);
 }
 
 export function enqueueTraderAbilityDispatcher(jobs: AutomationJobStore, now: number): void {

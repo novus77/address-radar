@@ -1,3 +1,4 @@
+import { AUTOMATION_ADMISSION_SCHEMA_SQL } from "./automation-admission-schema.js";
 import { WALLET_EXECUTION_BASIS_SCHEMA } from "./wallet-execution-basis-schema.js";
 import { initializeFactDemandSchema } from "./fact-demand-store.js";
 import type { DatabaseSync } from "node:sqlite";
@@ -986,4 +987,5 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
     ON CONFLICT(entity_id, ability_key, evidence_window) DO UPDATE SET
       last_evaluated_at = MAX(trader_abilities.last_evaluated_at, excluded.last_evaluated_at);
   `);
+  database.exec(AUTOMATION_ADMISSION_SCHEMA_SQL);
 }

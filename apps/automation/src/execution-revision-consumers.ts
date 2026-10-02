@@ -59,6 +59,7 @@ export function reconcileExecutionRevisionRequests(input: {
       if (type === "ability_evaluation") {
         if (input.jobs.runnableCount(type)>=1_000 || input.jobs.activeJobForSubject(type,subject)) { deferred+=group.length; continue; }
         enqueueTraderAbilityEvaluation(input.jobs,subject,at,at,sourceKey);
+        if (!input.jobs.activeJobForSubject(type,subject)) { deferred+=group.length; continue; }
       } else if (type === "candidate_evidence") {
         enqueueCandidateFactEvaluation({ database: input.database,jobs: input.jobs,tokenId:String(row.token_id),sourceKey,evaluatedAt:at,now:at });
       } else if (type === "event_projection") {

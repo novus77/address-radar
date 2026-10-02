@@ -76,6 +76,7 @@ export interface AutomationQueueSnapshot {
 
 export interface AutomationJobStore {
   enqueue(input: AutomationJobInput): { readonly inserted: boolean; readonly job: AutomationJob };
+  enqueueBounded?(input: AutomationJobInput, highWaterMark: number, now?: number): { readonly inserted: boolean; readonly job: AutomationJob | null; readonly deferred: boolean };
   activeCount(jobType: string): number;
   activeJobForSubject(jobType: string, subjectKey: string): AutomationJob | null;
   cancelRedundantActiveJobs(jobType: string, excludedSubjectKey: string | null, updatedAt: number): number;
@@ -194,6 +195,30 @@ export function createAutomationJobStore(
         return Object.freeze({ inserted: result.changes === 1, job: toJob(row) });
       });
     },
+    enqueueBounded(input, highWaterMark, now = input.createdAt) {
+      if (!Number.isSafeInteger(highWaterMark) || highWaterMark <= 0) throw new Error("Invalid admission capacity");
+      return transaction(() => {
+        const existing = database.prepare("SELECT * FROM automation_jobs WHERE idempotency_key = ? OR job_id = ? LIMIT 1")
+          .get(input.idempotencyKey, input.jobId) as Record<string, unknown> | undefined;
+        if (existing) return Object.freeze({ inserted: false, job: toJob(existing), deferred: false });
+        database.prepare(`INSERT OR IGNORE INTO automation_admission_intents(
+          job_id,idempotency_key,job_type,subject_key,lane,high_water_mark,next_attempt_at,input_json,requested_at
+        ) VALUES(?,?,?,?,?,?,?,?,?)`).run(input.jobId,input.idempotencyKey,input.jobType,input.subjectKey,
+          input.lane,highWaterMark,input.nextAttemptAt,JSON.stringify(input),input.createdAt);
+        const intent = database.prepare("SELECT input_json,high_water_mark FROM automation_admission_intents WHERE idempotency_key=?")
+          .get(input.idempotencyKey) as { input_json: string; high_water_mark: number } | undefined;
+        if (!intent) throw new Error("Unable to persist admission intent");
+        const original = JSON.parse(intent.input_json) as AutomationJobInput;
+        if (this.activeJobForSubject(original.jobType, original.subjectKey)
+          || this.activeCount(original.jobType) >= intent.high_water_mark) {
+          return Object.freeze({ inserted: false, job: null, deferred: true });
+        }
+        const result = this.enqueue(original);
+        database.prepare(`UPDATE automation_admission_intents SET admitted_at=?,admitted_job_id=?
+          WHERE idempotency_key=? AND admitted_at IS NULL`).run(now,result.job.jobId,original.idempotencyKey);
+        return Object.freeze({ ...result, deferred: false });
+      });
+    },
     activeCount(jobType) {
       const row = database.prepare(`
         SELECT COUNT(*) AS count FROM automation_jobs
@@ -273,6 +298,17 @@ export function createAutomationJobStore(
             AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
         `).run(now, now, now);
         const filter = jobTypeFilter(enabledJobTypes);
+        const admissionFilter = filter.sql.replace(/\bjob_type\b/g, "i.job_type");
+        const intents = database.prepare(`SELECT i.input_json,i.high_water_mark FROM automation_admission_intents i
+          WHERE i.admitted_at IS NULL AND i.lane=? AND i.next_attempt_at<=?
+            ${admissionFilter}
+            AND NOT EXISTS(SELECT 1 FROM automation_jobs j WHERE j.job_type=i.job_type AND j.subject_key=i.subject_key
+              AND j.status IN ('pending','leased','running','waiting_source','blocked_source','retryable'))
+            AND (SELECT COUNT(*) FROM automation_jobs j WHERE j.job_type=i.job_type
+              AND j.status IN ('pending','leased','running','waiting_source','blocked_source','retryable')) < i.high_water_mark
+          ORDER BY i.requested_at,i.idempotency_key LIMIT 100`)
+          .all(lane,now,...filter.values) as Array<{ input_json: string; high_water_mark: number }>;
+        for (const intent of intents) this.enqueueBounded!(JSON.parse(intent.input_json) as AutomationJobInput, intent.high_water_mark, now);
         const qualifiedFilterSql = filter.sql.replace(/\bjob_type\b/g, "j.job_type");
         const candidateTypes = database.prepare(`
           SELECT j.job_type AS jobType
