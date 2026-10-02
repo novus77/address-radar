@@ -12,9 +12,17 @@ export interface MonitoredWallet {
   readonly lifecycle: TraderLifecycle;
 }
 
+export interface MonitoredFomoAccount {
+  readonly accountId: string;
+  readonly handle: string;
+  readonly entityId: string;
+  readonly lifecycle: TraderLifecycle;
+}
+
 export interface MonitoringRegistry {
   version(): number;
   wallets(chainFamily: ChainFamily): readonly MonitoredWallet[];
+  fomoAccounts?(): readonly MonitoredFomoAccount[];
   acknowledge(consumer: string, version: number, appliedAt: number): void;
   close(): void;
 }
@@ -71,7 +79,31 @@ export function openMonitoringRegistry(databasePath: string): MonitoringRegistry
       })));
     },
 
+    fomoAccounts() {
+      const rows = database.prepare(`
+        SELECT a.account_id AS accountId, a.handle, e.entity_id AS entityId, e.lifecycle
+        FROM fomo_accounts a
+        JOIN entity_accounts ea ON ea.account_id = a.account_id
+        JOIN trader_entities e ON e.entity_id = ea.entity_id
+        JOIN trader_profiles p ON p.entity_id = e.entity_id
+        WHERE ea.confidence = 'confirmed' AND ea.source != 'manual_wallet'
+          AND p.monitoring_enabled = 1 AND p.fomo_monitoring_enabled = 1
+          AND e.lifecycle IN ('probation', 'active', 'elite', 'degraded')
+          AND NOT EXISTS (
+            SELECT 1 FROM trader_monitoring_policy mp
+            WHERE mp.trader_id = e.entity_id AND mp.policy = 'off'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM entity_accounts owner
+            WHERE owner.account_id = a.account_id AND owner.entity_id != e.entity_id
+          )
+        ORDER BY e.entity_id, a.account_id
+      `).all() as unknown as MonitoredFomoAccount[];
+      return Object.freeze(rows.map(row => Object.freeze({ ...row })));
+    },
+
     acknowledge(consumer, version, appliedAt) {
+
       if (!consumer.trim()) throw new Error("consumer is required");
       if (!Number.isSafeInteger(version) || version < 0) throw new Error("version must be a non-negative safe integer");
       if (!Number.isSafeInteger(appliedAt) || appliedAt < 0) throw new Error("appliedAt must be a non-negative safe integer");
