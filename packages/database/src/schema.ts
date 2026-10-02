@@ -1,3 +1,4 @@
+import { FOMO_LIVE_INBOX_SCHEMA_SQL } from "./fomo-live-inbox.js";
 import { AUTOMATION_ADMISSION_SCHEMA_SQL } from "./automation-admission-schema.js";
 import { WALLET_EXECUTION_BASIS_SCHEMA } from "./wallet-execution-basis-schema.js";
 import { initializeFactDemandSchema } from "./fact-demand-store.js";
@@ -988,4 +989,5 @@ export function initializeAddressRadarSchema(database: DatabaseSync): void {
       last_evaluated_at = MAX(trader_abilities.last_evaluated_at, excluded.last_evaluated_at);
   `);
   database.exec(AUTOMATION_ADMISSION_SCHEMA_SQL);
+  database.exec(FOMO_LIVE_INBOX_SCHEMA_SQL);
 }

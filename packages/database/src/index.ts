@@ -164,3 +164,5 @@ export { EVENT_PROJECTION_EXECUTION_SCHEMA_SQL, initializeEventProjectionExecuti
 
 export { CANDIDATE_EXECUTION_AUDIT_SCHEMA_SQL } from "./candidate-history-store.js";
 export { TRUSTED_FOMO_ACCOUNT_SQL } from "./identity-trust.js";
+export { createFomoLiveInbox, initializeFomoLiveInboxSchema, FOMO_LIVE_INBOX_SCHEMA_SQL } from "./fomo-live-inbox.js";
+export type { FomoLiveInbox } from "./fomo-live-inbox.js";

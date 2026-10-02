@@ -1,3 +1,4 @@
+import { createFomoSocketFrameTracker } from "./fomo-socket-provenance.js";
 const object = (value: unknown): Record<string, unknown> | null => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
 
 export function fomoCdpEndpoint(value: string): URL {
@@ -21,8 +22,10 @@ export function createFomoCdpObserver(input: { readonly endpoint: string; readon
   const attached = new Set<string>();
   let lastRefresh = 0;
   let closed = false;
+  let captureError: Error | null = null;
   return Object.freeze({
     async refresh(): Promise<number> {
+      if (captureError) { const error=captureError;captureError=null;throw error; }
       if (closed) return 0;
       if (Date.now() - lastRefresh < 10_000) return attached.size;
       const response = await fetch(new URL("/json/list",endpoint), {signal:AbortSignal.timeout(5_000)});
@@ -43,6 +46,7 @@ export function createFomoCdpObserver(input: { readonly endpoint: string; readon
         const id=page.id;
         current.add(id);
         if (sockets.has(id)) continue;
+        const tracker = createFomoSocketFrameTracker();
         const socket = new WebSocket(socketUrl);
         sockets.set(id,socket);
         const timer=setTimeout(()=>{if(!attached.has(id)) socket.close();},5_000);
@@ -56,8 +60,11 @@ export function createFomoCdpObserver(input: { readonly endpoint: string; readon
             if(message.error) {socket.close();return;}
             clearTimeout(timer);attached.add(id);
           }
-          const body=fomoCdpActivityPayload(event.data);
-          if(body !== null && attached.has(id)) input.onActivity(body);
+          const body=tracker.observe(event.data);
+          if(body !== null && attached.has(id)) {
+            try {input.onActivity(body);} catch(error) {captureError=error instanceof Error?error:new Error("FOMO capture persistence failed");socket.close();}
+          }
+
         });
         const cleanup=()=>{clearTimeout(timer);attached.delete(id);if(sockets.get(id)===socket)sockets.delete(id);};
         socket.addEventListener("close",cleanup);
