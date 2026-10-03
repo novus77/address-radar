@@ -46,3 +46,6 @@ export type {
   FetchLike, JsonRpcClient, OnchainWalletRecord, ResolvedTraderIdentity,
   TokenMarketProvider, TokenMarketSnapshot, TradeEventRepository,
 } from "./types.js";
+
+export { prepareFomoSourceMessage, fomoSourceObservation } from "./fomo/source-message.js";
+export type { FomoSourceMessage, PreparedFomoSourceMessage } from "./fomo/source-message.js";

@@ -166,3 +166,10 @@ export { CANDIDATE_EXECUTION_AUDIT_SCHEMA_SQL } from "./candidate-history-store.
 export { TRUSTED_FOMO_ACCOUNT_SQL } from "./identity-trust.js";
 export { createFomoLiveInbox, initializeFomoLiveInboxSchema, FOMO_LIVE_INBOX_SCHEMA_SQL } from "./fomo-live-inbox.js";
 export type { FomoLiveInbox } from "./fomo-live-inbox.js";
+
+export * from "./postgres-unit-of-work.js";
+export * from "./postgres-capture-inbox.js";
+export * from "./postgres-normalization-work.js";
+export * from "./postgres-consumer-work.js";
+export * from "./postgres-capture-health.js";
+export * from "./postgres-forward-purchases.js";
