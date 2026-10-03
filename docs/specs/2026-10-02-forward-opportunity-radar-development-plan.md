@@ -720,3 +720,7 @@ Added atomic PostgreSQL readiness intents, sample execution receipts and economi
 ### Task 12 increment: bounded read-only trace console
 
 Add an independently configured loopback trace reader, a single-statement MVCC read model, purchase keyset pagination and explicit current-page scope. Display execution provenance, 30-day opportunity evaluations, persistent capability, identity refresh records and signal intents/receipts without equating pending to delivered. Use synthetic PostgreSQL fixtures and actual HTTP acceptance before isolated deployment. This does not authorize business activation, FOMO resume or transport delivery; durable identity scheduling and real-source closure remain outstanding.
+
+### Target synchronization completion increment: durable refresh coordination
+
+Persist independent FOMO/wallet scan cursors and generation-scoped leases. Advance cursors only after matching identity refresh receipts exist; atomically append a checkpoint audit. Fence expired workers, preserve progress across instance restarts and reject regressed clocks. Add a cancellation-aware non-overlapping loop with explicitly supplied cadence and lease duration. Isolated PostgreSQL acceptance uses synthetic source failures and does not prove live coverage or authorize permanent migration, daemon activation or FOMO resume.

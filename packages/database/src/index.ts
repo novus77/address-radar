@@ -190,3 +190,4 @@ export * from "./forward-target-hydration.js";
 export * from "./forward-target-revalidation.js";
 export * from "./forward-signal-projection.js";
 export * from "./forward-trace-read-model.js";
+export * from "./forward-target-refresh-coordinator.js";
