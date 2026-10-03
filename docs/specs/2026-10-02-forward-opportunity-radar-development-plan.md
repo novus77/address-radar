@@ -698,3 +698,9 @@ Protect the forward target namespace with a mandatory bearer token and a server-
 Validate source read-only behavior, independent FOMO/wallet channels, trust parity, authentication, actor derivation, default monitoring without grants, command retries, explicit audit, source disable/re-enable, revocation, ownership quarantine and outer fixture rollback. The real-driver HTTP fixture uses one outer temporary-table transaction; per-request HTTP commits and multi-client acceptance remain outstanding. Do not infer production activation from fixture success.
 
 Next gates: real operator UI composition, continuous source-change hydration, actual signal consumers/receipts, live-source acceptance, explicit permanent-schema activation and business cutover. No legacy admission, risk threshold or delivery setting changes in this slice.
+
+### Operator surface and independent request acceptance increment
+
+Implemented the separate authenticated operator surface at `/forward-targets`, using the existing identity hydration, current decision, bounded registry, explicit manual grant and revoke APIs. Credentials and uncertain-command retry IDs remain session-local; actor identity and permissions remain server-derived. Static asset serving does not enable business controls. Candidate observation, system capability and manual eligibility are not conflated.
+
+Added real HTTP acceptance with independently committed PostgreSQL requests in an owned session-local TEMP fixture. Later transactions verify grant/revoke visibility, immutable retries, rollback of audit/head/intent on injected failure, and successful recovery of the same command. This closes the earlier per-request commit proof gap, not the live coverage, multi-client HTTP, full browser interaction, continuous identity hydration, signal receipt or permanent-schema cutover gates. Production business activation remains separately gated.

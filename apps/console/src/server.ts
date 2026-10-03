@@ -103,6 +103,9 @@ export const startAddressRadarConsole = async (options: AddressRadarConsoleOptio
         "/": { file: "index.html", type: "text/html; charset=utf-8" },
         "/app.ts": { file: "app.ts", type: "text/javascript; charset=utf-8" },
         "/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
+      "/forward-targets": { file: "forward-targets.html", type: "text/html; charset=utf-8" },
+      "/forward-targets.js": { file: "forward-targets.js", type: "text/javascript; charset=utf-8" },
+      "/forward-targets.css": { file: "forward-targets.css", type: "text/css; charset=utf-8" },
       };
       const asset = assets[url.pathname];
       if (!asset) {

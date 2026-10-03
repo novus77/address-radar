@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Address Radar · 目标控制</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/forward-targets.css">
+  <script type="module" src="/forward-targets.js"></script>
+</head>
+<body>
+  <header class="target-masthead"><a href="/">ADDRESS RADAR / 控制台</a><span>目标控制 · 独立授权审计</span></header>
+  <main>
+    <section class="target-intro"><p class="target-eyebrow">MONITORING ≠ RADAR AUTHORIZATION</p><h1>先验证身份，再决定权限。</h1><p>默认监控不等于雷达准入。手动授权不等于已验证稳定能力，也不会立即发送信号；其他信号条件仍须满足。</p></section>
+    <section class="target-notice">本页读取最近登记的身份快照，并非持续实时校验。正式业务接口未启用时会返回“控制功能未启用”，不会自动重试、恢复采集或打开新页面。</section>
+    <section class="target-layout">
+      <article class="target-panel"><h2>01 / 操作者会话</h2><form id="operator-session"><label for="operator-token">操作者凭据</label><input id="operator-token" type="password" autocomplete="off" placeholder="仅保存在当前页面内存"><div class="target-actions"><button type="submit">使用凭据</button><button type="button" id="disconnect-session">清除会话</button></div></form><p id="session-state">未设置凭据</p><p class="target-help">身份及权限由服务器确定，页面不能指定操作者或自行授予权限。刷新页面会丢失凭据与未确认命令，请先核对审计记录。</p></article>
+      <article class="target-panel"><h2>02 / 选择与登记</h2><form id="target-selection"><div class="target-fields"><label>内部实体 ID<input name="entityId" required maxlength="512" autocomplete="off"></label><label>监控通道<select name="channel"><option value="fomo">FOMO 用户</option><option value="wallet">链上钱包</option></select></label><label>稳定用户 ID / 钱包地址<input name="subjectId" required maxlength="512" autocomplete="off"></label><label>钱包链类型<select name="walletFamily" disabled><option value="solana">Solana</option><option value="evm">EVM</option></select></label></div><div class="target-actions"><button name="action" value="read" type="submit" data-session>读取当前状态</button><button name="action" value="hydrate" type="submit" data-session>校验来源并登记</button></div></form><p class="target-help">仅登记既有库中可校验的关联，不自动合并身份，不关注 FOMO 账号。缺少身份依据时不会猜测归属。</p></article>
+      <article class="target-panel target-decision"><h2>03 / 当前资格</h2><div id="target-decision"><p>选择目标后读取状态。</p></div><p class="target-help">候选观察及完整 30 天能力详情尚未接入本页。是否可参与雷达以服务器当前判定为准，不能用备注、重点标签或手动授权代替能力证明。</p></article>
+      <article class="target-panel"><h2>04 / 显式授权与撤销</h2><form id="target-authorization"><label>授权 / 撤销依据<input name="basisRef" required maxlength="512" autocomplete="off" placeholder="可追溯的人工审批依据"></label><div class="target-actions"><button name="action" value="grant" type="submit" id="grant-target" disabled>授权参与雷达</button><button name="action" value="revoke" type="submit" id="revoke-target" disabled>撤销人工授权</button></div></form><p class="target-help">结果不确定时，保持目标、动作和依据不变重试，会复用同一命令 ID。撤销人工授权不等于停止钱包监控，也不抹除系统能力证据。</p></article>
+    </section>
+    <section class="target-panel"><div class="target-registry-heading"><h2>05 / 已验证监控目录</h2><form id="target-registry"><label>通道<select name="channel"><option value="fomo">FOMO 用户</option><option value="wallet">链上钱包</option></select></label><button type="submit" data-session>读取第一页</button><button type="button" id="registry-next" disabled>下一页</button></form></div><p id="registry-summary">未读取目录。分页数量不代表全库覆盖率。</p><div id="registry-results" class="target-directory"></div></section>
+    <div id="operator-status" class="target-status" role="status" aria-live="polite">等待操作。</div>
+  </main>
+</body>
+</html>
