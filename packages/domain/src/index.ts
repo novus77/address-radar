@@ -105,3 +105,4 @@ export * from "./forward-opportunity-evidence.js";
 
 export * from "./forward-trader-capability.js";
 export * from "./forward-target-authorization.js";
+export * from "./forward-signal-policy.js";

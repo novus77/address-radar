@@ -1,0 +1,11 @@
+# Forward signal projection and receipts
+
+The forward route is separate from legacy lifecycle/score policy. It requires at least two verified independent eligible traders, each with a qualifying single buy of at least 50 nominal USD, in the fifteen-minute window anchored to the current assessment clock. It does not require launch time, a sale, legacy contribution scores or age-dependent large orders. Stablecoin estimation remains marked.
+
+Canonical post-normalization purchase rows are read from PostgreSQL. An economic trade is counted once across representations and consumed once across signal readiness projections. Conflicting execution/ownership data, pending revisions, incomplete entry evidence, missing identity refresh, missing live provenance, pending risk assessment or an incomplete input page cannot produce a successful signal execution receipt. Repeated buys by one identity and validated risk-linked identities cannot create additional independent participants.
+
+A trusted runtime safety resolver must supply assessment-clock live-source provenance and independence/risk proof for each actual sample fingerprint. This is an internal server contract, not a browser input. Unknown quality thresholds are not guessed; an absent resolver leaves data pending. Runtime scheduling, actual source/risk composition and permanent schema activation remain explicit gates.
+
+Projection, readiness intent, sample execution receipt and economic consumption commit together. Injected receipt failure rolls them all back. Before any future authorized transport, readiness must be revalidated against current canonical purchases, current source/risk assessment and freshly checked target authorization. Missing proof defers readiness; a known loss of participant eligibility cancels it. This module queues readiness only, has no transport and never marks anything delivered.
+
+The isolated acceptance starts from synthetic post-normalization purchase rows and synthetic trusted live/risk ports. It verifies the projection/receipt boundary in real PostgreSQL, not a real FOMO capture, real risk-source coverage or actual delivery. Business activation, live-source coverage and gateway delivery remain false.
