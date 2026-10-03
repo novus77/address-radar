@@ -101,3 +101,4 @@ export {
   FORWARD_CAPTURE_EXTENSION_MS, FORWARD_MARKET_CAP_TIERS, FORWARD_OPPORTUNITY_WINDOW_MS,
 } from "./forward-opportunity-policy.js";
 export type { ForwardMarketCapTier, ForwardOpportunityAssessment } from "./forward-opportunity-policy.js";
+export * from "./forward-opportunity-evidence.js";
