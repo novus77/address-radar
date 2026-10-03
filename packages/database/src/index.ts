@@ -174,3 +174,5 @@ export * from "./postgres-consumer-work.js";
 export * from "./postgres-capture-health.js";
 export * from "./postgres-forward-purchases.js";
 export * from "./postgres-forward-token-watch.js";
+
+export * from "./postgres-acceptance-driver.js";

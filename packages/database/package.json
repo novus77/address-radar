@@ -18,8 +18,12 @@
   },
   "dependencies": {
     "@address-radar/aggregation": "workspace:*",
-    "@address-radar/observability": "workspace:*",
     "@address-radar/domain": "workspace:*",
-    "@address-radar/signal-engine": "workspace:*"
+    "@address-radar/observability": "workspace:*",
+    "@address-radar/signal-engine": "workspace:*",
+    "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1"
   }
 }

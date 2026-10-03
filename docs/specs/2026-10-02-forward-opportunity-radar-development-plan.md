@@ -636,3 +636,11 @@ The operator approved an isolated local-only PostgreSQL 16 acceptance instance a
 This slice provisions an independent acceptance database with resource limits, restricted authentication, transactional probes, and business-service preservation checks. It does not migrate SQLite, apply business schema/data, switch any write path, restart existing business services, resume FOMO, or enable delivery. Provisioning outcomes must be reported from the actual command exit status; the script's presence is not evidence of successful installation.
 
 Next dependencies remain production driver/configuration wiring, explicit schema activation and cutover authorization, verified execution/ownership resolution, durable opportunity/ability consumers, identity/manual-grant read models, and real-source coverage acceptance. No stable-ability or admission rules are changed by this infrastructure slice.
+
+## PostgreSQL Acceptance Driver Wiring Slice
+
+Add the project-owned pinned pg driver and typings, an explicit acceptance-only pool adapter, unit/real-driver tests, and a standalone temporary-table verification script. Reuse the existing unit-of-work for commit acknowledgement, rollback-only propagation, nested composition, and uncertain-commit handling. Constructor calls do not connect, migrate, read ambient database credentials, or switch SQLite callers.
+
+This slice is limited to loopback `_test` databases and at most two explicitly budgeted connections. Native BIGINT/NUMERIC representations remain exact strings. Pool shutdown drains existing work and refuses new root acquisition; idle errors are counted without exposing raw errors/credentials. The standalone probe verifies identity, precision, and rollback without permanent business data. See `docs/operations/postgres-acceptance-driver.md` for its test and deployment boundaries.
+
+Required gates: failing new export assertion before implementation, targeted driver/UOW tests, opt-in real PostgreSQL cases in a disposable local container, package/full typechecks, build/import/boundary checks, and isolated server probe. Report full-test runner timeouts honestly and separately from extended-budget diagnostic runs. Business service restart, source activation, schema cutover, and delivery remain prohibited in this slice.
