@@ -185,3 +185,5 @@ export * from "./forward-opportunity-fanout.js";
 export * from "./forward-trader-capability-store.js";
 export * from "./forward-trader-capability-work.js";
 export * from "./forward-target-authorization-store.js";
+
+export * from "./forward-target-hydration.js";

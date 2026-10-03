@@ -4,12 +4,16 @@ import { resolve } from "node:path";
 
 import { authenticateDeveloperRequest, validateDeveloperToken } from "./auth.js";
 import type { AddressConsoleApplication } from "./application.js";
+import type { ForwardTargetPrincipal } from "@address-radar/domain";
+import type { ForwardTargetConsoleExtension } from "./forward-target-application.js";
 
 export interface AddressRadarConsoleOptions {
   readonly application: AddressConsoleApplication;
   readonly developerToken?: string;
   readonly host?: string;
   readonly port?: number;
+  readonly forwardTargetApplication?: ForwardTargetConsoleExtension;
+  readonly forwardTargetPrincipal?: ForwardTargetPrincipal;
 }
 
 export interface AddressRadarConsoleServer {
@@ -48,6 +52,7 @@ export const startAddressRadarConsole = async (options: AddressRadarConsoleOptio
   const host = options.host ?? "127.0.0.1";
   const developerToken = options.developerToken?.trim();
   if (developerToken) validateDeveloperToken(developerToken);
+  if (options.forwardTargetApplication && (!developerToken || !options.forwardTargetPrincipal?.actorId.trim() || !options.forwardTargetPrincipal.authorizationEvidenceRef.trim())) throw new Error("Forward target controls require an authenticated operator principal");
   if (!developerToken && host !== "127.0.0.1" && host !== "::1" && host !== "localhost") throw new Error("Unauthenticated developer console must bind to loopback");
   const server = createServer(async (request, response) => {
     try {
@@ -74,6 +79,19 @@ export const startAddressRadarConsole = async (options: AddressRadarConsoleOptio
           body = await readJsonBody(request);
         } catch (error) {
           respondJson(response, error instanceof SyntaxError ? 400 : 413, { error: error instanceof SyntaxError ? "invalid_json" : "request_body_too_large" });
+          return;
+        }
+        if (url.pathname === "/api/v2/forward-targets" || url.pathname.startsWith("/api/v2/forward-targets/")) {
+          if (!options.forwardTargetApplication || !options.forwardTargetPrincipal || !developerToken) {
+            respondJson(response, 503, { error: "forward_target_controls_disabled" });
+            return;
+          }
+          try {
+            const result = await options.forwardTargetApplication.handle({ method: request.method ?? "GET", url, body, principal: options.forwardTargetPrincipal });
+            respondJson(response, result.status, result.body);
+          } catch {
+            respondJson(response, 500, { error: "forward_target_control_failed" });
+          }
           return;
         }
         const result = options.application.handle(request.method ?? "GET", url.pathname, body);
