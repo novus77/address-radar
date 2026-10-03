@@ -32,3 +32,4 @@ export type {
 export { createManualResolutionService } from "./manual-resolution-service.js";
 export { openMonitoringRegistry } from "./monitoring-registry.js";
 export type { MonitoredWallet, MonitoringRegistry } from "./monitoring-registry.js";
+export { evaluateForwardTargetAuthorization } from "./target-authorization.js";

@@ -8,6 +8,7 @@
   },
   "references": [
     { "path": "../../packages/domain" },
+    { "path": "../../packages/identity" },
     { "path": "../../packages/database" },
     { "path": "../../packages/scoring" },
     { "path": "../../packages/signal-engine" },

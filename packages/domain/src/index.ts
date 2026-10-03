@@ -104,3 +104,4 @@ export type { ForwardMarketCapTier, ForwardOpportunityAssessment } from "./forwa
 export * from "./forward-opportunity-evidence.js";
 
 export * from "./forward-trader-capability.js";
+export * from "./forward-target-authorization.js";

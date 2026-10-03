@@ -39,6 +39,9 @@ importers:
       '@address-radar/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@address-radar/identity':
+        specifier: workspace:*
+        version: link:../../packages/identity
       '@address-radar/scoring':
         specifier: workspace:*
         version: link:../../packages/scoring
