@@ -31,3 +31,5 @@ export type {
   OpportunityStatus, PurchaseOpportunity, TraderOpportunityEvaluation, TraderOpportunityMetrics,
 } from "./trader-opportunity-evaluator.js";
 export * from "./forward-opportunity-evaluator.js";
+
+export * from "./forward-trader-capability.js";

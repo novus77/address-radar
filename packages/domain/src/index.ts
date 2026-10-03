@@ -102,3 +102,5 @@ export {
 } from "./forward-opportunity-policy.js";
 export type { ForwardMarketCapTier, ForwardOpportunityAssessment } from "./forward-opportunity-policy.js";
 export * from "./forward-opportunity-evidence.js";
+
+export * from "./forward-trader-capability.js";
