@@ -95,3 +95,9 @@ export type {
 } from "./workbench-v2.js";
 export { satisfiesFactDemand } from "./fact-demand.js";
 export type { ConsumerFactDemand, FactDemandProof, FactDemandPurpose } from "./fact-demand.js";
+export {
+  assessForwardOpportunity, forwardDecimal, forwardExtendedCaptureDeadline,
+  forwardInitialCaptureDeadline, forwardQualifyingBuyAmount, forwardReachedMarketCapTiers,
+  FORWARD_CAPTURE_EXTENSION_MS, FORWARD_MARKET_CAP_TIERS, FORWARD_OPPORTUNITY_WINDOW_MS,
+} from "./forward-opportunity-policy.js";
+export type { ForwardMarketCapTier, ForwardOpportunityAssessment } from "./forward-opportunity-policy.js";

@@ -607,3 +607,24 @@ Validation and stop boundary for durable source lifecycle:
 - Generations require explicit registration; before-generation trades are preserved without forward samples. An elapsed window with unverified market coverage is not classified as a failed opportunity.
 - Trade/sample/work intent and consumer receipt compose in one transaction. Stale receipt confirmation aborts that transaction; missing execution evidence defers without creating a successful receipt.
 - The target DDL is an isolated fixture contract, not an installed production migration. Actual chain/platform proof validation, verified cross-source identity derivation, review authorization, opportunity tracking and runtime activation remain pending.
+
+### Vertical slice: token discovery, screening gate and capture-window events
+
+- Added an independent token-discovery consumer: unresolved wallet identities do not block a token watch or its durable buyer-capture intent.
+- Initial capture runs from discovery for seven days. Verified 100K enables screening separately; launch time is not a gate.
+- First reaches of 100K/200K/300K/500K/1M extend from event time. Same-tier refreshes, repeated source observations and duplicate economic buys never renew a window.
+- Verified >=50 USD economic purchases require explicit system-stable or manual-authorized target evidence to renew capture. Notes and unresolved identities do not authorize renewal.
+- Existing individual 30-day samples are not shortened or deleted by buyer-capture expiry.
+- Added exact-decimal 3x/5x assessment policy. Entry evidence and validated within-window prices are required; no sale is required. Missing data, pending review and elapsed time without coverage proof remain deferred.
+- Time windows use an inclusive start and exclusive expiry. Provider numeric quality thresholds remain unconfigured.
+- Previous slice: 79 focused tests passed, including 57 real PostgreSQL integration cases; 968 general tests, full typecheck, boundaries, build and import smoke passed with bounded test concurrency.
+- Previous slice committed and published as 9a548d2. Production deployment was code-only: no database migration or activation, no service restart, paused FOMO capture and disabled delivery preserved.
+- This slice is not yet validated or deployed. Production PostgreSQL wiring, external proof verification, opportunity projections, ability projections and source acceptance remain separate gates.
+
+#### Token-watch slice validation
+
+- Aligned new foreign-key types and normalized-result field names with the existing PostgreSQL contracts; corrected the fixture's required payload limit.
+- Focused validation: 98 tests passed, including 66 real PostgreSQL integration tests. The nine new discovery cases executed, rather than being skipped.
+- General validation: 978 tests passed; the 66 PostgreSQL cases are skipped in the generic run because its connection URL is unset, and are covered by the isolated database run above.
+- Full typecheck, repository boundary check, build and built-package import smoke passed.
+- Production activation remains gated: code publication is not database cutover, live-source acceptance or proof of full business closure.
