@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Address Radar · 数据追踪</title><link rel="stylesheet" href="/forward-trace.css"><script type="module" src="/forward-trace.js"></script></head>
+<body>
+<header><span class="eyebrow">ADDRESS RADAR / FORWARD TRACE</span><h1>每一次机会，都有依据。</h1><p>成交 → 30 天机会 → 持续发现能力 → 身份校验 → 信号回执</p><strong class="notice">只读验收入口 · 投递关闭 · 不代表实时来源覆盖已通过</strong></header>
+<main>
+<form id="trace-form"><label>操作员令牌<input id="operator-token" type="password" autocomplete="off" placeholder="仅保存在当前页面内存"></label><label>交易员实体 ID<input id="entity-id" required autocomplete="off"></label><button type="submit">读取追踪快照</button></form>
+<p id="feedback" role="status" aria-live="polite">输入实体 ID 查看事实，不通过备注或标签推断资格。</p>
+<div class="summary"><section><h2>持续发现能力</h2><pre id="capability">尚未读取</pre></section><section><h2>身份与权限校验</h2><pre id="identity">尚未读取</pre></section></div>
+<section><div class="section-heading"><h2>买入与 30 天机会</h2><span id="page-count">当前页：0 条</span></div><div class="table-wrap"><table><thead><tr><th>代币 / 成交</th><th>单笔金额</th><th>入场依据</th><th>机会状态</th><th>审计引用</th></tr></thead><tbody id="purchases"></tbody></table></div><nav><button id="first-page" type="button">第一页</button><button id="next-page" type="button" disabled>下一页</button></nav></section>
+<section><h2>信号与消费回执</h2><p>待发送、已验证、延期和已取消都不等于已播报。实际发送前必须重新校验。</p><pre id="signals">尚未读取</pre></section>
+<footer id="snapshot-clock">同一次数据库快照 · 分页数量不是全库覆盖率</footer>
+</main>
+</body></html>
