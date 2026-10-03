@@ -628,3 +628,11 @@ Validation and stop boundary for durable source lifecycle:
 - General validation: 978 tests passed; the 66 PostgreSQL cases are skipped in the generic run because its connection URL is unset, and are covered by the isolated database run above.
 - Full typecheck, repository boundary check, build and built-package import smoke passed.
 - Production activation remains gated: code publication is not database cutover, live-source acceptance or proof of full business closure.
+
+## Isolated Production PostgreSQL Infrastructure Slice
+
+The operator approved an isolated local-only PostgreSQL 16 acceptance instance after the forward token screening/capture-window code-only publication. Implementation is tracked in `scripts/provision-postgres-acceptance.sh` and `docs/operations/postgres-acceptance-instance.md`.
+
+This slice provisions an independent acceptance database with resource limits, restricted authentication, transactional probes, and business-service preservation checks. It does not migrate SQLite, apply business schema/data, switch any write path, restart existing business services, resume FOMO, or enable delivery. Provisioning outcomes must be reported from the actual command exit status; the script's presence is not evidence of successful installation.
+
+Next dependencies remain production driver/configuration wiring, explicit schema activation and cutover authorization, verified execution/ownership resolution, durable opportunity/ability consumers, identity/manual-grant read models, and real-source coverage acceptance. No stable-ability or admission rules are changed by this infrastructure slice.
