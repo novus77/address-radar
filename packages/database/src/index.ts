@@ -177,3 +177,5 @@ export * from "./postgres-forward-token-watch.js";
 
 export * from "./postgres-acceptance-driver.js";
 export * from "./forward-opportunity-store.js";
+
+export * from "./forward-opportunity-work.js";
