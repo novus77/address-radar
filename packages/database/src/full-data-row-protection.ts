@@ -51,6 +51,17 @@ export interface RowProtectionReadLimits {
   maximumRows?: number;
   maximumBytes?: number;
 }
+
+export function readOnlyPurchaseDependencyBundle(
+  databasePath: string, request: RowProtectionRequest, limits: RowProtectionReadLimits = {},
+): RowProtectionBundle {
+  const purchaseRoots = new Set(["wallet_monitor_observations", "wallet_monitor_execution_bases", "trader_execution_heads"]);
+  if (!Array.isArray(request?.roots) || request.roots.length === 0 || request.roots.some(root =>
+    root.reason !== "trade_evidence" || !root.row || !purchaseRoots.has(root.row.table))) {
+    throw new Error("invalid_purchase_dependency_roots");
+  }
+  return readRowProtectionBundle(databasePath, request, limits, false);
+}
 type SourceRow = Record<string, string | number | bigint | Uint8Array | null>;
 interface ForeignKeyGroup {
   parent: string;
@@ -94,6 +105,13 @@ export function readOnlyRowProtectionBundle(
   databasePath: string,
   request: RowProtectionRequest,
   limits: RowProtectionReadLimits = {},
+): RowProtectionBundle {
+  return readRowProtectionBundle(databasePath, request, limits, true);
+}
+
+function readRowProtectionBundle(
+  databasePath: string, request: RowProtectionRequest, limits: RowProtectionReadLimits,
+  includeGlobalGuards: boolean,
 ): RowProtectionBundle {
   const maximumRows = limits.maximumRows ?? 1000;
   const maximumBytes = limits.maximumBytes ?? 8 * 1024 * 1024;
@@ -188,6 +206,9 @@ export function readOnlyRowProtectionBundle(
     reference: string, required: boolean, allSafetyRows = false,
   ): ProtectedSourceRow[] => {
     if (truncated) return [];
+    if (!includeGlobalGuards && safetyTables.includes(table as typeof safetyTables[number])) {
+      issue("global_guard_dependency_requires_coherent_export", table, reference); return [];
+    }
     const metadata = shape(table);
     if (!metadata) return [];
     const keys = Object.keys(filter);
@@ -289,8 +310,10 @@ export function readOnlyRowProtectionBundle(
       return { reference: root.reference, reason: root.reason, rowId: found.length === 1 ? found[0]!.rowId : null };
     });
     const issuesBeforeSafety = new Set(issues.keys());
-    for (const table of safetyTables) select(table, {}, "global_delivery_and_budget_guards", false, true);
-    const safetyFailed = truncated || [...issues.keys()].some((key) => !issuesBeforeSafety.has(key));
+    if (includeGlobalGuards) {
+      for (const table of safetyTables) select(table, {}, "global_delivery_and_budget_guards", false, true);
+    }
+    const safetyFailed = !includeGlobalGuards || truncated || [...issues.keys()].some((key) => !issuesBeforeSafety.has(key));
     let cursor = 0;
     while (cursor < queue.length && !truncated) {
       const { row, node } = queue[cursor++]!;
@@ -326,6 +349,11 @@ export function readOnlyRowProtectionBundle(
       "isolated_target_import_and_exact_storage_round_trip",
       "separate_production_migration_and_cutover_approval",
     ];
+    if (!includeGlobalGuards) unresolvedGates.push("coherent_global_guard_export_and_target_round_trip");
+    const fingerprint = includeGlobalGuards
+      ? hash({ rows: protectedRows, edges: protectedEdges, roots, issues: reportedIssues })
+      : hash({ scope: "purchase_dependencies_without_global_guard_export", rows: protectedRows,
+        edges: protectedEdges, roots, issues: reportedIssues });
     database.exec("ROLLBACK;");
     return {
       version: 1, capturedAtMs, scope: "declared_legacy_rows_and_preservation_dependencies",
@@ -333,7 +361,7 @@ export function readOnlyRowProtectionBundle(
       declaredDependenciesComplete: reportedIssues.length === 0 && !truncated,
       globalDeliveryAndBudgetGuardsComplete: !safetyFailed && !truncated &&
         !reportedIssues.some((entry) => safetyTables.includes(entry.table as typeof safetyTables[number])),
-      fingerprint: hash({ rows: protectedRows, edges: protectedEdges, roots, issues: reportedIssues }),
+      fingerprint,
       sourceBytesIncluded, newPurchaseSamplesCreated: 0, newEligibilityGranted: false,
       productionMigrationReady: false, unresolvedGates,
     };
