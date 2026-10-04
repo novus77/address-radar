@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "scope": "approved_existing_backup_low_priority_validation_then_bounded_nonunique_reverse_index",
+  "status": "backup_verified_index_transaction_rolled_back",
+  "maintenanceCodeSha256": "c79007bd1121915d4c8d12a9867fbe6c86154a5af7c0026f9823b0a8b31eec45",
+  "currentTargetedTestsPassed": 6,
+  "previousFullSuite": {
+    "codeCommit": "fc19879",
+    "passed": 1182,
+    "skipped": 97,
+    "testTypesPassed": true,
+    "projectBuildsPassed": 15,
+    "rootTypesPassed": true,
+    "rerunInRecovery": false
+  },
+  "production": {
+    "operationId": "purchase-reverse-index-20261004-4c515f47",
+    "phase": "failed_requires_readonly_reconciliation",
+    "errorReason": "index_transaction_deadline_exceeded",
+    "sqliteErrorCode": null,
+    "backup": {
+      "backupPath": "/var/backups/address-radar/index-maintenance/purchase-reverse-index-20261004-4c515f47/address-radar.db",
+      "backupBytes": 3837816832,
+      "backupSha256": "d73d27350f0785ac3938024f7d56c77b5c4b404a236b75dc6ff1cb726a0e91b7",
+      "quickCheck": "ok",
+      "verificationMilliseconds": 273189
+    },
+    "diskAvailableBytes": 41594241024,
+    "capturedAtMs": 1791081228303,
+    "reverseIndexObjects": [],
+    "backupLinkRows": 305085,
+    "backupLinkCountMilliseconds": 2638,
+    "services": [
+      {
+        "unit": "address-radar-scanner.service",
+        "MainPID": "4146650",
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "deliveryDisabled": true
+      },
+      {
+        "unit": "address-radar-automation.service",
+        "MainPID": "4146658",
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "deliveryDisabled": true
+      },
+      {
+        "unit": "address-radar-wallet-monitor.service",
+        "MainPID": "4146651",
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "deliveryDisabled": true
+      },
+      {
+        "unit": "address-radar-wallet-analysis.service",
+        "MainPID": "4146653",
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "deliveryDisabled": true
+      },
+      {
+        "unit": "address-radar-historical-backfill.service",
+        "MainPID": "4146652",
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "deliveryDisabled": true
+      },
+      {
+        "unit": "address-radar-console.service",
+        "MainPID": "4146660",
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "deliveryDisabled": true
+      }
+    ],
+    "release": "/opt/address-radar/releases/4b48fc2-forward-token-code",
+    "releaseUnchanged": true,
+    "serviceGuardsUnchanged": true,
+    "boundedLogLines": 0,
+    "sqliteLockLogMatches": 0
+  },
+  "backupValidationLimitSeconds": 900,
+  "backupFullyQuickChecked": true,
+  "indexCommitted": false,
+  "indexTransactionDeadlineSeconds": 5,
+  "lockWaitMilliseconds": 250,
+  "blocker": "link_content_fingerprint_scan_exceeded_writer_transaction_deadline",
+  "formalMigrationExecuted": false,
+  "releaseCutoverExecuted": false,
+  "servicesRestartedByMaintenance": false,
+  "gatewayDeliveryEnabled": false,
+  "fullClosedLoopAccepted": false,
+  "nextDecision": "retain_the_five_second_writer_budget_and_review_a_business_DML_denial_authorizer_plus_connection_change_counter_instead_of_lock_held_full_content_scans"
+}
