@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "scope": "approved_consistent_backup_nonunique_reverse_index_readonly_revalidation",
+  "status": "blocked_before_index_creation",
+  "codeSha256": "c79007bd1121915d4c8d12a9867fbe6c86154a5af7c0026f9823b0a8b31eec45",
+  "tests": {
+    "targetedPassed": 6,
+    "fullPassed": 1182,
+    "fullSkipped": 97,
+    "testTypesPassed": true,
+    "projectBuildsPassed": 15,
+    "rootTypesPassed": true
+  },
+  "backupVerification": {
+    "copyPreserved": true,
+    "quickCheckPassed": false,
+    "backupSha256": null,
+    "firstQuickCheckLimitSeconds": 60,
+    "secondReadonlyQuickCheckLimitSeconds": 210,
+    "sqliteErrorCode": 9,
+    "errorReason": "interrupted",
+    "corruptionConfirmed": false
+  },
+  "production": {
+    "operationId": "purchase-reverse-index-20261004-4c515f47",
+    "phase": "failed_requires_readonly_reconciliation",
+    "capturedAtMs": 1791080384209,
+    "backupBytes": 3837816832,
+    "backupPath": "/var/backups/address-radar/index-maintenance/purchase-reverse-index-20261004-4c515f47/address-radar.db",
+    "diskAvailableBytes": 41605255168,
+    "sourceIndexCreated": false,
+    "reverseIndexObjects": [],
+    "services": [
+      {
+        "unit": "address-radar-scanner.service",
+        "MainPID": "4146650",
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "deliveryDisabled": true
+      },
+      {
+        "unit": "address-radar-automation.service",
+        "MainPID": "4146658",
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "deliveryDisabled": true
+      },
+      {
+        "unit": "address-radar-wallet-monitor.service",
+        "MainPID": "4146651",
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "deliveryDisabled": true
+      },
+      {
+        "unit": "address-radar-wallet-analysis.service",
+        "MainPID": "4146653",
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "deliveryDisabled": true
+      },
+      {
+        "unit": "address-radar-historical-backfill.service",
+        "MainPID": "4146652",
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "deliveryDisabled": true
+      },
+      {
+        "unit": "address-radar-console.service",
+        "MainPID": "4146660",
+        "NRestarts": "0",
+        "ActiveState": "active",
+        "deliveryDisabled": true
+      }
+    ],
+    "release": "/opt/address-radar/releases/4b48fc2-forward-token-code",
+    "boundedLogLines": 1,
+    "sqliteLockLogMatches": 0,
+    "releaseUnchanged": true,
+    "serviceGuardsUnchanged": true
+  },
+  "indexTransactionStarted": false,
+  "formalMigrationExecuted": false,
+  "releaseCutoverExecuted": false,
+  "servicesRestartedByMaintenance": false,
+  "businessRowsWrittenByMaintenance": false,
+  "gatewayDeliveryEnabled": false,
+  "fullClosedLoopAccepted": false,
+  "nextGate": "separately_review_a_longer_low_priority_backup_validation_window_or_offline_validation_before_any_index_creation"
+}
