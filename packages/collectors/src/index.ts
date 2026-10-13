@@ -20,6 +20,8 @@ export {
   createJsonRpcClient,
   JsonRpcAbortError,
   JsonRpcRateLimitError,
+  classifyJsonRpcLimit,
+  type JsonRpcLimitCategory,
   JsonRpcResponseError,
   JsonRpcTimeoutError,
 } from "./json-rpc-client.js";

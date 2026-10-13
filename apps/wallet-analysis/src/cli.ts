@@ -1,6 +1,7 @@
+import { registerSqliteWriterService } from "@address-radar/database";
 import type { ChainFamily } from "@address-radar/domain";
 import type { DiscoveryChain } from "@address-radar/collectors";
-import { openAddressRadarRepository } from "@address-radar/database";
+import { dispatchPostgresBusinessService, openAddressRadarRepository } from "@address-radar/database";
 import { loadWalletAnalysisConfig } from "./config.js";
 import { createEvmRpcWalletHistoryProvider, createSolanaRpcWalletHistoryProvider, openHistoricalEventStore, openSqliteHistoricalMarketSource } from "./history.js";
 import { createConfiguredAnalysisRpcClient } from "./rpc.js";
@@ -9,6 +10,8 @@ import { runWalletAnalysisService } from "./service.js";
 import { openWalletAnalysisStore } from "./store.js";
 import { createTraderPerformanceRuntime } from "./performance.js";
 
+if (!await dispatchPostgresBusinessService("wallet-analysis")) {
+registerSqliteWriterService("wallet-analysis");
 const config = loadWalletAnalysisConfig(process.env);
 const store = openWalletAnalysisStore(config.databasePath);
 const eventStore = openHistoricalEventStore(config.databasePath);
@@ -46,3 +49,4 @@ try { await runWalletAnalysisService({
   },
 }); }
 finally { store.close(); eventStore.close(); market.close(); }
+}

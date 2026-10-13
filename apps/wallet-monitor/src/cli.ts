@@ -1,4 +1,6 @@
+import { registerSqliteWriterService } from "@address-radar/database";
 import { createDexScreenerClient, type DiscoveryChain } from "@address-radar/collectors";
+import { dispatchPostgresBusinessService } from "@address-radar/database";
 import { openMonitoringRegistry } from "@address-radar/identity";
 import { createEvmBlockWalletCollector, createSolanaWalletCollector } from "./collectors.js";
 import { loadWalletMonitorConfig } from "./config.js";
@@ -8,6 +10,8 @@ import { createWalletMonitorRuntime } from "./runtime.js";
 import { runWalletMonitorService } from "./service.js";
 import { openWalletMonitorStore } from "./store.js";
 
+if (!await dispatchPostgresBusinessService("wallet-monitor")) {
+registerSqliteWriterService("wallet-monitor");
 const config = loadWalletMonitorConfig(process.env);
 const registry = openMonitoringRegistry(config.databasePath);
 const store = openWalletMonitorStore(config.databasePath);
@@ -41,4 +45,5 @@ try {
 } finally {
   store.close();
   registry.close();
+}
 }

@@ -75,6 +75,25 @@ function findBackups(backupRoot: string, suffix: string) {
 }
 
 describe("backup-production-state", () => {
+  it("never rotates protected maintenance or migration artifacts", () => {
+    const fixture = createWalFixture(1);
+    const wrapperBin = createPortableCommandWrappers(fixture.root);
+    for (const name of ["maintenance-operation", "20200101T000000Z"]) {
+      const directory = join(fixture.backupRoot, name); mkdirSync(directory);
+      writeFileSync(join(directory, "address-radar.db"), "protected");
+      writeFileSync(join(directory, "maintenance.json"), "{}");
+    }
+    try {
+      const result = spawnSync("bash", [resolve("scripts/backup-production-state.sh")], {
+        encoding: "utf8", env: { ...process.env, ADDRESS_RADAR_BACKUP_DIR: fixture.backupRoot,
+          ADDRESS_RADAR_BACKUP_MAX_COUNT: "1", ADDRESS_RADAR_BACKUP_MIN_FREE_BYTES: "1",
+          ADDRESS_RADAR_DATABASE_PATH: fixture.databasePath, PATH: `${wrapperBin}:${process.env.PATH ?? ""}` },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(join(fixture.backupRoot, "maintenance-operation", "address-radar.db"))).toBe(true);
+      expect(existsSync(join(fixture.backupRoot, "20200101T000000Z", "address-radar.db"))).toBe(true);
+    } finally { fixture.database.close(); }
+  });
   it("retains the newest verified backups within the configured count", () => {
     const fixture = createWalFixture(100);
     const scriptPath = resolve("scripts/backup-production-state.sh");
@@ -102,6 +121,7 @@ describe("backup-production-state", () => {
 
   it("creates a complete offline snapshot without leaving a partial backup", () => {
     const fixture = createWalFixture(25_000);
+    const originalWalBytes = statSync(`${fixture.databasePath}-wal`).size;
     const scriptPath = resolve("scripts/backup-production-state.sh");
     const wrapperBin = createPortableCommandWrappers(fixture.root);
 
@@ -135,10 +155,8 @@ describe("backup-production-state", () => {
 
     expect(count.count).toBe(25_000);
     expect(Object.values(quickCheck)[0]).toBe("ok");
-    expect(
-      !existsSync(`${fixture.databasePath}-wal`) ||
-        statSync(`${fixture.databasePath}-wal`).size === 0,
-    ).toBe(true);
+    expect(existsSync(`${fixture.databasePath}-wal`)).toBe(true);
+    expect(statSync(`${fixture.databasePath}-wal`).size).toBe(originalWalBytes);
     fixture.database.close();
   });
 });

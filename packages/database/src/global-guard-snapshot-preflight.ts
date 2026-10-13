@@ -77,13 +77,16 @@ const hash = (value: unknown): string => createHash("sha256").update(JSON.string
 const quote = (name: string): string => '"' + name.replaceAll('"', '""') + '"';
 const validLimit = (value: number, maximum: number): boolean => Number.isSafeInteger(value) && value > 0 && value <= maximum;
 
-function preserve(value: unknown, storage: unknown): PreservedSqliteValue {
+function preserve(value: unknown, storage: unknown, decoder: TextDecoder): PreservedSqliteValue {
   let result: PreservedSqliteValue;
   if (storage === "null" && value === null) result = { storage: "null" };
   else if (storage === "integer" && typeof value === "bigint") result = { storage: "integer", value: value.toString() };
   else if (storage === "real" && typeof value === "number" && Number.isFinite(value)) {
     result = { storage: "real", value: Object.is(value, -0) ? "-0" : value.toString() };
-  } else if (storage === "text" && typeof value === "string") result = { storage: "text", value };
+  } else if (storage === "text" && value instanceof Uint8Array) {
+    try { result = { storage: "text", value: decoder.decode(value) }; }
+    catch { throw new Error("invalid_guard_storage_value"); }
+  }
   else if (storage === "blob" && value instanceof Uint8Array) result = { storage: "blob", value: Buffer.from(value).toString("base64") };
   else throw new Error("invalid_guard_storage_value");
   return Object.freeze(result);
@@ -122,6 +125,9 @@ export async function readOnlyGlobalGuardSnapshot(
   try {
     database.exec("PRAGMA query_only=ON; PRAGMA trusted_schema=OFF; PRAGMA busy_timeout=250; BEGIN");
     transactionOpen = true;
+    const encoding = database.prepare("PRAGMA encoding").get()?.encoding;
+    if (encoding !== "UTF-8" && encoding !== "UTF-16le" && encoding !== "UTF-16be") throw new Error("invalid_guard_storage_value");
+    const decoder = new TextDecoder(encoding, { fatal: true, ignoreBOM: true });
     // This first read pins the snapshot before any sink can await or another writer can commit.
     database.prepare("SELECT count(*) FROM sqlite_schema").get();
     capturedAtMs = Date.now();
@@ -154,7 +160,9 @@ export async function readOnlyGlobalGuardSnapshot(
         let previousKeyFingerprint: string | null = null;
         const orderedKey = ledger.primaryKey.map(quote).join(",");
         const projections = ledger.columns.flatMap((name, index) => [
-          quote(name), "typeof(" + quote(name) + ") AS " + quote("__guard_storage_" + index),
+          // Read text as bytes: some Node SQLite versions truncate embedded NUL strings.
+          "CASE WHEN typeof(" + quote(name) + ") = 'text' THEN CAST(" + quote(name) + " AS BLOB) ELSE " + quote(name) + " END AS " + quote(name),
+          "typeof(" + quote(name) + ") AS " + quote("__guard_storage_" + index),
         ]).join(",");
         const sizeExpression = ledger.columns.map(name => "coalesce(length(CAST(" + quote(name) + " AS BLOB)),0)").join("+");
         while (checkTime()) {
@@ -183,7 +191,7 @@ export async function readOnlyGlobalGuardSnapshot(
           let pageBytes = 0;
           for (const sourceRow of sourceRows) {
             const values = Object.freeze(ledger.columns.map((name, index) => Object.freeze({
-              name, value: preserve(sourceRow[name], sourceRow["__guard_storage_" + index]),
+              name, value: preserve(sourceRow[name], sourceRow["__guard_storage_" + index], decoder),
             })));
             const key = Object.freeze(ledger.primaryKey.map(name => values.find(cell => cell.name === name)!));
             if (key.some(cell => cell.value.storage === "null")) { addIssue("invalid_guard_primary_key"); break ledgerLoop; }
@@ -193,7 +201,12 @@ export async function readOnlyGlobalGuardSnapshot(
             rows.push(Object.freeze({ key, values, fingerprint }));
           }
           const last = sourceRows[sourceRows.length - 1]!;
-          const nextCursor = ledger.primaryKey.map(name => last[name] as SQLInputValue);
+          const nextCursor = ledger.primaryKey.map(name => {
+            const index = ledger.columns.indexOf(name);
+            // Bind TEXT keys as decoded text, not the projection's BLOB bytes.
+            return last["__guard_storage_" + index] === "text"
+              ? decoder.decode(last[name] as Uint8Array) : last[name] as SQLInputValue;
+          });
           const keyFingerprint = hash(rows[rows.length - 1]!.key);
           if (keyFingerprint === previousKeyFingerprint) { addIssue("non_advancing_guard_cursor"); break ledgerLoop; }
           const pageIdentity: Omit<GuardLedgerPage, "rows" | "fingerprint"> & { rows: readonly string[] } = {

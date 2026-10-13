@@ -1,0 +1,28 @@
+[Unit]
+Description=Bounded PostgreSQL business-schema backup
+ConditionPathExists=/etc/address-radar-postgres-backup/job.json
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/bin/python3 /var/lib/address-radar-maintenance-tools/postgres-backup/backup-postgres-business-schema.py --config /etc/address-radar-postgres-backup/job.json
+TimeoutStartSec=50
+KillMode=control-group
+SendSIGKILL=yes
+TimeoutStopSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/backups/address-radar/postgres
+RestrictAddressFamilies=AF_UNIX
+MemoryMax=256M
+CPUQuota=25%
+TasksMax=16
+Nice=15
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+# No Install section: installation and activation require parent review.

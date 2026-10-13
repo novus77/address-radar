@@ -34,18 +34,20 @@ export interface BoundaryViolation {
   reason: string;
 }
 
-async function collectFiles(directory: string): Promise<string[]> {
+async function collectFiles(directory: string, rootDirectory = directory): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const files: string[] = [];
 
   for (const entry of entries) {
-    if (entry.isDirectory() && ignoredDirectories.has(entry.name)) {
+    // The migration artifact tests create/remove these exact mkdtemp directories at the repository root.
+    const migrationTestDirectory = directory === rootDirectory && /^\.migration-artifact-test-[A-Za-z0-9]{6}$/.test(entry.name);
+    if (entry.isDirectory() && (ignoredDirectories.has(entry.name) || migrationTestDirectory)) {
       continue;
     }
 
     const path = resolve(directory, entry.name);
     if (entry.isDirectory()) {
-      files.push(...(await collectFiles(path)));
+      files.push(...(await collectFiles(path, rootDirectory)));
     } else if (entry.isFile()) {
       files.push(path);
     }

@@ -66,11 +66,25 @@ read=sqlite3.connect("file:"+path+"?mode=ro",uri=True)
 expected=maintenance.metadata(read)
 read.close()
 records=[]
+statements=[]
+original_connect=maintenance.connect
+def observed_connect(*args,**kwargs):
+    connection=original_connect(*args,**kwargs)
+    connection.set_trace_callback(statements.append)
+    return connection
+maintenance.connect=observed_connect
 result=maintenance.apply_index(path,expected,records.append)
-print(json.dumps({**result,"auditRecords":len(records)}))`);
+full_scans=[sql for sql in statements if "SELECT canonical_event_id,observation_id" in sql or "SELECT COUNT(*)" in sql.upper()]
+print(json.dumps({**result,"auditRecords":len(records),"noFullContentScan":not full_scans}))`);
     expect(report.indexCreated).toBe(true);
-    expect(report.linkRows).toBe(1);
+    expect(report.linkRows).toBeNull();
+    expect(report.linkContentFingerprint).toBeNull();
+    expect(report.fullContentFingerprintComputed).toBe(false);
     expect(report.linkContentUnchanged).toBe(true);
+    expect(report.rowProtectionMethod).toBe("sqlite_authorizer_and_connection_change_counter");
+    expect(report.businessRowChanges).toBe(0);
+    expect(report.businessRowMutationAttemptsDenied).toBe(0);
+    expect(report.noFullContentScan).toBe(true);
     expect(report.lookupUsesSearch).toBe(true);
     expect(report.auditRecords).toBe(1);
     const database = new DatabaseSync(path, { readOnly: true });
@@ -154,5 +168,89 @@ except RuntimeError as error:
     assert str(error)=="backup_disk_headroom_insufficient"
 print(json.dumps({"preserved":True}))`, [backup, join(directory, "refused.sqlite")]);
     expect(report.preserved).toBe(true);
+  }));
+
+  it("denies business DML, unrelated schema writes, writable schema, and attached databases", () => fixture(path => {
+    const report = python(path, `
+guard=getattr(maintenance,"index_write_authorizer",None)
+assert callable(guard),"approved_index_authorizer_missing"
+connection=sqlite3.connect(path,isolation_level=None)
+connection.set_authorizer(guard)
+connection.execute(maintenance.CREATE_SQL)
+statements=[
+    "INSERT OR REPLACE INTO canonical_trader_event_observations VALUES('canonical','raw')",
+    "UPDATE canonical_trader_event_observations SET observation_id='changed'",
+    "DELETE FROM canonical_trader_event_observations",
+    "INSERT INTO raw_trader_observations VALUES('extra')",
+    "CREATE INDEX unreviewed_index ON canonical_trader_event_observations(observation_id)",
+    "DROP INDEX ${indexName}",
+    "DROP TABLE raw_trader_observations",
+    "PRAGMA writable_schema=ON",
+    "ATTACH DATABASE ':memory:' AS extra"
+]
+for sql in statements:
+    try:
+        connection.execute(sql)
+        raise AssertionError("unapproved statement succeeded")
+    except sqlite3.DatabaseError as error:
+        assert str(error)=="not authorized"
+        code=getattr(error,"sqlite_errorcode",None)
+        assert code is None or code==sqlite3.SQLITE_AUTH
+changes=connection.total_changes
+connection.close()
+connection=sqlite3.connect("file:"+path+"?mode=ro",uri=True)
+count=connection.execute("SELECT count(*) FROM canonical_trader_event_observations").fetchone()[0]
+connection.close()
+print(json.dumps({"deniedStatements":len(statements),"businessRowChanges":changes,"linkRows":count}))`);
+    expect(report).toEqual({ deniedStatements: 9, businessRowChanges: 0, linkRows: 1 });
+  }));
+
+  it("keeps the DML guard active through precommit audit and rolls back a rejected mutation", () => fixture(path => {
+    const report = python(path, `
+reader=sqlite3.connect(path)
+expected=maintenance.metadata(reader)
+reader.close()
+writers=[]
+original_connect=maintenance.connect
+def observed_connect(*args,**kwargs):
+    connection=original_connect(*args,**kwargs)
+    writers.append(connection)
+    return connection
+maintenance.connect=observed_connect
+def mutate_during_audit(record):
+    writers[-1].execute("DELETE FROM canonical_trader_event_observations")
+try:
+    maintenance.apply_index(path,expected,mutate_during_audit)
+    raise AssertionError("expected denied audit mutation")
+except sqlite3.DatabaseError as error:
+    assert str(error)=="not authorized"
+    code=getattr(error,"sqlite_errorcode",None)
+    assert code is None or code==sqlite3.SQLITE_AUTH
+check=sqlite3.connect(path)
+exists=check.execute("SELECT 1 FROM sqlite_schema WHERE name=?",("${indexName}",)).fetchone()
+count=check.execute("SELECT count(*) FROM canonical_trader_event_observations").fetchone()[0]
+check.close()
+print(json.dumps({"indexAbsent":exists is None,"linkRows":count}))`);
+    expect(report).toEqual({ indexAbsent: true, linkRows: 1 });
+  }));
+
+  it("retains the transaction deadline even when the ownership audit takes too long", () => fixture(path => {
+    const report = python(path, `
+import time
+reader=sqlite3.connect(path)
+expected=maintenance.metadata(reader)
+reader.close()
+def slow_audit(record):
+    time.sleep(0.1)
+try:
+    maintenance.apply_index(path,expected,slow_audit,transaction_seconds=0.05)
+    raise AssertionError("expected transaction deadline")
+except RuntimeError as error:
+    assert str(error)=="index_transaction_deadline_exceeded"
+check=sqlite3.connect(path)
+exists=check.execute("SELECT 1 FROM sqlite_schema WHERE name=?",("${indexName}",)).fetchone()
+check.close()
+print(json.dumps({"indexAbsent":exists is None}))`);
+    expect(report.indexAbsent).toBe(true);
   }));
 });

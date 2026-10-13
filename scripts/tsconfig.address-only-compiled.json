@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.postgres-services.json",
+  "references": [
+    { "path": "../packages/database" }, { "path": "../packages/domain" },
+    { "path": "../packages/collectors" }, { "path": "../apps/wallet-monitor" },
+    { "path": "../apps/automation" }
+  ],
+  "include": ["postgres-service-entry.ts", "postgres-address-only-dispatch.ts", "create-address-only-waiting-deployment.ts", "test/postgres-service-entry.test.ts"]
+}

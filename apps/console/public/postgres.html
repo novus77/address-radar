@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Address Radar | PostgreSQL</title><link rel="stylesheet" href="/postgres.css"><script src="/postgres.js" defer></script></head>
+<body>
+<main>
+  <header><p class="eyebrow">ADDRESS RADAR / WALLET CHANNEL</p><h1>钱包通道进度</h1><p>只读控制台。观察提交的数据与任务，不以服务运行替代完整闭环验收。</p></header>
+  <section class="boundary"><span id="connection">正在读取</span><span>FOMO 暂停</span><span>雷达投递关闭</span></section>
+  <section class="identity"><p>当前业务代际</p><strong id="generation">待核实</strong><p id="sampled">尚未获得快照</p></section>
+  <section aria-labelledby="progress"><h2 id="progress">已提交的推进</h2><div class="table-wrap"><table><thead><tr><th>阶段</th><th>当前状态</th><th>记录数（非资格）</th><th>近一小时记录</th><th>最后进展</th><th>原因</th></tr></thead><tbody id="stages"></tbody></table></div><p class="note">历史保全数据不计入新主线。记录数量不等于能力达标人数；近一小时记录不代表队列净变化。数据覆盖尚未通过验收时，不显示“闭环已完成”。</p></section>
+  <section aria-labelledby="trace-heading"><h2 id="trace-heading">查看交易员的真实链路</h2><form id="trace-form"><label for="entity">交易员实体 ID</label><div class="input-row"><input id="entity" name="entity" maxlength="512" required autocomplete="off"><button type="submit">读取证据链</button></div></form><p id="trace-status">按当前代际读取，缺失依据保持待核验。</p><pre id="trace-output" hidden></pre></section>
+  <footer>等待达到机会阈值、缺历史数据、未通过身份校验，是不同状态。缺数据不算失败，也不算成功。</footer>
+</main>
+</body></html>

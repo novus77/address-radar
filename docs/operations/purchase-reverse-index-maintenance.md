@@ -49,9 +49,23 @@ Do not output account identifiers, raw event payloads, or process credentials.
 ## Bounded index transaction
 
 Use one `BEGIN IMMEDIATE` attempt, a 250 ms lock wait, and a 5 second transaction
-deadline. Hash the ordered link contents before and after index creation in
-that same writer transaction. Require the nonunique BINARY key definition and
-an indexed `SEARCH` query plan. Record ownership durably before `COMMIT`.
+deadline. Install a fail-closed SQLite authorizer before index creation. Allow
+only the reviewed index DDL, its catalog updates, the required metadata reads,
+and transaction completion; deny business-table INSERT/UPDATE/DELETE, unrelated
+schema writes, writable-schema PRAGMAs, attached databases, and trigger contexts.
+Require the connection's business-row change counter to remain zero before and
+after the precommit audit. A rejected SQL operation must not lead to commit,
+even if the audit callback catches the denial. Other writers cannot mutate
+business rows while this transaction holds the writer lock.
+
+Do not scan or fingerprint all business rows under the writer lock. The
+receipt explicitly reports null row-count/content-digest fields and
+`fullContentFingerprintComputed=false`; its row protection method is
+`sqlite_authorizer_and_connection_change_counter`. This is a proof of this
+maintenance connection's non-mutation, not a full migration content comparison.
+Preserve the independently quick-checked and SHA-256-verified full backup.
+Require the nonunique BINARY key definition and an indexed `SEARCH` query plan.
+Record ownership durably before `COMMIT`.
 
 An error before commit rolls back the index transaction. Do not retry lock
 contention autonomously. Business services remain running throughout. Backup,

@@ -17,6 +17,7 @@ import type {
   WalletCollectorResult,
 } from "./contracts.js";
 import type { WalletRpcClient } from "./rpc.js";
+import type { EvmTransferRangeReceiptDecoder } from "./evm-transfer-range-collector.js";
 
 type EvmChain = Exclude<DiscoveryChain, "solana">;
 
@@ -46,6 +47,14 @@ interface SolanaCheckpoint {
     readonly newestSignature: string;
     readonly before: string;
   };
+}
+
+interface SolanaForwardScope {
+  readonly kind: "forward-only";
+  readonly activatedAt: number;
+  /** Provider-observed collection boundary, not an execution attestation. */
+  readonly baseline: { readonly kind: "before-activation"; readonly signature: string; readonly blockTime: number }
+    | { readonly kind: "range-exhausted"; readonly untilSignature: string | null } | null;
 }
 
 export function createEvmBlockWalletCollector(input: {
@@ -186,11 +195,16 @@ export function createSolanaWalletCollector(input: {
   readonly market?: TokenMarketProvider;
   readonly signatureLimit?: number;
   readonly batchSize?: number;
+  readonly activatedAt?: number;
   readonly now?: () => number;
 }): WalletCollector {
   const signatureLimit = input.signatureLimit ?? 100;
   const batchSize = input.batchSize ?? 3;
   const now = input.now ?? Date.now;
+  if (!Number.isSafeInteger(signatureLimit) || signatureLimit < 1 || signatureLimit > 1000) throw new Error("Invalid Solana signature limit");
+  if (input.activatedAt !== undefined && (!Number.isSafeInteger(input.activatedAt) || input.activatedAt < 0)) {
+    throw new Error("Invalid Solana activation boundary");
+  }
 
   return {
     name: "solana",
@@ -205,6 +219,7 @@ export function createSolanaWalletCollector(input: {
         rpc: input.rpc,
         market: input.market,
         signatureLimit,
+        activatedAt: input.activatedAt,
         checkpoint: request.checkpoint(`wallet:${wallet.address}`),
         signal: request.signal,
         now,
@@ -250,12 +265,14 @@ async function collectSolanaWallet(input: {
   readonly rpc: WalletRpcClient;
   readonly market: TokenMarketProvider | undefined;
   readonly signatureLimit: number;
+  readonly activatedAt: number | undefined;
   readonly checkpoint: string | null;
   readonly signal: AbortSignal;
   readonly now: () => number;
 }) {
   const partitionKey = `wallet:${input.wallet.address}`;
   const checkpoint = parseSolanaCheckpoint(input.checkpoint);
+  const scope = input.activatedAt === undefined ? undefined : solanaForwardScope(input.checkpoint, input.activatedAt);
   const options: Record<string, unknown> = { limit: input.signatureLimit };
   if (checkpoint.latestSignature) options.until = checkpoint.latestSignature;
   if (checkpoint.backlog) options.before = checkpoint.backlog.before;
@@ -263,16 +280,31 @@ async function collectSolanaWallet(input: {
     input.wallet.address,
     options,
   ], input.signal) as readonly SolanaSignature[];
+  let boundary: SolanaSignature | undefined;
+  let eligible = signatures;
+  if (scope) {
+    if (!Array.isArray(signatures) || signatures.length > input.signatureLimit) throw new Error("invalid_signature_page");
+    for (const signature of signatures) {
+      if (!signature || typeof signature.signature !== "string" || !signature.signature.length
+        || !validSolanaBlockTime(signature.blockTime)) throw new Error("signature_time_unavailable");
+      if (signature.blockTime * 1000 < scope.activatedAt) boundary ??= signature;
+      else if (boundary) throw new Error("signature_activation_order_conflict");
+    }
+    eligible = signatures.filter(signature => signature.blockTime! * 1000 >= scope.activatedAt);
+  }
   const newestSignature = checkpoint.backlog?.newestSignature ?? signatures[0]?.signature ?? checkpoint.latestSignature;
   const events: WalletCollectorEvent[] = [];
   const diagnostics: Array<NonNullable<WalletCollectorResult["diagnostics"]>[number]> = [];
 
-  for (const signature of [...signatures].reverse()) {
+  for (const signature of [...eligible].reverse()) {
     const transaction = await input.rpc.request("solana", "getTransaction", [
       signature.signature,
       { encoding: "jsonParsed", maxSupportedTransactionVersion: 1 },
     ], input.signal) as (SolanaSwapTransaction & { readonly blockTime?: number | null }) | null;
     if (!transaction) throw new Error(`transaction_unavailable:${signature.signature}`);
+    if (scope && (!validSolanaBlockTime(transaction.blockTime) || transaction.blockTime !== signature.blockTime)) {
+      throw new Error("transaction_signature_time_mismatch");
+    }
     const extracted = await solanaSwapEvents({
       wallet: input.wallet,
       signature: signature.signature,
@@ -290,7 +322,7 @@ async function collectSolanaWallet(input: {
     }
   }
 
-  const hasMore = signatures.length === input.signatureLimit;
+  const hasMore = signatures.length === input.signatureLimit && !boundary;
   const last = signatures.at(-1);
   const nextCheckpoint: SolanaCheckpoint = hasMore && last && newestSignature
     ? {
@@ -304,9 +336,42 @@ async function collectSolanaWallet(input: {
       };
 
   return {
-    partition: { partitionKey, nextCheckpoint: JSON.stringify(nextCheckpoint), events },
+    partition: { partitionKey, nextCheckpoint: JSON.stringify({ ...nextCheckpoint, ...(scope ? { scope: {
+      ...scope,
+      baseline: boundary ? { kind: "before-activation", signature: boundary.signature, blockTime: boundary.blockTime }
+        : scope.baseline ?? (hasMore ? null : { kind: "range-exhausted", untilSignature: checkpoint.latestSignature }),
+    } } : {}) }), events },
     diagnostics,
   };
+}
+
+function validSolanaBlockTime(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    && Number.isSafeInteger(value * 1000);
+}
+
+function solanaForwardScope(checkpoint: string | null, activatedAt: number): SolanaForwardScope {
+  const empty: SolanaForwardScope = { kind: "forward-only", activatedAt, baseline: null };
+  if (checkpoint === null) return empty;
+  let parsed: unknown;
+  try { parsed = JSON.parse(checkpoint); } catch { throw new Error("invalid_forward_checkpoint"); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid_forward_checkpoint");
+  const scope = (parsed as { scope?: unknown }).scope;
+  if (scope === undefined) return empty;
+  if (!scope || typeof scope !== "object" || Array.isArray(scope)) throw new Error("invalid_forward_scope");
+  const candidate = scope as SolanaForwardScope;
+  if (candidate.kind !== "forward-only" || candidate.activatedAt !== activatedAt) throw new Error("forward_scope_mismatch");
+  const baseline = candidate.baseline;
+  if (baseline === null) return empty;
+  if (!baseline || typeof baseline !== "object" || Array.isArray(baseline)) throw new Error("invalid_forward_baseline");
+  if (baseline.kind === "before-activation" && typeof baseline.signature === "string" && baseline.signature.length > 0
+    && validSolanaBlockTime(baseline.blockTime) && baseline.blockTime * 1000 < activatedAt) {
+    return { ...empty, baseline: { kind: baseline.kind, signature: baseline.signature, blockTime: baseline.blockTime } };
+  }
+  if (baseline.kind === "range-exhausted" && (baseline.untilSignature === null || typeof baseline.untilSignature === "string")) {
+    return { ...empty, baseline: { kind: baseline.kind, untilSignature: baseline.untilSignature } };
+  }
+  throw new Error("invalid_forward_baseline");
 }
 
 async function solanaSwapEvents(input: {
@@ -355,6 +420,27 @@ async function solanaSwapEvents(input: {
   }
   return { events, hadCandidateDelta: evidence.candidateDeltas.length > 0 };
 }
+
+/** Decode a real, canonically bound receipt using the unchanged wallet execution rules. */
+export const decodeEvmTransferRangeReceipt: EvmTransferRangeReceiptDecoder = async input => {
+  input.signal.throwIfAborted();
+  const quantity = (value: string): number => {
+    if (typeof value !== "string" || !/^0x[0-9a-f]+$/i.test(value)) throw new Error("Invalid EVM receipt block number");
+    const number = Number(BigInt(value));
+    if (!Number.isSafeInteger(number) || number < 0) throw new Error("Invalid EVM receipt block number");
+    return number;
+  };
+  const blockNumber = quantity(input.receipt.blockNumber);
+  if (quantity(input.transaction.blockNumber) !== blockNumber
+    || !/^0x[0-9a-f]{64}$/i.test(input.receipt.blockHash)
+    || input.transaction.blockHash.toLowerCase() !== input.receipt.blockHash.toLowerCase()
+    || input.transaction.hash.toLowerCase() !== input.receipt.transactionHash.toLowerCase()
+    || !["0x0", "0x1"].includes(input.receipt.status)
+    || !Number.isSafeInteger(input.occurredAt) || input.occurredAt < 0) throw new Error("EVM receipt binding mismatch");
+  const result = await evmSwapEvents({ ...input, market: undefined, blockNumber, blockHash: input.receipt.blockHash });
+  input.signal.throwIfAborted();
+  return result;
+};
 
 async function evmSwapEvents(input: {
   readonly chain: EvmChain;

@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": { "noEmit": true, "declaration": false, "types": ["node"] },
+  "references": [
+    { "path": "../packages/database" }, { "path": "../packages/domain" },
+    { "path": "../packages/collectors" }, { "path": "../apps/wallet-monitor" },
+    { "path": "../apps/automation" }
+  ],
+  "include": ["postgres-service-entry.ts", "test/postgres-service-entry.test.ts"]
+}

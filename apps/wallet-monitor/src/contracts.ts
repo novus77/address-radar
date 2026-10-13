@@ -1,4 +1,5 @@
 import type { ExecutionBasis } from "./execution-basis.js";
+import type { WalletRpcDiagnostic } from "./rpc-diagnostics.js";
 import type { ChainFamily } from "@address-radar/domain";
 import type { MonitoredWallet } from "@address-radar/identity";
 
@@ -32,6 +33,7 @@ export interface WalletCollectorResult {
     readonly partitionKey: string;
     readonly reason: string;
     readonly sourceReference: string;
+    readonly rpc?: WalletRpcDiagnostic;
   }[];
 }
 

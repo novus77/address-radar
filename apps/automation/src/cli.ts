@@ -1,9 +1,13 @@
+import { registerSqliteWriterService } from "@address-radar/database";
 import { hostname } from "node:os";
+import { dispatchPostgresBusinessService } from "@address-radar/database";
 
 import { loadAutomationConfig } from "./config.js";
 import { createAutomationRuntime } from "./runtime.js";
 import { runAutomationService } from "./service.js";
 
+if (!await dispatchPostgresBusinessService("automation")) {
+registerSqliteWriterService("automation");
 const config = loadAutomationConfig(process.env);
 const runtime = createAutomationRuntime({
   config,
@@ -29,4 +33,5 @@ try {
   });
 } finally {
   runtime.close();
+}
 }

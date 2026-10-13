@@ -1,3 +1,4 @@
+import { enforceSqliteDatabaseAdmission } from "./sqlite-writer-admission.js";
 import { CLOSED_LOOP_QUERY_INDEXES_SQL } from "./automation-admission-schema.js";
 import type { DatabaseSync } from "node:sqlite";
 import { initializeExecutionRevisionSchema } from "./execution-revision-store.js";
@@ -26,6 +27,7 @@ export function migrateAddressRadarDatabase(
   database: DatabaseSync,
   options: AddressRadarMigrationOptions = {},
 ): void {
+  database = enforceSqliteDatabaseAdmission(database);
   const environment = options.environment ?? process.env;
   if (!options.force && environment.ADDRESS_RADAR_RUNTIME_MIGRATIONS === "false") return;
   database.exec(`PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = ${ADDRESS_RADAR_BUSY_TIMEOUT_MS};`);

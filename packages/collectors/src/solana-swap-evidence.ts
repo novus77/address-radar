@@ -1,3 +1,9 @@
+/** JSON-only readers support legacy/v0/v1; this does not enable transaction submission.
+ * https://solana.com/upgrades/larger-transaction-sizes
+ * https://github.com/solana-foundation/solana-dev-skill/blob/main/skills/solana-dev/references/transactions-v1.md
+ * https://github.com/solana-foundation/transaction-v1-examples
+ */
+export const SOLANA_MAX_SUPPORTED_TRANSACTION_VERSION = 1;
 export const SOLANA_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 export const SOLANA_USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 export const SOLANA_WRAPPED_NATIVE_MINT = "So11111111111111111111111111111111111111112";
@@ -23,16 +29,26 @@ export interface SolanaSwapTokenBalance {
 export interface SolanaSwapInstruction {
   readonly programId?: string;
   readonly programIdIndex?: number;
+  readonly accounts?: readonly (number | string)[];
 }
 
 export interface SolanaSwapTransaction {
+  readonly version?: "legacy" | number;
   readonly transaction?: {
     readonly message?: {
-      readonly accountKeys?: readonly (string | { readonly pubkey: string; readonly signer?: boolean })[];
+      readonly accountKeys?: readonly (string | { readonly pubkey: string; readonly signer?: boolean; readonly source?: string })[];
       readonly instructions?: readonly SolanaSwapInstruction[];
+      readonly addressTableLookups?: readonly unknown[];
+      readonly transactionConfig?: {
+        readonly computeUnitLimit: number | null;
+        readonly heapSize: number | null;
+        readonly loadedAccountsDataSizeLimit: number | null;
+        readonly priorityFee: number | null;
+      };
     };
   };
   readonly meta?: {
+    readonly loadedAddresses?: { readonly writable: readonly string[]; readonly readonly: readonly string[] };
     readonly err?: unknown;
     readonly fee?: number;
     readonly preBalances?: readonly number[];
@@ -41,7 +57,7 @@ export interface SolanaSwapTransaction {
     readonly postTokenBalances?: readonly SolanaSwapTokenBalance[];
     readonly innerInstructions?: readonly {
       readonly instructions?: readonly SolanaSwapInstruction[];
-    }[];
+    }[] | null;
   } | null;
 }
 
@@ -60,10 +76,103 @@ export interface SolanaSwapEvidence {
   supportsSwap(candidate: SolanaAssetDelta): boolean;
 }
 
+// RPC projection uses nullable fields, not the sender's priorityFeeLamports spelling.
+// Widths and heap bounds: https://github.com/solana-foundation/solana-improvement-documents/blob/main/proposals/0385-transaction-v1.md
+export function isSupportedSolanaSwapTransaction(value: unknown): value is SolanaSwapTransaction {
+  const object = (input: unknown): Record<string, unknown> | undefined =>
+    input !== null && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : undefined;
+  const transaction = object(value);
+  if (!transaction) return false;
+  const version = transaction.version;
+  const message = object(object(transaction.transaction)?.message);
+  if (version === undefined || version === "legacy" || version === 0) {
+    // A config on a legacy/v0 response is not a usable v1 response in disguise.
+    return !message || !Object.hasOwn(message, "transactionConfig");
+  }
+  if (version !== 1 || !message) return false;
+  const config = object(message.transactionConfig);
+  const fields = ["computeUnitLimit", "heapSize", "loadedAccountsDataSizeLimit", "priorityFee"] as const;
+  if (!config || Object.keys(config).length !== fields.length) return false;
+  for (const field of fields) {
+    if (!Object.hasOwn(config, field)) return false;
+    const number = config[field];
+    if (number === null) continue;
+    // Do not silently round a u64 JSON fee outside JavaScript's exact integer range.
+    if (typeof number !== "number" || !Number.isSafeInteger(number) || number < 0) return false;
+    if (field !== "priorityFee" && number > 0xffff_ffff) return false;
+    if (field === "heapSize" && (number < 32 * 1024 || number > 256 * 1024 || number % 1024 !== 0)) return false;
+  }
+  const keys = message.accountKeys;
+  if (!Array.isArray(keys) || keys.length === 0 || keys.length > 64) return false;
+  const addresses = new Set<string>();
+  for (const key of keys) {
+    const parsed = object(key);
+    const address = typeof key === "string" ? key : parsed?.pubkey;
+    if (typeof address !== "string" || address.length === 0 || addresses.has(address)) return false;
+    if (parsed && parsed.source !== undefined && parsed.source !== "transaction") return false;
+    addresses.add(address);
+  }
+  const validIndex = (index: unknown): index is number =>
+    typeof index === "number" && Number.isSafeInteger(index) && index >= 0 && index < keys.length;
+  const meta = object(transaction.meta);
+  for (const field of ["preTokenBalances", "postTokenBalances"] as const) {
+    const balances = meta?.[field];
+    if (balances === undefined) continue;
+    if (!Array.isArray(balances)) return false;
+    for (const balance of balances) {
+      if (!validIndex(object(balance)?.accountIndex)) return false;
+    }
+  }
+  const validInstruction = (value: unknown): boolean => {
+    const instruction = object(value);
+    if (!instruction) return false;
+    if (Object.hasOwn(instruction, "programIdIndex")) {
+      // Compiled instructions carry numeric account indices, not parsed program addresses.
+      if (Object.hasOwn(instruction, "programId") || Object.hasOwn(instruction, "parsed")
+        || !validIndex(instruction.programIdIndex) || !Array.isArray(instruction.accounts)) return false;
+      for (const index of instruction.accounts) if (!validIndex(index)) return false;
+      return true;
+    }
+    // jsonParsed includes fully parsed objects and partially decoded address-account lists.
+    if (typeof instruction.programId !== "string" || instruction.programId.length === 0) return false;
+    if (instruction.accounts !== undefined) {
+      if (!Array.isArray(instruction.accounts)) return false;
+      for (const address of instruction.accounts) {
+        if (typeof address !== "string" || address.length === 0) return false;
+      }
+    }
+    return true;
+  };
+  if (message.instructions !== undefined) {
+    if (!Array.isArray(message.instructions)) return false;
+    for (const instruction of message.instructions) if (!validInstruction(instruction)) return false;
+  }
+  if (meta?.innerInstructions !== undefined && meta.innerInstructions !== null) {
+    if (!Array.isArray(meta.innerInstructions)) return false;
+    for (const group of meta.innerInstructions) {
+      const instructions = object(group)?.instructions;
+      if (!Array.isArray(instructions)) return false;
+      for (const instruction of instructions) if (!validInstruction(instruction)) return false;
+    }
+  }
+  if (message.addressTableLookups !== undefined
+    && (!Array.isArray(message.addressTableLookups) || message.addressTableLookups.length !== 0)) return false;
+  const loaded = object(transaction.meta)?.loadedAddresses;
+  if (loaded !== undefined) {
+    const addresses = object(loaded);
+    if (!addresses || !Array.isArray(addresses.writable) || addresses.writable.length !== 0
+      || !Array.isArray(addresses.readonly) || addresses.readonly.length !== 0) return false;
+  }
+  return true;
+}
+
 export function extractSolanaSwapEvidence(
   transaction: SolanaSwapTransaction | null,
   wallet: string,
 ): SolanaSwapEvidence {
+  if (transaction !== null && !isSupportedSolanaSwapTransaction(transaction)) {
+    throw new Error("Unsupported Solana transaction schema");
+  }
   const tokenDeltas = tokenDeltasForWallet(transaction, wallet);
   const stableQuoteDeltas = tokenDeltas.filter((delta) => STABLE_QUOTE_MINTS.has(delta.mint));
   const wrappedNativeDeltas = tokenDeltas.filter((delta) => delta.mint === SOLANA_WRAPPED_NATIVE_MINT);
@@ -122,8 +231,14 @@ function programIds(transaction: SolanaSwapTransaction | null): string[] {
 }
 
 function accountKeys(transaction: SolanaSwapTransaction | null): string[] {
-  return (transaction?.transaction?.message?.accountKeys ?? [])
-    .map((key) => typeof key === "string" ? key : key.pubkey);
+  const original = transaction?.transaction?.message?.accountKeys ?? [];
+  const keys = original.map((key) => typeof key === "string" ? key : key.pubkey);
+  // Raw v0 indices address static + writable lookup + readonly lookup keys. jsonParsed is already expanded.
+  if (transaction?.version === 0 && original.every(key => typeof key === "string")) {
+    const loaded = transaction.meta?.loadedAddresses;
+    return [...keys,...(loaded?.writable ?? []),...(loaded?.readonly ?? [])];
+  }
+  return keys;
 }
 
 function tokenDeltasForWallet(

@@ -1,0 +1,15 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {mkdtemp,mkdir,writeFile,chmod} from 'node:fs/promises';import {tmpdir} from 'node:os';import {createHash} from 'node:crypto';
+import {validateSealingSource,sourceSealPolicy} from '../validate-rehearsal-preservation-source.ts';
+const canonical=x=>JSON.stringify(Array.isArray(x)?x.map(normalize):normalize(x));function normalize(x){return Array.isArray(x)?x.map(normalize):x&&typeof x==='object'?Object.fromEntries(Object.keys(x).sort().map(k=>[k,normalize(x[k])])):x;}
+const hash=x=>createHash('sha256').update(x).digest('hex');
+async function fixture(){const directory=await mkdtemp(tmpdir()+'/source-validator-');await chmod(directory,0o700);
+ const snapshot='b'.repeat(64),operation='operation',row={values:[{storage:'integer',value:'1'}]},rowBody=canonical(row),file='table-0000-chunk-000000.json';
+ const chunk=canonical({version:1,operationId:operation,snapshotSha256:snapshot,table:'items',ordinal:0,startRow:0,rows:[row]});
+ const catalog={objects:[{type:'table',name:'items',tbl_name:'items',sql:'CREATE TABLE items (value INTEGER)'}],tables:[{name:'items',columns:[[0,'value','INTEGER',0,null,0,0]],foreignKeys:[],indexes:[]}],sequences:[],pragmas:{encoding:'UTF-8',user_version:0,application_id:0}};
+ const manifest={version:1,operationId:operation,snapshotSha256:snapshot,snapshotBytes:1,catalogFingerprint:hash(canonical(catalog)),completed:true,businessActivation:false,catalog,limits:{maximumChunkBytes:1024,rowsPerChunk:1},tables:[{name:'items',completed:true,rowCount:1,contentSha256:hash(rowBody+'\n'),chunks:[{file,table:'items',ordinal:0,startRow:0,rowCount:1,sha256:hash(chunk)}]}]};
+ const raw=canonical(manifest);await writeFile(directory+'/manifest.json',raw,{mode:0o600});await writeFile(directory+'/'+file,chunk,{mode:0o600});
+ return{directory,file,raw,chunk,policy:{directory,manifestSha256:hash(raw),snapshotSha256:snapshot,catalogFingerprint:manifest.catalogFingerprint,operationId:operation,tables:1,chunks:1,rows:1,uid:process.getuid()}};
+}
+test('native canonical chunk and table validation produces full source proof',async()=>{const f=await fixture(),events=[];const result=await validateSealingSource(f.policy,x=>events.push(x));assert.equal(result.status,'source-validated');assert.equal(result.totalBytes,Buffer.byteLength(f.raw)+Buffer.byteLength(f.chunk));assert.equal(result.rows,1);assert.equal(result.chunks,1);assert.equal(events.length,1);assert.equal(events[0].file,f.file);});
+test('raw chunk mutation cannot produce a source seal proof',async()=>{const f=await fixture();await writeFile(f.directory+'/'+f.file,'{}');await assert.rejects(validateSealingSource(f.policy),/chunk_digest_mismatch/);});
+test('native source policy has no production target or physical snapshot write',()=>{assert.equal(sourceSealPolicy.directory,'/var/backups/address-radar/migration-rehearsals/preparation-20261004-largechunk-9c8ae4bf/bundle');assert.equal(sourceSealPolicy.chunks,1548);assert.equal(sourceSealPolicy.rows,6023033);assert.ok(!('snapshotPath' in sourceSealPolicy));});

@@ -1,5 +1,6 @@
+import { registerSqliteWriterService } from "@address-radar/database";
 import { createDuneDataApiClient, createGeckoTerminalClient, FomoTokenLookupProducer, FomoTokenLookupResultConsumer, type DiscoveryChain } from "@address-radar/collectors";
-import { createSharedProviderRequestGate, resolveObservedMarketSupply, createAutomationJobStore, createCandidateHistoryStore, createTokenFactStore, migrateAddressRadarDatabase, openAddressRadarDatabase, openAddressRadarRepository } from "@address-radar/database";
+import { dispatchPostgresBusinessService, createSharedProviderRequestGate, resolveObservedMarketSupply, createAutomationJobStore, createCandidateHistoryStore, createTokenFactStore, migrateAddressRadarDatabase, openAddressRadarDatabase, openAddressRadarRepository } from "@address-radar/database";
 
 import { loadHistoricalBackfillConfig } from "./config.js";
 import { createDuneHistoricalBackfillWorker } from "./dune-historical-worker.js";
@@ -17,6 +18,8 @@ import { createConfiguredAnalysisRpcClient } from "./rpc.js";
 import { createHistoricalProviderRouter } from "./historical-provider-router.js";
 import { createLocalMilestoneProvider } from "./local-milestone-provider.js";
 
+if (!await dispatchPostgresBusinessService("historical-backfill")) {
+registerSqliteWriterService("historical-backfill");
 const config = loadHistoricalBackfillConfig(process.env);
 const repository = openAddressRadarRepository(config.databasePath);
 const database = openAddressRadarDatabase(config.databasePath);
@@ -107,4 +110,5 @@ try {
 } finally {
   repository.close();
   database.close();
+}
 }

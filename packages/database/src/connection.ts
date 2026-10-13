@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { assertSqliteWriterAdmission, enforceSqliteDatabaseAdmission } from "./sqlite-writer-admission.js";
 
 const configuredBusyTimeout = Number(process.env.ADDRESS_RADAR_BUSY_TIMEOUT_MS ?? 5_000);
 export const ADDRESS_RADAR_BUSY_TIMEOUT_MS = Number.isSafeInteger(configuredBusyTimeout) && configuredBusyTimeout > 0
@@ -38,6 +39,7 @@ export function withAddressRadarWriteTransaction<T>(
   operation: () => T,
   options: WriteTransactionOptions = {},
 ): T {
+  database = enforceSqliteDatabaseAdmission(database);
   if (database.isTransaction) return operation();
   const maximumAttempts = options.maximumAttempts ?? 8;
   const baseDelayMs = options.baseDelayMs ?? 10;
@@ -84,6 +86,7 @@ export function withAddressRadarWriteTransaction<T>(
 }
 
 export function configureAddressRadarDatabase(database: DatabaseSync): DatabaseSync {
+  database = enforceSqliteDatabaseAdmission(database);
   // WAL setup can contend before the connection has a busy handler.
   database.exec(`PRAGMA busy_timeout = ${ADDRESS_RADAR_BUSY_TIMEOUT_MS};`);
   database.exec(`
@@ -96,5 +99,6 @@ export function configureAddressRadarDatabase(database: DatabaseSync): DatabaseS
 }
 
 export function openAddressRadarDatabase(databasePath: string): DatabaseSync {
+  assertSqliteWriterAdmission(databasePath);
   return configureAddressRadarDatabase(new DatabaseSync(databasePath));
 }

@@ -15,12 +15,13 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture() {
+function fixture(encoding = "UTF-8") {
   const root = mkdtempSync(join(tmpdir(), "radar-guard-snapshot-"));
   roots.push(root);
   const path = join(root, "source.db");
   const database = new DatabaseSync(path);
   databases.push(database);
+  database.exec("PRAGMA encoding=" + "'" + encoding + "'");
   database.exec("PRAGMA journal_mode=WAL");
   const keys: Record<string, string[]> = {
     broadcast_records: ["broadcast_id"], evidence_consumption: ["event_id"],
@@ -86,6 +87,23 @@ describe("global guard snapshot preflight", () => {
     expect(values.payload).toEqual({ storage: "blob", value: "AP8B" });
     expect(values.big_value).toEqual({ storage: "integer", value: "9223372036854775807" });
     expect(values.real_value).toEqual({ storage: "real", value: "0.125" });
+  });
+
+  it.each(["UTF-8", "UTF-16le", "UTF-16be"])("preserves NUL text and text-key pagination in %s", async encoding => {
+    const { database, path } = fixture(encoding);
+    const expected = ["a\u0000first", "a\u0000second", "b"];
+    const marker = "\ufeffnul\u0000text\u{1f4be}";
+    const insert = database.prepare("INSERT INTO provider_request_gates(provider,marker) VALUES(?,?)");
+    for (const key of expected) insert.run(key, marker);
+    const pages: GuardLedgerPage[] = [];
+    const result = await readOnlyGlobalGuardSnapshot(path, { pageSize: 1,
+      pageSink: page => { pages.push(page); return page.fingerprint; } });
+    expect(result.status).toBe("complete");
+    expect(result.rowCount).toBe(3);
+    expect(pages.flatMap(page => page.rows.map(row => row.key[0]!.value))).toEqual(
+      expected.map(value => ({ storage: "text", value })));
+    expect(pages.every(page => page.rows.every(row => row.values.find(cell => cell.name === "marker")!.value.storage === "text" &&
+      (row.values.find(cell => cell.name === "marker")!.value as { value: string }).value === marker))).toBe(true);
   });
 
   it("keeps later ledger reads on the original WAL snapshot", async () => {

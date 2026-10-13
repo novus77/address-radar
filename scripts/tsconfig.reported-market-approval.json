@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.postgres-services.json",
+  "include": [
+    "postgres-reported-market-approval.ts",
+    "import-postgres-reported-market-approval.ts",
+    "postgres-price-authority.ts",
+    "test/postgres-reported-market-approval.test.ts",
+    "test/postgres-price-authority.test.ts"
+  ]
+}

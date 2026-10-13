@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 database_path="${ADDRESS_RADAR_DATABASE_PATH:-/var/lib/address-radar/address-radar.db}"
 backup_root="${ADDRESS_RADAR_BACKUP_DIR:-/var/lib/address-radar/backups}"
@@ -27,100 +28,17 @@ if ! [[ "${sleep_ms}" =~ ^[0-9]+$ ]]; then
   exit 64
 fi
 
-install -d -m 0750 "${target}"
+install -d -m 0750 "${backup_root}"
+mkdir -m 0750 "${target}"
 trap 'rm -f "${partial}"' EXIT
-
-node --input-type=module - "${database_path}" <<'NODE'
-import { DatabaseSync } from "node:sqlite";
-const database = new DatabaseSync(process.argv[2]);
-try {
-  const result = database.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
-  if (Number(result.busy) !== 0) {
-    throw new Error(`WAL checkpoint remained busy: ${JSON.stringify(result)}`);
-  }
-} finally {
-  database.close();
-}
-NODE
-
-set +e
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ionice -c2 -n7 nice -n 15 timeout "${timeout_seconds}" \
-  cp --reflink=auto --sparse=always "${database_path}" "${partial}"
-copy_status=$?
-set -e
-
-if (( copy_status != 0 )); then
-  rm -f "${partial}"
-  if (( copy_status == 124 || copy_status == 137 )); then
-    exit "${copy_status}"
-  fi
-
-  ionice -c2 -n7 nice -n 15 timeout "${timeout_seconds}" \
-    node --input-type=module - \
-      "${database_path}" \
-      "${partial}" \
-      "${pages_per_step}" \
-      "${sleep_ms}" <<'NODE'
-import { open } from "node:fs/promises";
-import { DatabaseSync } from "node:sqlite";
-import { setTimeout as sleep } from "node:timers/promises";
-
-const sourcePath = process.argv[2];
-const targetPath = process.argv[3];
-const pagesPerStep = Number.parseInt(process.argv[4], 10);
-const sleepMs = Number.parseInt(process.argv[5], 10);
-
-const database = new DatabaseSync(sourcePath, { readOnly: true });
-let pageSize;
-try {
-  pageSize = Number(Object.values(database.prepare("PRAGMA page_size").get())[0]);
-} finally {
-  database.close();
-}
-
-if (!Number.isSafeInteger(pageSize) || pageSize <= 0) {
-  throw new Error(`Invalid SQLite page size: ${pageSize}`);
-}
-
-const chunkSize = pageSize * pagesPerStep;
-const source = await open(sourcePath, "r");
-const target = await open(targetPath, "wx", 0o640);
-let position = 0;
-
-try {
-  const buffer = Buffer.allocUnsafe(chunkSize);
-  while (true) {
-    const { bytesRead } = await source.read(buffer, 0, buffer.length, position);
-    if (bytesRead === 0) {
-      break;
-    }
-
-    await target.write(buffer, 0, bytesRead, position);
-    position += bytesRead;
-
-    if (sleepMs > 0) {
-      await sleep(sleepMs);
-    }
-  }
-  await target.sync();
-} finally {
-  await Promise.allSettled([source.close(), target.close()]);
-}
-NODE
-fi
-
-node --input-type=module - "${partial}" <<'NODE'
-import { DatabaseSync } from "node:sqlite";
-const database = new DatabaseSync(process.argv[2], { readOnly: true });
-try {
-  const result = database.prepare("PRAGMA quick_check").get();
-  if (Object.values(result)[0] !== "ok") {
-    throw new Error(`Backup integrity check failed: ${JSON.stringify(result)}`);
-  }
-} finally {
-  database.close();
-}
-NODE
+  python3 "${script_dir}/consistent-sqlite-migration.py" snapshot \
+    --source "${database_path}" --target "${partial}" \
+    --operation-id "backup-${timestamp}" \
+    --deadline-seconds "${timeout_seconds}" \
+    --minimum-free-bytes "${minimum_free_bytes}" \
+    --pages-per-step "${pages_per_step}" --sleep-ms "${sleep_ms}" > "${target}/snapshot.json"
 
 mv "${partial}" "${completed}"
 retention_summary="$(node --input-type=module - \
@@ -140,7 +58,15 @@ const entries = await readdir(root, { withFileTypes: true });
 const backups = [];
 for (const entry of entries) {
   if (!entry.isDirectory()) continue;
+  // Migration/maintenance artifacts are not ordinary scheduled backup candidates.
+  if (!/^\d{8}T\d{6}Z$/.test(entry.name)) continue;
   const directory = resolve(root, entry.name);
+  const protectedMarkers = ["maintenance.json", "manifest.json", "migration-protection.json"];
+  let protectedArtifact = false;
+  for (const marker of protectedMarkers) {
+    try { await stat(join(directory, marker)); protectedArtifact = true; } catch { /* absent marker */ }
+  }
+  if (protectedArtifact) continue;
   try {
     const metadata = await stat(join(directory, "address-radar.db"));
     backups.push({ directory, modifiedAt: metadata.mtimeMs });

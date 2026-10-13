@@ -259,8 +259,13 @@ test("passes remaining budgets on the same parent and accounts for registration 
     now += 40; return imported;
   });
   options.verifyGuardsInTransaction.mockResolvedValueOnce(undefined).mockImplementationOnce(async () => { now += 10; });
-  ports.execute.mockImplementation((_command, _bundle, execution) => execution.write(parent, "write-1"));
-  const receipt = await executeAddressOnlyFirstPostgresWrite(options);
+  let receipt!: { writeId: string; receiptSha256: string };
+  ports.execute.mockImplementation(async (_command, _bundle, execution) => {
+    receipt = await execution.write(parent, "write-1");
+    return { operationId: "test-operation", revision: 1, phase: "postgres-written",
+      planSha256: options.plan.planSha256, recordedAt: options.clock(), activationEnabled: false, writeAuthorized: false };
+  });
+  await executeAddressOnlyFirstPostgresWrite(options);
   expect(Object.keys(receipt).sort()).toEqual([
     "deliveryGuardSha256", "providerGuardSha256", "receiptSha256", "writeId",
   ]);

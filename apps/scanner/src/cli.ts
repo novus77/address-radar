@@ -1,6 +1,8 @@
+import { registerSqliteWriterService } from "@address-radar/database";
 import { createFomoBrowserCollector } from "./fomo-browser-collector.js";
 import { addressRadarTokenId } from "@address-radar/domain";
 import {
+  dispatchPostgresBusinessService,
   createCandidateHistoryStore,
   createFomoLiveInbox,
   createSharedProviderRequestGate,
@@ -24,6 +26,8 @@ import { createDiskHeadroomGuard, createRateLimitedErrorReporter } from "./resil
 import { createSourceRecoveryHandlers, reconcileCandidateSourceRecovery } from "./source-recovery-handlers.js";
 
 export async function main(env: Readonly<Record<string, string | undefined>> = process.env): Promise<void> {
+  if (await dispatchPostgresBusinessService("scanner", env)) return;
+  registerSqliteWriterService("scanner");
   const config = parseScannerConfig(env);
   const preflight = await runScannerPreflight({ config });
   if (!preflight.ready) throw new Error(preflight.failures.map(item => `${item.code}: ${item.message}`).join("; "));

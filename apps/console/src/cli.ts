@@ -1,6 +1,10 @@
+import { registerSqliteWriterService } from "@address-radar/database";
 import { createAddressConsoleApplication } from "./application.js";
+import { dispatchPostgresBusinessService } from "@address-radar/database";
 import { startAddressRadarConsole } from "./server.js";
 
+if (!await dispatchPostgresBusinessService("console")) {
+registerSqliteWriterService("console");
 const application = createAddressConsoleApplication(
   process.env.ADDRESS_RADAR_DATABASE_PATH ?? ".address-radar/address-radar.sqlite",
 );
@@ -20,3 +24,4 @@ const stop = async (): Promise<void> => {
 };
 process.once("SIGINT", () => void stop());
 process.once("SIGTERM", () => void stop());
+}

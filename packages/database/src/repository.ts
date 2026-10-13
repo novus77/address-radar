@@ -1,5 +1,6 @@
 import { TRUSTED_ACCOUNT_WALLET_SQL, TRUSTED_FOMO_ACCOUNT_SQL } from "./identity-trust.js";
 import { randomUUID } from "node:crypto";
+import { enforceSqliteDatabaseAdmission } from "./sqlite-writer-admission.js";
 
 import {
   addressRadarBroadcastId,
@@ -250,7 +251,7 @@ const toSignalOutboxRecord = (row: Record<string, unknown>): SignalOutboxRecord 
 import { matchesEventProjectionInput, captureEventProjectionExecution, matchesEventProjectionExecution, acknowledgeEventProjectionExecution } from "./event-projection-execution-store.js";
 
 export function openAddressRadarRepository(databasePath: string, options: { readonly database?: ReturnType<typeof openAddressRadarDatabase> } = {}): AddressRadarRepository {
-  const database = options.database ?? openAddressRadarDatabase(databasePath);
+  const database = enforceSqliteDatabaseAdmission(options.database ?? openAddressRadarDatabase(databasePath), databasePath);
   const ownsDatabase = options.database === undefined;
   migrateAddressRadarDatabase(database);
 

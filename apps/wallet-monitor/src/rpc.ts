@@ -12,9 +12,17 @@ export interface WalletRpcClient {
 }
 
 export class WalletRpcRateLimitError extends Error {
-  constructor(readonly chain: DiscoveryChain, readonly retryAt: number) {
+  declare readonly reasonCode?: "rpc_http_rate_limited" | "rpc_json_rate_limited" | "rpc_json_limit_ambiguous";
+  declare readonly code?: number;
+  constructor(readonly chain: DiscoveryChain, readonly retryAt: number, original?: unknown) {
     super(`Wallet RPC provider is cooling down for ${chain} until ${retryAt}`);
     this.name = "WalletRpcRateLimitError";
+    if (original && typeof original === "object") {
+      const value = original as Record<string, unknown>;
+      if (value.reasonCode === "rpc_http_rate_limited" || value.reasonCode === "rpc_json_rate_limited"
+        || value.reasonCode === "rpc_json_limit_ambiguous") Object.defineProperty(this, "reasonCode", { value: value.reasonCode, enumerable: true });
+      if (typeof value.code === "number" && Number.isSafeInteger(value.code)) Object.defineProperty(this, "code", { value: value.code, enumerable: true });
+    }
   }
 }
 
@@ -56,7 +64,7 @@ export function createConfiguredWalletRpcClient(input: {
         const primaryRateLimit = rateLimitRetryAt(primaryError, now(), rateLimitCooldownMs);
         if (primaryRateLimit !== null) budget?.rateLimited(primaryRateLimit);
         if (!pair.fallback || !fallbackEligible(primaryError)) {
-          if (primaryRateLimit !== null) throw new WalletRpcRateLimitError(chain, primaryRateLimit);
+          if (primaryRateLimit !== null) throw new WalletRpcRateLimitError(chain, primaryRateLimit, primaryError);
           throw primaryError;
         }
         try {
@@ -65,7 +73,7 @@ export function createConfiguredWalletRpcClient(input: {
           const fallbackRateLimit = rateLimitRetryAt(fallbackError, now(), rateLimitCooldownMs);
           if (fallbackRateLimit !== null) {
             budget?.rateLimited(fallbackRateLimit);
-            throw new WalletRpcRateLimitError(chain, fallbackRateLimit);
+            throw new WalletRpcRateLimitError(chain, fallbackRateLimit, fallbackError);
           }
           throw fallbackError;
         }

@@ -1,0 +1,10 @@
+[Unit]
+Description=Parent-configured PostgreSQL backup schedule template
+
+[Timer]
+# Render only after parent approval; no default or catch-up schedule is enabled.
+OnCalendar=@PARENT_APPROVED_BACKUP_INTERVAL@
+Persistent=false
+Unit=address-radar-postgres-backup.service
+
+# No Install section. This .in file is not an installable timer.

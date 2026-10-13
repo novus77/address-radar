@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.postgres-services.json",
+  "include": ["measure-address-only-evm-bootstrap-floors.ts", "test/measure-address-only-evm-bootstrap-floors.test.ts"]
+}

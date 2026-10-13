@@ -144,17 +144,25 @@ def prepare_backup(source_path, backup_path, *, deadline_seconds=120, minimum_fr
             source.close()
 
 
-def link_content(connection, deadline):
-    digest = hashlib.sha256(b"reviewed-link-content-v1\n")
-    count = 0
-    for row in connection.execute(f'SELECT canonical_event_id,observation_id FROM "{TABLE}" '
-                                  'ORDER BY canonical_event_id,observation_id'):
-        check_deadline(deadline, "index_transaction_deadline_exceeded")
-        payload = encoded(list(row))
-        digest.update(len(payload).to_bytes(8, "big"))
-        digest.update(payload)
-        count += 1
-    return count, digest.hexdigest()
+def index_write_authorizer(action, first, second, database, trigger):
+    if trigger is not None:
+        return sqlite3.SQLITE_DENY
+    if action in (sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE):
+        # SQLite must update its catalog for the approved DDL, never business rows.
+        return sqlite3.SQLITE_OK if database == "main" and first in ("sqlite_master", "sqlite_schema") else sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_CREATE_INDEX:
+        return sqlite3.SQLITE_OK if database == "main" and first == INDEX and second == TABLE else sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_REINDEX:
+        return sqlite3.SQLITE_OK if database == "main" and first == INDEX else sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_READ:
+        return sqlite3.SQLITE_OK if database == "main" and first in (TABLE, "sqlite_master", "sqlite_schema") else sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_SELECT:
+        return sqlite3.SQLITE_OK
+    if action == sqlite3.SQLITE_PRAGMA:
+        return sqlite3.SQLITE_OK if first.lower() in ("index_list", "index_xinfo", "table_info", "foreign_key_list") else sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_TRANSACTION:
+        return sqlite3.SQLITE_OK if first in ("BEGIN", "COMMIT", "ROLLBACK") else sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_DENY
 
 
 def apply_index(source_path, expected_metadata, record_precommit, *, transaction_seconds=5, lock_wait_ms=250):
@@ -162,31 +170,46 @@ def apply_index(source_path, expected_metadata, record_precommit, *, transaction
     started = time.monotonic()
     deadline = started + transaction_seconds
     connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+    initial_changes = connection.total_changes
+    denied_actions = []
+
+    def authorize(action, first, second, database, trigger):
+        decision = index_write_authorizer(action, first, second, database, trigger)
+        if decision == sqlite3.SQLITE_DENY:
+            denied_actions.append(action)
+        return decision
+
     try:
         connection.execute("BEGIN IMMEDIATE")
         current = metadata(connection)
         if current != expected_metadata:
             raise RuntimeError("source_metadata_changed")
         reviewed_shape(current)
-        before = link_content(connection, deadline)
+        check_deadline(deadline, "index_transaction_deadline_exceeded")
+        connection.set_authorizer(authorize)
         connection.execute(CREATE_SQL)
         owned = next(item for item in metadata(connection)["indexes"] if item["name"] == INDEX)
         if owned["unique"] or owned["partial"] or owned["sql"] != CREATE_SQL or [
             (row[2], row[3], row[4]) for row in owned["columns"] if row[5]
         ] != [("observation_id", 0, "BINARY"), ("canonical_event_id", 0, "BINARY")]:
             raise RuntimeError("created_index_definition_mismatch")
-        after = link_content(connection, deadline)
-        if before != after:
-            raise RuntimeError("link_content_changed")
         plan = [row[3] for row in connection.execute(
             f'EXPLAIN QUERY PLAN SELECT canonical_event_id FROM "{TABLE}" WHERE observation_id=?', ("",))]
         search = any("SEARCH " in detail and INDEX in detail for detail in plan) and not any("SCAN " in detail for detail in plan)
         if not search:
             raise RuntimeError("reverse_lookup_still_unindexed")
-        result = {"indexCreated": True, "ownedIndexDefinition": owned, "linkRows": before[0],
-                  "linkContentFingerprint": before[1], "linkContentUnchanged": True,
+        if denied_actions or connection.total_changes != initial_changes:
+            raise RuntimeError("business_row_protection_failed")
+        check_deadline(deadline, "index_transaction_deadline_exceeded")
+        result = {"indexCreated": True, "ownedIndexDefinition": owned, "linkRows": None,
+                  "linkContentFingerprint": None, "fullContentFingerprintComputed": False,
+                  "linkContentUnchanged": True,
+                  "rowProtectionMethod": "sqlite_authorizer_and_connection_change_counter",
+                  "businessRowChanges": 0, "businessRowMutationAttemptsDenied": 0,
                   "lookupUsesSearch": search}
         record_precommit(result)
+        if denied_actions or connection.total_changes != initial_changes:
+            raise RuntimeError("business_row_protection_failed")
         check_deadline(deadline, "index_transaction_deadline_exceeded")
         connection.execute("COMMIT")
         return {**result, "transactionMilliseconds": round((time.monotonic() - started) * 1000)}

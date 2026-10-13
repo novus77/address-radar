@@ -1,0 +1,29 @@
+[Unit]
+Description=Read-only PostgreSQL raw retention preflight (never deletes)
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/bin/python3 -I -B /var/lib/address-radar-maintenance-tools/postgres-retention-preflight/postgres-raw-retention-dry-run.py --config /etc/address-radar-postgres-retention-preflight/job.json
+TimeoutStartSec=30
+TimeoutStopSec=5
+KillMode=control-group
+SendSIGKILL=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/etc/address-radar-postgres-retention-preflight /etc/address-radar-postgres-backup /var/lib/address-radar-maintenance-tools/postgres-retention-preflight
+RestrictAddressFamilies=AF_UNIX
+MemoryMax=128M
+MemorySwapMax=0
+CPUQuota=25%
+TasksMax=16
+Nice=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=address-radar-retention-preflight
+
+# No writable data paths and no purge execution entry point.
