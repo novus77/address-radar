@@ -29,6 +29,11 @@ def encode(value):
     return (json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)+'\n').encode()
 
 
+def encode_payload(value):
+    """Preserve manifest field order required by the sealed native preflight."""
+    return (json.dumps(value, separators=(',', ':'), allow_nan=False)+'\n').encode()
+
+
 def load_helper(expected):
     """Authenticate existing bootstrap code before executing it; do not trust imports from cwd."""
     require(type(expected) is str and re.fullmatch('[a-f0-9]{64}', expected), 'helper_hash')
@@ -138,7 +143,7 @@ def prepare(inputs_pin, output_directory, helper_hash, reader_hash):
     require(os.stat(node['path']).st_mode & 0o111, 'node_executable')
     for pin in (generator,module):
         reader(pin, maximum=base.CODE_LIMIT, collect=False)
-    result = helper.child([node['path'],'--no-global-search-paths',generator['path']],encode(payload),reader)
+    result = helper.child([node['path'],'--no-global-search-paths',generator['path']],encode_payload(payload),reader)
     files = validate_generated(payload,result)
     reader.revalidate()
     for parent in (ROOT,*ROOT.parents):

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { produceCodeOnlyReleaseMaterial } from '../produce-code-only-release-material.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -94,4 +96,23 @@ for (const [name, mutate, reason] of [
 test('rejects unused reported-price authority rather than retaining stale release references', () => {
   const x = reportedFixture(); delete x.current.deployment.priceAcquisition;
   assert.throws(() => produceCodeOnlyReleaseMaterial(JSON.stringify(x)), { message: 'reported_price_material_required' });
+});
+
+test('Python transport and real CLI preserve immutable nested manifest field order', () => {
+  const input = fixture();
+  input.current.deployment.cutover.addressOnly.target = {
+    database: 'fixture', schema: 'public', schemaFingerprint: 'fixed',
+    systemIdentifier: 'fixture-system', serverAddress: '127.0.0.1', serverPort: 5432,
+  };
+  const wrapper = fileURLToPath(new URL('../prepare-code-only-release-material.py', import.meta.url));
+  const python = spawnSync('/usr/bin/python3', ['-B', '-c',
+    'import importlib.util, json, sys; s=importlib.util.spec_from_file_location("wrapper",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); sys.stdout.buffer.write(m.encode_payload(json.load(sys.stdin)))', wrapper],
+    { input: JSON.stringify(input), encoding: 'utf8', timeout: 5000, maxBuffer: 2097152 });
+  assert.equal(python.status, 0, python.stderr);
+  const cli = spawnSync(process.execPath, ['--no-global-search-paths', fileURLToPath(new URL('../code-only-release-material-cli.mjs', import.meta.url))],
+    { input: python.stdout, encoding: 'utf8', timeout: 5000, maxBuffer: 2097152 });
+  assert.equal(cli.status, 0, cli.stderr);
+  const result = JSON.parse(cli.stdout);
+  const manifest = JSON.parse(result.files['deployment.json'].raw).cutover.addressOnly;
+  assert.equal(JSON.stringify(manifest.target), JSON.stringify(input.current.deployment.cutover.addressOnly.target));
 });
